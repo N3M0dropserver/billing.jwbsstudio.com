@@ -20,9 +20,12 @@ emails it with the PDF attached, and gives the client a public link to view and
 pay. Bank transfer always; Stripe card payment optionally, with a webhook that
 marks the invoice paid.
 
-**Email templates** — a block editor at `/templates` (built on
+**Email templates** — a WYSIWYG block editor at `/templates` (built on
 `@react-email/editor`) for writing the wording once and reusing it, with merge
-variables like `{{invoice.number}}` and `{{client.firstName}}`. Templates are
+variables like `{{invoice.number}}` and `{{client.firstName}}`. Six base
+templates to start from, a palette of email blocks — buttons, sections,
+columns, dividers, images — and an inspector for the spacing and colour of
+whichever block is selected. Templates are
 optional: choosing none falls back to the built-in wording, so sending works on
 a fresh account with no templates at all. Sends are recorded, with approximate
 open tracking — read the caveats in *Email* before trusting the numbers.
@@ -330,13 +333,30 @@ mailed, and a plain-text alternative. Rendering happens **in the browser** —
 the Worker never runs React Email, which keeps Tiptap out of the Worker bundle
 entirely (it is a ~2.5 MB client chunk, loaded only on the editor page).
 
+Three ways into the same document, because they suit different moments. **Base
+templates** (`src/lib/mail/starters.ts`) give a finished layout to edit down
+rather than a blank page; one can be chosen when the template is created or
+applied later from *Start from a base*. The **block palette** above the editor
+inserts buttons, sections, columns, dividers, lists and images — the same
+commands as typing `/`, on a surface you can see without being told it exists.
+The **inspector** in the right-hand rail edits the padding, colour, size and
+alignment of the selected block, and the whole email's background and width.
+
+Starters are authored as HTML rather than editor JSON, for two reasons:
+hand-written Tiptap JSON is unreviewable, and converting HTML into it needs the
+editor schema, which must stay out of the Worker. So a starter's id rides along
+on the redirect into the editor and the browser applies the body.
+`tests/starters.test.ts` parses every starter through the real schema and
+asserts each block arrives as itself — a button missing one attribute is still
+valid HTML, it just silently turns into a paragraph.
+
 Bodies use `{{variable}}` tokens, substituted at send time. The catalogue lives
 in `src/lib/mail/variables.ts` and is shared by the editor palette and the send
 path, so a variable cannot exist in one and not the other. Substituted values
 are HTML-escaped; an unrecognised token renders as nothing rather than leaking
 `{{like.this}}` into a client's inbox.
 
-Three things are deliberately true:
+Four things are deliberately true:
 
 - **Templates are optional.** No template, or a template with an empty body,
   falls back to the built-in wording in `src/lib/mail/templates.ts`. Sending
@@ -345,6 +365,10 @@ Three things are deliberately true:
   lock you out of the app.
 - **Deleting a template archives it** rather than removing the row, so past
   sends keep resolving.
+- **A base template is only offered for kinds it can fill.** A proposal starter
+  on an invoice template would carry `{{proposal.amount}}`, which an invoice
+  send has no value for — it would reach a client as a gap mid-sentence. The
+  test suite enforces the same rule the picker does.
 
 ### Open tracking, and why the numbers lie
 
@@ -452,6 +476,6 @@ src/
   pages/          Astro routes and API endpoints
   components/     Astro components and React islands
 migrations/       D1 migrations
-tests/            247 tests, mostly the tax engine
+tests/            270 tests, mostly the tax engine
 docs/             the tax research
 ```

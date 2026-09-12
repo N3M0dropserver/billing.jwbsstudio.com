@@ -2,6 +2,7 @@ import type { APIRoute } from 'astro';
 import { db } from '~/lib/env';
 import { createTemplate, listTemplates } from '~/lib/queries/templates';
 import { isTemplateKind } from '~/lib/mail/variables';
+import { starterById } from '~/lib/mail/starters';
 
 export const prerender = false;
 
@@ -22,9 +23,25 @@ export const POST: APIRoute = async ({ request, locals, redirect }) => {
   const kindRaw = String(form.get('kind') ?? 'general');
   const kind = isTemplateKind(kindRaw) ? kindRaw : 'general';
 
-  const created = await createTemplate(db(), user.id, { name, kind });
+  /*
+   * The base template, if one was picked.
+   *
+   * Only its subject is stored here. The body is HTML and the column holds
+   * editor JSON, and converting one to the other needs the Tiptap schema —
+   * which stays out of the Worker on purpose. So the id rides along on the
+   * redirect and the editor applies the body in the browser.
+   */
+  const starter = starterById(form.get('starter')?.toString());
+  const usable = starter?.kinds.includes(kind) ? starter : null;
+
+  const created = await createTemplate(db(), user.id, {
+    name,
+    kind,
+    subject: usable?.subject ?? '',
+  });
 
   // Straight into the editor — a template with no body is not worth a
   // confirmation screen.
-  return redirect(`/templates/${created.id}`, 302);
+  const query = usable ? `?start=${encodeURIComponent(usable.id)}` : '';
+  return redirect(`/templates/${created.id}${query}`, 302);
 };

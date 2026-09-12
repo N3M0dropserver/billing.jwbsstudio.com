@@ -57,7 +57,7 @@ export async function defaultTemplate(
 export async function createTemplate(
   db: Db,
   userId: string,
-  input: { name: string; kind: TemplateKind },
+  input: { name: string; kind: TemplateKind; subject?: string },
 ): Promise<EmailTemplate> {
   const now = new Date().toISOString();
   const row = {
@@ -65,7 +65,10 @@ export async function createTemplate(
     userId,
     name: input.name,
     kind: input.kind,
-    subject: '',
+    // Seeded from the chosen base template, if there was one. The body is not:
+    // it is HTML, this column holds editor JSON, and the editor does that
+    // conversion in the browser on first save.
+    subject: input.subject ?? '',
     doc: '{}',
     html: '',
     text: '',

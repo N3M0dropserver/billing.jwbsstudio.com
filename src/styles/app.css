@@ -359,3 +359,58 @@ textarea.field {
     transition-duration: 0.01ms !important;
   }
 }
+
+/*
+ * The email editor's chrome — bubble menu, slash menu, inspector.
+ *
+ * `@react-email/editor` ships layout only, plus a `--re-*` palette it switches
+ * on `prefers-color-scheme`. This app switches on `data-theme`, so left alone
+ * the menus go dark inside an app someone has pinned to light. Mapping the
+ * palette onto the app's own tokens makes the question moot: however the app
+ * resolved, the editor matches.
+ *
+ * `:root:root` for specificity, not superstition — the package's own `:root`
+ * and `.dark` blocks are imported from the component and land after this file,
+ * and an even fight would go to them.
+ */
+:root:root {
+  --re-bg: var(--surface-raised);
+  --re-border: var(--border);
+  --re-separator: var(--border);
+  --re-text: var(--text);
+  --re-text-muted: var(--text-muted);
+  --re-hover: color-mix(in oklab, var(--text) 6%, transparent);
+  --re-active: color-mix(in oklab, var(--text) 9%, transparent);
+  --re-pressed: var(--re-active);
+  --re-bg-hover: var(--surface-sunken);
+  --re-bg-active: var(--surface-sunken);
+  --re-tooltip-bg: var(--surface-inverse);
+  --re-tooltip-text: var(--text-inverse);
+  --re-radius: var(--radius-card);
+  --re-danger: var(--color-overdue);
+}
+
+/*
+ * The editing surface stays white in dark mode, and that is not an oversight.
+ * It is a picture of an email, and the email will be white in the client's
+ * inbox. Darkening it here would mean designing against a background nobody
+ * ever sees.
+ */
+.email-editor .tiptap.ProseMirror {
+  border-radius: var(--radius-ctl);
+}
+
+/* The inspector sits in a narrow rail; its own stylesheet does the layout,
+   this only brings the type down to the size of the labels around it. */
+.re-inspector {
+  font-size: 0.75rem;
+  color: var(--text);
+}
+
+.re-inspector [data-re-inspector-section-header] {
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}

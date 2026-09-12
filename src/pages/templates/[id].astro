@@ -11,6 +11,16 @@ const template = await getTemplate(db(), user.id, Astro.params.id!);
 if (!template) return Astro.redirect('/templates', 302);
 
 const kind = template.kind as TemplateKind;
+
+/*
+ * The base template picked on the way in, passed through as an id.
+ *
+ * It is not stored at creation because the starter is HTML and the column
+ * holds editor JSON — converting between them needs the Tiptap schema, which
+ * is deliberately browser-only. The editor applies it as its opening content
+ * and the first save stores the result like any other edit.
+ */
+const starterId = Astro.url.searchParams.get('start') ?? undefined;
 ---
 
 <AppLayout title={template.name} subtitle={`${KIND_LABELS[kind]} email`} width="wide">
@@ -24,6 +34,7 @@ const kind = template.kind as TemplateKind;
   */}
   <TemplateEditor
     client:only="react"
+    starterId={starterId}
     template={{
       id: template.id,
       name: template.name,

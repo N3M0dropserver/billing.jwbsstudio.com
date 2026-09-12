@@ -4,6 +4,7 @@ import EmptyState from '~/components/ui/EmptyState.astro';
 import { db } from '~/lib/env';
 import { listTemplates } from '~/lib/queries/templates';
 import { KIND_LABELS, TEMPLATE_KINDS, type TemplateKind } from '~/lib/mail/variables';
+import { STARTERS } from '~/lib/mail/starters';
 
 const user = Astro.locals.user!;
 const rows = await listTemplates(db(), user.id);
@@ -27,6 +28,19 @@ const formatDate = (iso: string) =>
     <select id="new-kind" name="kind" class="field w-auto">
       {TEMPLATE_KINDS.map((kind) => <option value={kind}>{KIND_LABELS[kind as TemplateKind]}</option>)}
     </select>
+
+    <label for="new-starter" class="sr-only">Base template</label>
+    <select id="new-starter" name="starter" class="field w-auto">
+      <option value="">Blank</option>
+      {
+        STARTERS.map((starter) => (
+          <option value={starter.id} data-kinds={starter.kinds.join(' ')} title={starter.description}>
+            {starter.name}
+          </option>
+        ))
+      }
+    </select>
+
     <button class="btn btn-primary">New template</button>
   </form>
 
@@ -34,7 +48,7 @@ const formatDate = (iso: string) =>
     rows.length === 0 ? (
       <EmptyState
         title="No templates yet"
-        description="Write the wording once and reuse it. Until you make one, invoices send with the standard built-in wording — nothing is broken by having none."
+        description="Write the wording once and reuse it. Start from one of the base templates rather than a blank page — they are already laid out and already use the right variables. Until you make one, invoices send with the standard built-in wording, so nothing is broken by having none."
       />
     ) : (
       <div class="space-y-6">
@@ -95,6 +109,33 @@ const formatDate = (iso: string) =>
 </AppLayout>
 
 <script>
+  /*
+   * Only offer base templates that suit the chosen kind.
+   *
+   * A proposal starter on an invoice template would carry `{{proposal.amount}}`,
+   * which an invoice send has no value for — it would reach a client as a gap
+   * in a sentence. The server checks this too; this just stops it being
+   * offered.
+   */
+  const kindSelect = document.querySelector<HTMLSelectElement>('#new-kind');
+  const starterSelect = document.querySelector<HTMLSelectElement>('#new-starter');
+
+  if (kindSelect && starterSelect) {
+    const syncStarters = () => {
+      for (const option of Array.from(starterSelect.options)) {
+        const kinds = option.dataset.kinds;
+        const suits = !kinds || kinds.split(' ').includes(kindSelect.value);
+        option.hidden = !suits;
+        option.disabled = !suits;
+        // Falling back to blank beats silently posting a mismatch.
+        if (!suits && option.selected) starterSelect.value = '';
+      }
+    };
+
+    kindSelect.addEventListener('change', syncStarters);
+    syncStarters();
+  }
+
   // A delete has no undo beyond the archive flag, so ask first.
   document.querySelectorAll<HTMLFormElement>('form[data-confirm]').forEach((form) => {
     form.addEventListener('submit', (event) => {

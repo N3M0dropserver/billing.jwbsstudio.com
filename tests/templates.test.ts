@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { renderTemplate, unknownTokens, escapeHtml } from '~/lib/mail/render';
-import { invoiceValues, sampleValues, variablesFor } from '~/lib/mail/variables';
+import { TEMPLATE_KINDS, invoiceValues, sampleValues, variablesFor } from '~/lib/mail/variables';
+import { STARTERS, startersFor, starterById } from '~/lib/mail/starters';
 import { withTrackingPixel, pixelUrl, looksLikePrefetch } from '~/lib/mail/tracking';
 
 describe('renderTemplate', () => {
@@ -180,5 +181,81 @@ describe('looksLikePrefetch', () => {
   it('flags known scanners whenever they arrive', () => {
     expect(looksLikePrefetch('Mozilla/5.0 (GoogleImageProxy)', sentAt, at(86_400))).toBe(true);
     expect(looksLikePrefetch('Proofpoint-URL-Scanner', sentAt, at(86_400))).toBe(true);
+  });
+});
+
+describe('base templates', () => {
+  it('has a unique id for every starter', () => {
+    const ids = STARTERS.map((starter) => starter.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it('offers at least one starter for every kind', () => {
+    for (const kind of TEMPLATE_KINDS) {
+      expect(startersFor(kind).length, `no base template for ${kind}`).toBeGreaterThan(0);
+    }
+  });
+
+  it('only uses variables the kinds it is offered for can resolve', () => {
+    // The whole point of scoping a starter to a kind. A proposal starter shown
+    // for invoices would carry `{{proposal.amount}}`, which an invoice send
+    // has no value for — the client would get a gap mid-sentence.
+    for (const starter of STARTERS) {
+      for (const kind of starter.kinds) {
+        const unknown = unknownTokens(`${starter.subject}\n${starter.html}`, sampleValues(kind));
+        expect(unknown, `${starter.id} uses ${unknown.join(', ')} which ${kind} cannot fill`).toEqual(
+          [],
+        );
+      }
+    }
+  });
+
+  it('writes blocks with the markup the editor parses back', () => {
+    // These four tags are a contract with the editor's parser. Mistype one and
+    // the block silently degrades to a paragraph — the starter still renders,
+    // it just quietly stops being a button or a section.
+    for (const starter of STARTERS) {
+      for (const match of starter.html.matchAll(/<section[^>]*>/g)) {
+        expect(match[0], `${starter.id}: section without data-type`).toContain(
+          'data-type="section"',
+        );
+      }
+      for (const match of starter.html.matchAll(/<a\s[^>]*>/g)) {
+        expect(match[0], `${starter.id}: anchor is neither a button nor a link`).toContain(
+          'data-id="react-email-button"',
+        );
+      }
+      for (const match of starter.html.matchAll(/<div[^>]*>/g)) {
+        expect(match[0], `${starter.id}: bare div the editor will drop`).toMatch(
+          /data-type="(two-columns|three-columns|four-columns|column|container)"/,
+        );
+      }
+    }
+  });
+
+  it('gives every column block the columns it promises', () => {
+    // A `two-columns` block with three columns inside is not a layout bug the
+    // editor repairs — the schema drops the extra one on parse.
+    for (const starter of STARTERS) {
+      const expected =
+        (starter.html.match(/data-type="two-columns"/g)?.length ?? 0) * 2 +
+        (starter.html.match(/data-type="three-columns"/g)?.length ?? 0) * 3 +
+        (starter.html.match(/data-type="four-columns"/g)?.length ?? 0) * 4;
+
+      const actual = starter.html.match(/data-type="column"/g)?.length ?? 0;
+      expect(actual, `${starter.id}: ${actual} columns for ${expected} column slots`).toBe(expected);
+    }
+  });
+
+  it('resolves a starter by id, and nothing by a made-up one', () => {
+    expect(starterById('plain')?.name).toBe('Plain letter');
+    expect(starterById('no-such-starter')).toBeNull();
+    expect(starterById(undefined)).toBeNull();
+  });
+
+  it('gives every starter a subject', () => {
+    for (const starter of STARTERS) {
+      expect(starter.subject.trim(), `${starter.id} has no subject`).not.toBe('');
+    }
   });
 });
