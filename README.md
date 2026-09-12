@@ -195,6 +195,7 @@ The reasons worth recognising:
 | --- | --- |
 | `unknown-email` | No account with that address in *this* database. |
 | `bad-password` | The account exists and the password did not match. `failedAttempts` climbing on every try means the password is simply wrong, not that something is misconfigured. |
+| `unverifiable-hash` | The stored hash could not be evaluated at all — see below. Never counted as a failed attempt, because it is not the user's fault. |
 | `account-locked` | Eight failures. Wait it out or use a link. |
 | `no-cookie` | No session cookie arrived. If this follows an `auth.login` that logged `ok`, the credentials were right and the **browser threw the cookie away** — see below. |
 | `unknown-token` | A cookie arrived naming a session this database has never seen. Usually means the request reached a different D1 than the one that issued it (local vs remote). |
@@ -215,6 +216,45 @@ non-Secure `jwbs_session_dev` cookie instead, and keeps the hardened name for
 https. Nothing to configure; the log line records which name was issued
 (`cookieName`) and which cookies the browser actually sent back
 (`cookiesSeen`, names only).
+
+### Password hashing, and the 100,000 iteration ceiling
+
+Passwords are PBKDF2-SHA256 through WebCrypto. **Cloudflare's production
+runtime refuses a single PBKDF2 call above 100,000 iterations**, throwing:
+
+```
+NotSupportedError: Pbkdf2 failed: iteration counts above 100000 are not
+supported (requested 600000).
+```
+
+Node has no such cap, and neither does `wrangler dev --local` — so a hash
+written by `npm run user:add` at 600,000 iterations is accepted everywhere
+except the deployed Worker, where it can never be verified. This bit: it
+surfaced as "that email and password combination was not recognised" on every
+attempt, because the error came back through a `catch` that returned `false`.
+
+Two things prevent a repeat:
+
+- The work factor is reached by **chaining six rounds of 100,000**, each round
+  seeding the next over the same salt, so no single call approaches the
+  ceiling while the attacker still pays the full 600,000 iterations. The
+  stored format names the shape: `pbkdf2$6x100000$<salt>$<hash>`.
+- `verifyPassword` returns a **reason**, not a boolean. Only `mismatch` means
+  a wrong password; `unsupported` and `error` mean the hash could not be
+  evaluated, and those are logged as `unverifiable-hash`, shown as a distinct
+  message, and **never counted as a failed attempt** — otherwise a
+  misconfiguration locks the account after eight tries and buries its own
+  cause.
+
+`scripts/add-user.mjs` and the app share the algorithm through
+`scripts/pbkdf2.mjs`, and `tests/password.test.ts` pins them together by
+hashing with the script and verifying with the app. Change one, change both,
+or that test fails.
+
+A hash in the older single-pass layout still verifies if it is under the
+ceiling, and is reported as `unsupported` — with an explanation — if it is
+over it. There is no way to recover such an account's password; sign in with
+an emailed link and set a new one.
 
 ### Signing in locally with no working mail path
 

@@ -38,6 +38,8 @@ export type AuthReason =
   | 'missing-fields'
   | 'unknown-email'
   | 'bad-password'
+  /** The stored hash could not be evaluated at all — an operator problem. */
+  | 'unverifiable-hash'
   | 'account-disabled'
   | 'account-locked'
   // Sessions

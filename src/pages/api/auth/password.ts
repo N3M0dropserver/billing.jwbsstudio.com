@@ -36,8 +36,16 @@ export const POST: APIRoute = async ({ request, url, locals, cookies, redirect, 
 
   // Only skip the current-password check on a forced first-time change.
   if (!user.mustChangePassword) {
-    const ok = await verifyPassword(current, user.passwordHash);
-    if (!ok) return fail('bad-current-password', 'Your current password was not correct.');
+    const verified = await verifyPassword(current, user.passwordHash);
+    if (!verified.ok && verified.reason !== 'mismatch') {
+      // The stored hash cannot be evaluated, so there is no way to prove the
+      // current password either way. Say so rather than blaming the typing.
+      return fail(
+        `unverifiable-hash: ${verified.detail}`,
+        'Your stored password cannot be checked on this runtime. Sign in with an emailed link instead — that route lets you set a new one.',
+      );
+    }
+    if (!verified.ok) return fail('bad-current-password', 'Your current password was not correct.');
   }
 
   const database = db();

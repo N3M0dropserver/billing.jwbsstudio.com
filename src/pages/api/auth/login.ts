@@ -31,7 +31,7 @@ export const POST: APIRoute = async ({ request, url, cookies, redirect, clientAd
    * real reason. Deliberate: the person at the keyboard may be the account
    * holder or may not, and only one of them gets to read the logs.
    */
-  const fail = (shown: 'invalid' | 'disabled' | 'locked') =>
+  const fail = (shown: 'invalid' | 'disabled' | 'locked' | 'stale-hash') =>
     redirect(`/login?error=${shown}&next=${encodeURIComponent(next)}`, 302);
 
   if (!email || !password) {
@@ -44,8 +44,10 @@ export const POST: APIRoute = async ({ request, url, cookies, redirect, clientAd
 
   if (!user) {
     // Burn comparable time on an unknown email so the response time does not
-    // reveal whether the account exists.
-    await verifyPassword(password, 'pbkdf2$600000$AAAAAAAAAAAAAAAAAAAAAA==$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=');
+    // reveal whether the account exists. The work factor here has to match
+    // what hashPassword actually writes — a hash the runtime rejects returns
+    // instantly and hands the timing signal straight back.
+    await verifyPassword(password, 'pbkdf2$6x100000$AAAAAAAAAAAAAAAAAAAAAA==$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=');
     await recordAuth(database, { action: ACTION, outcome: 'denied', reason: 'unknown-email', email, ip, userAgent });
     return fail('invalid');
   }
@@ -67,8 +69,26 @@ export const POST: APIRoute = async ({ request, url, cookies, redirect, clientAd
     return fail('locked');
   }
 
-  const ok = await verifyPassword(password, user.passwordHash);
-  if (!ok) {
+  const verified = await verifyPassword(password, user.passwordHash);
+
+  /**
+   * A hash we cannot evaluate is our problem, not the user's. It must not
+   * count as a failed attempt — otherwise a misconfiguration locks the
+   * account after eight tries and buries the real cause under a lockout.
+   */
+  if (!verified.ok && verified.reason !== 'mismatch') {
+    await recordAuth(database, {
+      action: ACTION,
+      outcome: 'error',
+      reason: 'unverifiable-hash',
+      userId: user.id, email, ip, userAgent,
+      detail: verified.detail,
+      extra: { verifyReason: verified.reason, workFactor: user.passwordHash.split('$')[1] },
+    });
+    return fail('stale-hash');
+  }
+
+  if (!verified.ok) {
     await recordFailedAttempt(database, user);
     await recordAuth(database, {
       action: ACTION, outcome: 'denied', reason: 'bad-password',
@@ -76,7 +96,7 @@ export const POST: APIRoute = async ({ request, url, cookies, redirect, clientAd
       // The attempt count is the useful part here: a stored hash that no
       // longer matches anything looks the same as a typo until you see the
       // counter climb on every try.
-      extra: { failedAttempts: user.failedAttempts + 1, hashScheme: user.passwordHash.split('$')[0] },
+      extra: { failedAttempts: user.failedAttempts + 1, workFactor: user.passwordHash.split('$')[1] },
     });
     return fail('invalid');
   }

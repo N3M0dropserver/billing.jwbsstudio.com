@@ -11,6 +11,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { webcrypto as crypto } from 'node:crypto';
+import { hashPassword, generatePassword } from './pbkdf2.mjs';
 
 const args = process.argv.slice(2);
 const flag = (name) => {
@@ -27,26 +28,6 @@ const remote = has('remote');
 if (!email) {
   console.error('Usage: npm run user:add -- --email you@example.com --name "Your Name" [--local|--remote] [--password "..."] [--role owner|accountant|viewer]');
   process.exit(1);
-}
-
-const ITERATIONS = 600_000;
-
-function generatePassword() {
-  const alphabet = 'abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789!@#$%^&*';
-  const bytes = crypto.getRandomValues(new Uint8Array(24));
-  return [...bytes].map((b) => alphabet[b % alphabet.length]).join('');
-}
-
-async function hashPassword(password) {
-  const salt = crypto.getRandomValues(new Uint8Array(16));
-  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']);
-  const bits = await crypto.subtle.deriveBits(
-    { name: 'PBKDF2', salt, iterations: ITERATIONS, hash: 'SHA-256' },
-    key,
-    256,
-  );
-  const b64 = (u8) => Buffer.from(u8).toString('base64');
-  return `pbkdf2$${ITERATIONS}$${b64(salt)}$${b64(new Uint8Array(bits))}`;
 }
 
 const ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
