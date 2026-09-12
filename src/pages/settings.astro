@@ -1,0 +1,277 @@
+---
+import AppLayout from '~/layouts/AppLayout.astro';
+import Card from '~/components/ui/Card.astro';
+import { db } from '~/lib/env';
+import { getSettings } from '~/lib/queries/settings';
+import { unverifiedFigures, NZ_YEARS, AU_YEARS } from '~/lib/tax/rates';
+import { currentTaxYear } from '~/lib/queries/dashboard';
+
+const user = Astro.locals.user!;
+const s = await getSettings(db(), user.id);
+const saved = Astro.url.searchParams.get('saved') === '1';
+const range = currentTaxYear(s.taxResidence);
+const unverified = unverifiedFigures(s.taxResidence, range.year);
+---
+
+<AppLayout title="Settings" subtitle="Business details, tax setup and invoice defaults">
+  {saved && (
+    <p class="card mb-4 px-4 py-3 text-sm" style="color: var(--color-paid)">Settings saved.</p>
+  )}
+
+  <form method="post" action="/api/settings" class="space-y-4">
+    <Card title="Business" subtitle="Appears on every invoice you send">
+      <div class="grid gap-3.5 sm:grid-cols-2">
+        <div>
+          <label for="businessName" class="mb-1.5 block text-sm font-medium">Trading name</label>
+          <input id="businessName" name="businessName" value={s.businessName} class="field" />
+        </div>
+        <div>
+          <label for="legalName" class="mb-1.5 block text-sm font-medium">Legal name</label>
+          <input id="legalName" name="legalName" value={s.legalName} class="field" />
+        </div>
+        <div>
+          <label for="email" class="mb-1.5 block text-sm font-medium">Email</label>
+          <input id="email" name="email" type="email" value={s.email} class="field" />
+        </div>
+        <div>
+          <label for="phone" class="mb-1.5 block text-sm font-medium">Phone</label>
+          <input id="phone" name="phone" value={s.phone} class="field" />
+        </div>
+        <div class="sm:col-span-2">
+          <label for="website" class="mb-1.5 block text-sm font-medium">Website</label>
+          <input id="website" name="website" value={s.website} class="field" />
+        </div>
+        <div class="sm:col-span-2">
+          <label for="addressLine1" class="mb-1.5 block text-sm font-medium">Address</label>
+          <input id="addressLine1" name="addressLine1" value={s.addressLine1} class="field" />
+        </div>
+        <div>
+          <label for="city" class="mb-1.5 block text-sm font-medium">City</label>
+          <input id="city" name="city" value={s.city} class="field" />
+        </div>
+        <div>
+          <label for="postcode" class="mb-1.5 block text-sm font-medium">Postcode</label>
+          <input id="postcode" name="postcode" value={s.postcode} class="field" />
+        </div>
+      </div>
+    </Card>
+
+    <Card title="Tax residence" subtitle="Determines which country taxes your worldwide income">
+      <div>
+        <label for="taxResidence" class="mb-1.5 block text-sm font-medium">I am tax resident in</label>
+        <select id="taxResidence" name="taxResidence" class="field">
+          <option value="NZ" selected={s.taxResidence === 'NZ'}>New Zealand</option>
+          <option value="AU" selected={s.taxResidence === 'AU'}>Australia</option>
+        </select>
+        <p class="muted mt-2 text-xs leading-relaxed">
+          Residence turns on where your permanent home and centre of life are, not on
+          where you happen to be this month. If both countries could claim you, the
+          NZ–AU double tax agreement has a tie-breaker — get that confirmed rather than
+          guessing, because it changes the whole calculation.
+        </p>
+      </div>
+    </Card>
+
+    <Card title="New Zealand">
+      <div class="grid gap-3.5 sm:grid-cols-2">
+        <div>
+          <label for="nzIrdNumber" class="mb-1.5 block text-sm font-medium">IRD number</label>
+          <input id="nzIrdNumber" name="nzIrdNumber" value={s.nzIrdNumber} class="field" />
+        </div>
+        <div>
+          <label for="nzGstNumber" class="mb-1.5 block text-sm font-medium">GST number</label>
+          <input id="nzGstNumber" name="nzGstNumber" value={s.nzGstNumber} class="field" />
+        </div>
+        <div>
+          <label for="nzGstFilingFrequency" class="mb-1.5 block text-sm font-medium">GST filing</label>
+          <select id="nzGstFilingFrequency" name="nzGstFilingFrequency" class="field">
+            <option value="monthly" selected={s.nzGstFilingFrequency === 'monthly'}>Monthly</option>
+            <option value="two-monthly" selected={s.nzGstFilingFrequency === 'two-monthly'}>Two-monthly</option>
+            <option value="six-monthly" selected={s.nzGstFilingFrequency === 'six-monthly'}>Six-monthly</option>
+          </select>
+        </div>
+        <div>
+          <label for="nzAccCover" class="mb-1.5 block text-sm font-medium">ACC cover</label>
+          <select id="nzAccCover" name="nzAccCover" class="field">
+            <option value="CoverPlus" selected={s.nzAccCover === 'CoverPlus'}>CoverPlus (standard)</option>
+            <option value="CoverPlusExtra" selected={s.nzAccCover === 'CoverPlusExtra'}>CoverPlus Extra</option>
+          </select>
+        </div>
+        <div>
+          <label for="nzAccWorkLevyRate" class="mb-1.5 block text-sm font-medium">
+            ACC work levy rate
+          </label>
+          <div class="flex items-center gap-2">
+            <input
+              id="nzAccWorkLevyRate" name="nzAccWorkLevyRate" inputmode="decimal"
+              value={s.nzAccWorkLevyRate !== null ? (s.nzAccWorkLevyRate * 100).toFixed(3) : ''}
+              placeholder="0.660" class="field"
+            />
+            <span class="muted text-sm">%</span>
+          </div>
+          <p class="muted mt-1.5 text-xs leading-relaxed">
+            Your classification unit rate, ex GST, from your ACC invoice. Left blank we use
+            the scheme average, which will not match your actual bill.
+          </p>
+        </div>
+        <div>
+          <label for="nzAccAgreedCover" class="mb-1.5 block text-sm font-medium">
+            CoverPlus Extra agreed cover
+          </label>
+          <input
+            id="nzAccAgreedCover" name="nzAccAgreedCover" inputmode="decimal"
+            value={s.nzAccAgreedCover !== null ? String(s.nzAccAgreedCover / 100) : ''}
+            class="field"
+          />
+        </div>
+        <div class="space-y-2.5 sm:col-span-2">
+          <label class="flex items-center gap-2.5 text-sm">
+            <input type="checkbox" name="nzGstRegistered" value="yes" checked={s.nzGstRegistered} />
+            Registered for GST in New Zealand
+          </label>
+          <label class="flex items-center gap-2.5 text-sm">
+            <input type="checkbox" name="nzHasStudentLoan" value="yes" checked={s.nzHasStudentLoan} />
+            I have a student loan
+          </label>
+          <label class="flex items-center gap-2.5 text-sm">
+            <input type="checkbox" name="nzAccFullTime" value="yes" checked={s.nzAccFullTime} />
+            Self-employed full time (ACC applies a minimum liable earnings level)
+          </label>
+        </div>
+      </div>
+    </Card>
+
+    <Card title="Australia">
+      <div class="grid gap-3.5 sm:grid-cols-2">
+        <div>
+          <label for="auAbn" class="mb-1.5 block text-sm font-medium">ABN</label>
+          <input id="auAbn" name="auAbn" value={s.auAbn} class="field" />
+        </div>
+        <div>
+          <label for="auBasFrequency" class="mb-1.5 block text-sm font-medium">BAS frequency</label>
+          <select id="auBasFrequency" name="auBasFrequency" class="field">
+            <option value="monthly" selected={s.auBasFrequency === 'monthly'}>Monthly</option>
+            <option value="quarterly" selected={s.auBasFrequency === 'quarterly'}>Quarterly</option>
+            <option value="annual" selected={s.auBasFrequency === 'annual'}>Annual</option>
+          </select>
+        </div>
+        <div class="space-y-2.5 sm:col-span-2">
+          <label class="flex items-center gap-2.5 text-sm">
+            <input type="checkbox" name="auGstRegistered" value="yes" checked={s.auGstRegistered} />
+            Registered for GST in Australia
+          </label>
+          <label class="flex items-center gap-2.5 text-sm">
+            <input type="checkbox" name="auHasHelpDebt" value="yes" checked={s.auHasHelpDebt} />
+            I have a HELP/HECS debt
+          </label>
+          <label class="flex items-center gap-2.5 text-sm">
+            <input type="checkbox" name="auHasPrivateHospitalCover" value="yes" checked={s.auHasPrivateHospitalCover} />
+            I hold private hospital cover
+          </label>
+        </div>
+      </div>
+    </Card>
+
+    <Card title="Invoice defaults">
+      <div class="grid gap-3.5 sm:grid-cols-2">
+        <div>
+          <label for="invoiceNumberPrefix" class="mb-1.5 block text-sm font-medium">Number prefix</label>
+          <input id="invoiceNumberPrefix" name="invoiceNumberPrefix" value={s.invoiceNumberPrefix} class="field" />
+        </div>
+        <div>
+          <label for="invoiceNextNumber" class="mb-1.5 block text-sm font-medium">Next number</label>
+          <input id="invoiceNextNumber" name="invoiceNextNumber" type="number" min="1" value={s.invoiceNextNumber} class="field" />
+        </div>
+        <div>
+          <label for="defaultCurrency" class="mb-1.5 block text-sm font-medium">Default currency</label>
+          <select id="defaultCurrency" name="defaultCurrency" class="field">
+            <option value="NZD" selected={s.defaultCurrency === 'NZD'}>NZD</option>
+            <option value="AUD" selected={s.defaultCurrency === 'AUD'}>AUD</option>
+          </select>
+        </div>
+        <div>
+          <label for="defaultPaymentTermsDays" class="mb-1.5 block text-sm font-medium">Payment terms (days)</label>
+          <input id="defaultPaymentTermsDays" name="defaultPaymentTermsDays" type="number" min="0" value={s.defaultPaymentTermsDays} class="field" />
+        </div>
+        <div>
+          <label for="defaultHourlyRate" class="mb-1.5 block text-sm font-medium">Default hourly rate</label>
+          <input id="defaultHourlyRate" name="defaultHourlyRate" inputmode="decimal" value={String(s.defaultHourlyRate / 100)} class="field" />
+        </div>
+        <div>
+          <label for="taxReserveRate" class="mb-1.5 block text-sm font-medium">Manual reserve rate (%)</label>
+          <input id="taxReserveRate" name="taxReserveRate" inputmode="decimal" value={String(Math.round(s.taxReserveRate * 100))} class="field" />
+        </div>
+        <div class="sm:col-span-2">
+          <label for="invoiceFooter" class="mb-1.5 block text-sm font-medium">Invoice footer / terms</label>
+          <textarea id="invoiceFooter" name="invoiceFooter" rows="2" class="field">{s.invoiceFooter}</textarea>
+        </div>
+      </div>
+    </Card>
+
+    <Card title="Payment details" subtitle="Printed on every invoice">
+      <div class="grid gap-3.5 sm:grid-cols-2">
+        <div>
+          <label for="bankAccountName" class="mb-1.5 block text-sm font-medium">Account name</label>
+          <input id="bankAccountName" name="bankAccountName" value={s.bankAccountName} class="field" />
+        </div>
+        <div>
+          <label for="bankAccountNumber" class="mb-1.5 block text-sm font-medium">Account number</label>
+          <input id="bankAccountNumber" name="bankAccountNumber" value={s.bankAccountNumber} class="field" />
+        </div>
+        <div>
+          <label for="bankName" class="mb-1.5 block text-sm font-medium">Bank</label>
+          <input id="bankName" name="bankName" value={s.bankName} class="field" />
+        </div>
+        <div>
+          <label for="bankBsb" class="mb-1.5 block text-sm font-medium">BSB (AU)</label>
+          <input id="bankBsb" name="bankBsb" value={s.bankBsb} class="field" />
+        </div>
+        <div>
+          <label for="bankSwift" class="mb-1.5 block text-sm font-medium">SWIFT</label>
+          <input id="bankSwift" name="bankSwift" value={s.bankSwift} class="field" />
+        </div>
+        <div class="sm:col-span-2">
+          <label class="flex items-center gap-2.5 text-sm">
+            <input type="checkbox" name="stripeEnabled" value="yes" checked={s.stripeEnabled} />
+            Offer card payment through Stripe
+          </label>
+          <p class="muted mt-1.5 text-xs">
+            Also needs STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET set as Worker secrets.
+          </p>
+        </div>
+      </div>
+    </Card>
+
+    <div class="flex justify-end gap-2">
+      <button class="rounded-lg px-4 py-2.5 text-sm font-medium text-white" style="background: var(--color-brand-600)">
+        Save settings
+      </button>
+    </div>
+  </form>
+
+  {unverified.length > 0 && (
+    <Card title="Rate figures to confirm" subtitle={`${range.year} · assembled from secondary sources`} class="mt-4">
+      <ul class="space-y-3 text-sm">
+        {unverified.map((item) => (
+          <li>
+            <p class="font-medium">{item.path}</p>
+            {item.note && <p class="muted mt-0.5 text-xs leading-relaxed">{item.note}</p>}
+            <a href={item.source} target="_blank" rel="noopener noreferrer" class="muted text-xs underline underline-offset-2">
+              Check against the source →
+            </a>
+          </li>
+        ))}
+      </ul>
+    </Card>
+  )}
+
+  <Card title="Account" class="mt-4">
+    <div class="flex flex-wrap items-center justify-between gap-3">
+      <div>
+        <p class="text-sm font-medium">{user.name}</p>
+        <p class="muted text-sm">{user.email}</p>
+      </div>
+      <a href="/account/password" class="muted card px-3.5 py-2 text-sm font-medium">Change password</a>
+    </div>
+  </Card>
+</AppLayout>

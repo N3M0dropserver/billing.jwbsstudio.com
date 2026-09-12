@@ -1,0 +1,127 @@
+---
+import AppLayout from '~/layouts/AppLayout.astro';
+import Card from '~/components/ui/Card.astro';
+import { db } from '~/lib/env';
+import { getSettings } from '~/lib/queries/settings';
+
+const user = Astro.locals.user!;
+const settings = await getSettings(db(), user.id);
+---
+
+<AppLayout title="Add client" subtitle="Where they are determines how GST works on their invoices" width="narrow">
+  <form method="post" action="/api/clients" class="space-y-4">
+    <Card title="Who they are">
+      <div class="grid gap-3.5 sm:grid-cols-2">
+        <div class="sm:col-span-2">
+          <label for="name" class="mb-1.5 block text-sm font-medium">Name</label>
+          <input id="name" name="name" required class="field" placeholder="Kōwhai Coffee Roasters" />
+        </div>
+        <div class="sm:col-span-2">
+          <label for="legalName" class="mb-1.5 block text-sm font-medium">
+            Legal name <span class="muted font-normal">(if different)</span>
+          </label>
+          <input id="legalName" name="legalName" class="field" />
+        </div>
+        <div>
+          <label for="email" class="mb-1.5 block text-sm font-medium">Email</label>
+          <input id="email" name="email" type="email" class="field" />
+        </div>
+        <div>
+          <label for="phone" class="mb-1.5 block text-sm font-medium">Phone</label>
+          <input id="phone" name="phone" class="field" />
+        </div>
+        <div class="sm:col-span-2">
+          <label for="website" class="mb-1.5 block text-sm font-medium">Website</label>
+          <input id="website" name="website" class="field" placeholder="https://" />
+        </div>
+      </div>
+    </Card>
+
+    <Card title="Address" subtitle="Their billing address is the primary evidence for a zero-rated export">
+      <div class="grid gap-3.5 sm:grid-cols-2">
+        <div class="sm:col-span-2">
+          <label for="addressLine1" class="mb-1.5 block text-sm font-medium">Address</label>
+          <input id="addressLine1" name="addressLine1" class="field" />
+        </div>
+        <div class="sm:col-span-2">
+          <input id="addressLine2" name="addressLine2" class="field" aria-label="Address line 2" />
+        </div>
+        <div>
+          <label for="city" class="mb-1.5 block text-sm font-medium">City</label>
+          <input id="city" name="city" class="field" />
+        </div>
+        <div>
+          <label for="postcode" class="mb-1.5 block text-sm font-medium">Postcode</label>
+          <input id="postcode" name="postcode" class="field" />
+        </div>
+        <div>
+          <label for="country" class="mb-1.5 block text-sm font-medium">Country</label>
+          <select id="country" name="country" class="field">
+            <option value="NZ" selected={settings.taxResidence === 'NZ'}>New Zealand</option>
+            <option value="AU" selected={settings.taxResidence === 'AU'}>Australia</option>
+            <option value="US">United States</option>
+            <option value="GB">United Kingdom</option>
+            <option value="OTHER">Other</option>
+          </select>
+        </div>
+        <div>
+          <label for="taxNumber" class="mb-1.5 block text-sm font-medium">
+            NZBN / ABN <span class="muted font-normal">(optional)</span>
+          </label>
+          <input id="taxNumber" name="taxNumber" class="field" />
+        </div>
+      </div>
+    </Card>
+
+    <Card title="Billing">
+      <div class="grid gap-3.5 sm:grid-cols-2">
+        <div>
+          <label for="currency" class="mb-1.5 block text-sm font-medium">Currency</label>
+          <select id="currency" name="currency" class="field">
+            <option value="NZD" selected={settings.defaultCurrency === 'NZD'}>NZD</option>
+            <option value="AUD" selected={settings.defaultCurrency === 'AUD'}>AUD</option>
+          </select>
+        </div>
+        <div>
+          <label for="paymentTermsDays" class="mb-1.5 block text-sm font-medium">Payment terms (days)</label>
+          <input
+            id="paymentTermsDays" name="paymentTermsDays" type="number" min="0"
+            placeholder={String(settings.defaultPaymentTermsDays)} class="field"
+          />
+        </div>
+        <div>
+          <label for="hourlyRate" class="mb-1.5 block text-sm font-medium">Hourly rate</label>
+          <input id="hourlyRate" name="hourlyRate" inputmode="decimal" placeholder="0.00" class="field" />
+        </div>
+        <div>
+          <label for="gstTreatment" class="mb-1.5 block text-sm font-medium">GST treatment</label>
+          <select id="gstTreatment" name="gstTreatment" class="field">
+            <option value="auto">Automatic (from country)</option>
+            <option value="standard">Always standard rate</option>
+            <option value="zero-rated-export">Always zero-rated export</option>
+            <option value="exempt">Exempt</option>
+          </select>
+        </div>
+        <div class="sm:col-span-2">
+          <label for="status" class="mb-1.5 block text-sm font-medium">Status</label>
+          <select id="status" name="status" class="field">
+            <option value="active">Active</option>
+            <option value="lead">Lead</option>
+            <option value="dormant">Dormant</option>
+          </select>
+        </div>
+        <div class="sm:col-span-2">
+          <label for="notes" class="mb-1.5 block text-sm font-medium">Notes</label>
+          <textarea id="notes" name="notes" rows="3" class="field"></textarea>
+        </div>
+      </div>
+    </Card>
+
+    <div class="flex justify-end gap-2">
+      <a href="/clients" class="muted card px-4 py-2.5 text-sm font-medium">Cancel</a>
+      <button class="rounded-lg px-4 py-2.5 text-sm font-medium text-white" style="background: var(--color-brand-600)">
+        Add client
+      </button>
+    </div>
+  </form>
+</AppLayout>

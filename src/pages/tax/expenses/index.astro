@@ -1,0 +1,130 @@
+---
+import AppLayout from '~/layouts/AppLayout.astro';
+import EmptyState from '~/components/ui/EmptyState.astro';
+import { and, eq, gte, lte, desc } from 'drizzle-orm';
+import { db } from '~/lib/env';
+import { getSettings } from '~/lib/queries/settings';
+import { currentTaxYear } from '~/lib/queries/dashboard';
+import { expenses, clients } from '~/lib/db/schema';
+import { formatMoney } from '~/lib/tax/money';
+import { EXPENSE_GUIDANCE } from '~/lib/tax/deductions';
+
+const user = Astro.locals.user!;
+const database = db();
+const settings = await getSettings(database, user.id);
+const range = currentTaxYear(settings.taxResidence);
+
+const rows = await database
+  .select({ expense: expenses, clientName: clients.name })
+  .from(expenses)
+  .leftJoin(clients, eq(expenses.clientId, clients.id))
+  .where(
+    and(
+      eq(expenses.userId, user.id),
+      gte(expenses.incurredOn, range.startsOn),
+      lte(expenses.incurredOn, range.endsOn),
+    ),
+  )
+  .orderBy(desc(expenses.incurredOn))
+  .limit(500);
+
+const totals = rows.reduce(
+  (acc, row) => {
+    acc.gross += row.expense.amountGross;
+    acc.claimable += row.expense.claimableAmount;
+    acc.gst += Math.round(row.expense.gstAmount * row.expense.businessUsePercent);
+    return acc;
+  },
+  { gross: 0, claimable: 0, gst: 0 },
+);
+
+const formatDate = (iso: string) =>
+  new Date(`${iso}T00:00:00Z`).toLocaleDateString('en-NZ', {
+    day: 'numeric', month: 'short', year: '2-digit', timeZone: 'UTC',
+  });
+---
+
+<AppLayout
+  title="Expenses"
+  subtitle={`${range.year} · ${formatMoney(totals.claimable, settings.defaultCurrency)} claimable`}
+  width="wide"
+>
+  <a
+    slot="actions"
+    href="/tax/expenses/new"
+    class="rounded-lg px-3.5 py-2 text-sm font-medium text-white"
+    style="background: var(--color-brand-600)"
+  >Log expense</a>
+
+  {Astro.url.searchParams.get('added') === '1' && (
+    <p class="card mb-4 px-4 py-3 text-sm" style="color: var(--color-paid)">Expense recorded.</p>
+  )}
+
+  {
+    rows.length === 0 ? (
+      <EmptyState
+        title="No expenses recorded this year"
+        description="Software, hardware, home office, travel, subcontractors — all of it reduces what you pay."
+        actionHref="/tax/expenses/new"
+        actionLabel="Log your first expense"
+      />
+    ) : (
+      <div class="card overflow-hidden p-0">
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="muted border-b text-left text-xs" style="border-color: var(--border)">
+                <th scope="col" class="px-4 py-2.5 font-medium">Date</th>
+                <th scope="col" class="px-4 py-2.5 font-medium">Description</th>
+                <th scope="col" class="px-4 py-2.5 font-medium">Category</th>
+                <th scope="col" class="px-4 py-2.5 text-right font-medium">Paid</th>
+                <th scope="col" class="px-4 py-2.5 text-right font-medium">Use</th>
+                <th scope="col" class="px-4 py-2.5 text-right font-medium">Claimable</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(({ expense, clientName }) => (
+                <tr class="border-b last:border-0" style="border-color: var(--border)">
+                  <td class="muted px-4 py-2.5 whitespace-nowrap">{formatDate(expense.incurredOn)}</td>
+                  <td class="px-4 py-2.5">
+                    {expense.description}
+                    {expense.vendor && <span class="muted"> · {expense.vendor}</span>}
+                    {clientName && <span class="muted"> · {clientName}</span>}
+                    {expense.isCapital && (
+                      <span class="muted ml-1.5 text-xs">capital</span>
+                    )}
+                  </td>
+                  <td class="muted px-4 py-2.5">
+                    {EXPENSE_GUIDANCE[expense.category as keyof typeof EXPENSE_GUIDANCE]?.label ?? expense.category}
+                  </td>
+                  <td class="tabular px-4 py-2.5 text-right">{formatMoney(expense.amountGross, expense.currency)}</td>
+                  <td class="tabular muted px-4 py-2.5 text-right">{Math.round(expense.businessUsePercent * 100)}%</td>
+                  <td class="tabular px-4 py-2.5 text-right font-medium">
+                    {expense.isCapital ? (
+                      <span class="muted">depreciated</span>
+                    ) : (
+                      formatMoney(expense.claimableAmount, expense.currency)
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr class="border-t font-medium" style="border-color: var(--border); background: var(--surface-sunken)">
+                <td class="px-4 py-2.5" colspan="3">
+                  {rows.length} expenses
+                  {totals.gst > 0 && (
+                    <span class="muted font-normal"> · {formatMoney(totals.gst, settings.defaultCurrency)} GST reclaimable</span>
+                  )}
+                </td>
+                <td class="tabular px-4 py-2.5 text-right">{formatMoney(totals.gross, settings.defaultCurrency)}</td>
+                <td></td>
+                <td class="tabular px-4 py-2.5 text-right">{formatMoney(totals.claimable, settings.defaultCurrency)}</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      </div>
+    )
+  }
+</AppLayout>

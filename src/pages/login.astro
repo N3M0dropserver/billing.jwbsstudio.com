@@ -1,0 +1,96 @@
+---
+import '~/styles/app.css';
+
+const error = Astro.url.searchParams.get('error');
+const next = Astro.url.searchParams.get('next') ?? '/';
+
+const messages: Record<string, string> = {
+  invalid: 'That email and password combination was not recognised.',
+  locked: 'Too many failed attempts. Try again in 15 minutes.',
+  disabled: 'That account has been disabled.',
+  expired: 'Your session expired. Sign in again.',
+};
+---
+
+<!doctype html>
+<html lang="en-NZ" class="h-full">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>Sign in · JWBS Studio</title>
+    <script is:inline>
+      try {
+        const stored = localStorage.getItem('theme');
+        if (stored) document.documentElement.dataset.theme = stored;
+      } catch {}
+    </script>
+  </head>
+  <body class="grid h-full place-items-center px-4">
+    <main class="w-full max-w-sm">
+      <div class="mb-8 flex flex-col items-center gap-3">
+        <span
+          class="grid size-11 place-items-center rounded-xl text-lg font-bold text-white"
+          style="background: var(--color-brand-600)"
+        >J</span>
+        <div class="text-center">
+          <h1 class="text-lg font-semibold tracking-tight">JWBS Studio</h1>
+          <p class="muted text-sm">Invoicing, billing and tax</p>
+        </div>
+      </div>
+
+      {
+        error && (
+          <div
+            class="mb-4 rounded-lg border px-3 py-2.5 text-sm"
+            style="border-color: color-mix(in oklch, var(--color-overdue) 40%, transparent); background: color-mix(in oklch, var(--color-overdue) 10%, transparent); color: var(--color-overdue)"
+            role="alert"
+          >
+            {messages[error] ?? 'Something went wrong. Try again.'}
+          </div>
+        )
+      }
+
+      <form method="post" action="/api/auth/login" class="card space-y-4 p-6">
+        <input type="hidden" name="next" value={next} />
+
+        <div>
+          <label for="email" class="mb-1.5 block text-sm font-medium">Email</label>
+          <input
+            id="email"
+            name="email"
+            type="email"
+            required
+            autocomplete="username"
+            autofocus
+            class="field"
+          />
+        </div>
+
+        <div>
+          <label for="password" class="mb-1.5 block text-sm font-medium">Password</label>
+          <input
+            id="password"
+            name="password"
+            type="password"
+            required
+            autocomplete="current-password"
+            class="field"
+          />
+        </div>
+
+        <button
+          type="submit"
+          class="w-full rounded-lg px-4 py-2.5 text-sm font-medium text-white transition-opacity hover:opacity-90"
+          style="background: var(--color-brand-600)"
+        >
+          Sign in
+        </button>
+      </form>
+
+      <p class="muted mt-5 text-center text-xs">
+        Accounts are created by the administrator. There is no sign-up.
+      </p>
+    </main>
+  </body>
+</html>

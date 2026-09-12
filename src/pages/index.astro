@@ -1,0 +1,269 @@
+---
+import AppLayout from '~/layouts/AppLayout.astro';
+import Card from '~/components/ui/Card.astro';
+import Stat from '~/components/ui/Stat.astro';
+import QuickActions from '~/components/dashboard/QuickActions.astro';
+import CumulativeChart from '~/components/dashboard/CumulativeChart.tsx';
+import { db } from '~/lib/env';
+import { getSettings } from '~/lib/queries/settings';
+import { buildTaxPosition } from '~/lib/queries/tax-position';
+import {
+  getCumulativeSeries,
+  getRevenueByClient,
+  getTimeSummary,
+  getUpcoming,
+  getBankedTotals,
+} from '~/lib/queries/dashboard';
+import { formatMoneyShort, formatMoney, formatPercent } from '~/lib/tax/money';
+
+const user = Astro.locals.user!;
+const database = db();
+const settings = await getSettings(database, user.id);
+const position = await buildTaxPosition(database, settings);
+
+const [series, byClient, time, upcoming, banked] = await Promise.all([
+  getCumulativeSeries(database, user.id, position.range),
+  getRevenueByClient(database, user.id, position.range, 5),
+  getTimeSummary(database, user.id, position.range, settings.defaultHourlyRate),
+  getUpcoming(database, user.id, 5),
+  getBankedTotals(database, user.id, position.range),
+]);
+
+const currency = settings.defaultCurrency;
+const { invoices: inv, result } = position;
+const netProfit =
+  settings.taxResidence === 'NZ' ? result.nz.netBusinessProfit : result.au.netBusinessProfit;
+
+const yearLabel =
+  settings.taxResidence === 'NZ'
+    ? `NZ tax year ${position.range.year} (to 31 Mar)`
+    : `AU financial year ${position.range.year} (to 30 Jun)`;
+
+const hours = (minutes: number) => `${(minutes / 60).toFixed(1)}h`;
+const formatDate = (iso: string) =>
+  new Date(`${iso}T00:00:00Z`).toLocaleDateString('en-NZ', {
+    day: 'numeric',
+    month: 'short',
+    timeZone: 'UTC',
+  });
+const today = new Date().toISOString().slice(0, 10);
+---
+
+<AppLayout title={`Kia ora, ${user.name.split(' ')[0]}`} subtitle={yearLabel} width="wide">
+  <div slot="actions" class="flex gap-2">
+    <a
+      href="/invoices/new"
+      class="rounded-lg px-3.5 py-2 text-sm font-medium text-white"
+      style="background: var(--color-brand-600)"
+    >New invoice</a>
+  </div>
+
+  <!-- Headline figures -->
+  <div class="grid grid-cols-2 gap-3 lg:grid-cols-4">
+    <Stat
+      label="Invoiced"
+      value={formatMoneyShort(inv.invoicedTotal, currency)}
+      hint={`${inv.invoiceCount} invoice${inv.invoiceCount === 1 ? '' : 's'} this year`}
+      href="/invoices"
+    />
+    <Stat
+      label="Received"
+      value={formatMoneyShort(inv.paidTotal, currency)}
+      tone="paid"
+      hint={banked.fees > 0 ? `${formatMoneyShort(banked.fees, currency)} lost to fees` : 'Money in the bank'}
+    />
+    <Stat
+      label="Owed to you"
+      value={formatMoneyShort(inv.unpaidTotal, currency)}
+      tone={inv.overdueTotal > 0 ? 'overdue' : 'owing'}
+      hint={inv.overdueTotal > 0
+        ? `${formatMoneyShort(inv.overdueTotal, currency)} overdue`
+        : 'All within terms'}
+      href="/invoices?status=unpaid"
+    />
+    <Stat
+      label="Set aside for tax"
+      value={formatMoneyShort(position.shouldHaveReserved, currency)}
+      tone="reserved"
+      hint={`${formatPercent(result.reserve.likely.rate)} of what you have received`}
+      href="/tax"
+    />
+  </div>
+
+  <div class="mt-4 grid gap-4 lg:grid-cols-3">
+    <!-- Chart -->
+    <div class="lg:col-span-2">
+      <Card
+        title="Invoiced against received"
+        subtitle="The shaded band is money you are still owed"
+      >
+        <CumulativeChart
+          client:load
+          points={series}
+          currency={currency}
+          reserveAmount={position.shouldHaveReserved}
+        />
+      </Card>
+    </div>
+
+    <!-- Tax position -->
+    <Card title="Tax position" subtitle={`Estimated, ${position.range.year}`}>
+      <dl class="space-y-2.5 text-sm">
+        <div class="flex items-baseline justify-between gap-3">
+          <dt class="muted">Net profit</dt>
+          <dd class="tabular font-medium">{formatMoney(netProfit, currency)}</dd>
+        </div>
+        <div class="flex items-baseline justify-between gap-3">
+          <dt class="muted">Expenses claimed</dt>
+          <dd class="tabular font-medium">{formatMoney(position.expenses.claimableTotal, currency)}</dd>
+        </div>
+        {position.depreciation > 0 && (
+          <div class="flex items-baseline justify-between gap-3">
+            <dt class="muted">Depreciation</dt>
+            <dd class="tabular font-medium">{formatMoney(position.depreciation, currency)}</dd>
+          </div>
+        )}
+        <div
+          class="flex items-baseline justify-between gap-3 border-t pt-2.5"
+          style="border-color: var(--border)"
+        >
+          <dt class="font-medium">Estimated to pay</dt>
+          <dd class="tabular text-lg font-semibold" style="color: var(--color-reserved)">
+            {formatMoney(result.totalLiability, currency)}
+          </dd>
+        </div>
+      </dl>
+
+      <div class="mt-4 space-y-2">
+        {
+          [result.reserve.best, result.reserve.likely, result.reserve.worst].map((band) => (
+            <div class="flex items-center justify-between gap-3 text-xs">
+              <span class="muted">{band.label}</span>
+              <span class="tabular font-medium">{formatPercent(band.rate)}</span>
+            </div>
+          ))
+        }
+      </div>
+
+      <a href="/tax" class="muted mt-4 block text-xs underline underline-offset-2">
+        Full breakdown and what is claimable →
+      </a>
+    </Card>
+  </div>
+
+  <!-- Warnings that actually matter -->
+  {
+    (result.warnings.length > 0 || position.gst.mustRegister || position.gst.approaching) && (
+      <div class="mt-4 space-y-2">
+        {position.gst.mustRegister && (
+          <p
+            class="card px-4 py-3 text-sm"
+            style="border-color: color-mix(in oklch, var(--color-overdue) 40%, transparent)"
+          >
+            <strong style="color: var(--color-overdue)">GST registration required.</strong>{' '}
+            {position.gst.message}
+          </p>
+        )}
+        {result.warnings.map((warning) => (
+          <p class="card muted px-4 py-3 text-sm">{warning}</p>
+        ))}
+      </div>
+    )
+  }
+
+  <h2 class="mt-6 mb-3 text-sm font-semibold">Quick actions</h2>
+  <QuickActions />
+
+  <div class="mt-4 grid gap-4 lg:grid-cols-3">
+    <Card title="Coming up" subtitle="Invoices awaiting payment">
+      {
+        upcoming.length === 0 ? (
+          <p class="muted text-sm">Nothing outstanding. Enjoy it.</p>
+        ) : (
+          <ul class="space-y-2.5">
+            {upcoming.map((item) => (
+              <li class="flex items-baseline justify-between gap-3 text-sm">
+                <a href={item.href} class="min-w-0 flex-1 truncate hover:underline">
+                  {item.label}
+                </a>
+                <span class="tabular shrink-0 font-medium">
+                  {formatMoneyShort(item.amount, currency)}
+                </span>
+                <span
+                  class="muted w-16 shrink-0 text-right text-xs"
+                  style={item.date < today ? 'color: var(--color-overdue)' : ''}
+                >
+                  {formatDate(item.date)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )
+      }
+    </Card>
+
+    <Card title="Top clients" subtitle="By invoiced value this year">
+      {
+        byClient.length === 0 ? (
+          <p class="muted text-sm">No invoiced work yet this year.</p>
+        ) : (
+          <ul class="space-y-2.5">
+            {byClient.map((client) => (
+              <li class="text-sm">
+                <div class="flex items-baseline justify-between gap-3">
+                  <a href={`/clients/${client.clientId}`} class="min-w-0 flex-1 truncate hover:underline">
+                    {client.name}
+                  </a>
+                  <span class="tabular shrink-0 font-medium">
+                    {formatMoneyShort(client.invoiced, currency)}
+                  </span>
+                </div>
+                <div
+                  class="mt-1 h-1 overflow-hidden rounded-full"
+                  style="background: var(--surface-sunken)"
+                >
+                  <div
+                    class="h-full rounded-full"
+                    style={`width: ${Math.round((client.invoiced / byClient[0].invoiced) * 100)}%; background: var(--color-brand-500)`}
+                  />
+                </div>
+              </li>
+            ))}
+          </ul>
+        )
+      }
+    </Card>
+
+    <Card title="Time" subtitle="Tracked this year">
+      <dl class="space-y-2.5 text-sm">
+        <div class="flex items-baseline justify-between gap-3">
+          <dt class="muted">Total tracked</dt>
+          <dd class="tabular font-medium">{hours(time.totalMinutes)}</dd>
+        </div>
+        <div class="flex items-baseline justify-between gap-3">
+          <dt class="muted">Billable</dt>
+          <dd class="tabular font-medium">{hours(time.billableMinutes)}</dd>
+        </div>
+        <div
+          class="flex items-baseline justify-between gap-3 border-t pt-2.5"
+          style="border-color: var(--border)"
+        >
+          <dt class="muted">Unbilled value</dt>
+          <dd class="tabular font-semibold" style="color: var(--color-owing)">
+            {formatMoneyShort(time.unbilledValue, currency)}
+          </dd>
+        </div>
+      </dl>
+      {
+        time.unbilledMinutes > 0 && (
+          <a
+            href="/invoices/new?from=time"
+            class="muted mt-4 block text-xs underline underline-offset-2"
+          >
+            Turn {hours(time.unbilledMinutes)} of unbilled time into an invoice →
+          </a>
+        )
+      }
+    </Card>
+  </div>
+</AppLayout>

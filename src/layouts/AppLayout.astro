@@ -1,0 +1,75 @@
+---
+import '~/styles/app.css';
+import Nav from '~/components/Nav.astro';
+import OmniSearch from '~/components/search/OmniSearch.tsx';
+
+interface Props {
+  title: string;
+  subtitle?: string;
+  /** Wide pages (tables) get more room than forms. */
+  width?: 'default' | 'wide' | 'narrow';
+}
+
+const { title, subtitle, width = 'default' } = Astro.props;
+const user = Astro.locals.user;
+
+const widths = {
+  narrow: 'max-w-2xl',
+  default: 'max-w-6xl',
+  wide: 'max-w-[110rem]',
+};
+---
+
+<!doctype html>
+<html lang="en-NZ" class="h-full">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>{title} · JWBS Studio</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <script is:inline>
+      // Set the theme before first paint so there is no flash.
+      try {
+        const stored = localStorage.getItem('theme');
+        if (stored) document.documentElement.dataset.theme = stored;
+      } catch {}
+    </script>
+  </head>
+  <body class="h-full">
+    <div class="flex min-h-full flex-col lg:flex-row">
+      <Nav user={user} />
+
+      <main class="flex-1 min-w-0">
+        <div class={`mx-auto w-full px-4 py-6 sm:px-6 lg:px-8 lg:py-8 ${widths[width]}`}>
+          <header class="mb-6 flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <h1 class="text-2xl font-semibold tracking-tight sm:text-3xl">{title}</h1>
+              {subtitle && <p class="muted mt-1 text-sm">{subtitle}</p>}
+            </div>
+            <slot name="actions" />
+          </header>
+
+          <slot />
+        </div>
+      </main>
+    </div>
+
+    <OmniSearch client:idle />
+
+    <script is:inline>
+      document.addEventListener('click', (e) => {
+        const t = e.target;
+        if (t instanceof Element && t.closest('[data-theme-toggle]')) {
+          const root = document.documentElement;
+          const isDark =
+            root.dataset.theme === 'dark' ||
+            (!root.dataset.theme && matchMedia('(prefers-color-scheme: dark)').matches);
+          const next = isDark ? 'light' : 'dark';
+          root.dataset.theme = next;
+          try { localStorage.setItem('theme', next); } catch {}
+        }
+      });
+    </script>
+  </body>
+</html>

@@ -1,0 +1,24 @@
+---
+interface Props {
+  title: string;
+  description?: string;
+  actionHref?: string;
+  actionLabel?: string;
+}
+const { title, description, actionHref, actionLabel } = Astro.props;
+---
+<div class="card px-6 py-12 text-center">
+  <p class="text-sm font-medium">{title}</p>
+  {description && <p class="muted mx-auto mt-1.5 max-w-sm text-sm">{description}</p>}
+  {
+    actionHref && actionLabel && (
+      <a
+        href={actionHref}
+        class="mt-4 inline-flex rounded-lg px-3.5 py-2 text-sm font-medium text-white"
+        style="background: var(--color-brand-600)"
+      >
+        {actionLabel}
+      </a>
+    )
+  }
+</div>

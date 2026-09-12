@@ -1,0 +1,120 @@
+---
+import AppLayout from '~/layouts/AppLayout.astro';
+import StatusBadge from '~/components/ui/StatusBadge.astro';
+import EmptyState from '~/components/ui/EmptyState.astro';
+import { and, eq, sql, desc, ne } from 'drizzle-orm';
+import { db } from '~/lib/env';
+import { clients, invoices } from '~/lib/db/schema';
+import { formatMoney } from '~/lib/tax/money';
+
+const user = Astro.locals.user!;
+const database = db();
+const status = Astro.url.searchParams.get('status') ?? 'active';
+
+const conditions = [eq(clients.userId, user.id)];
+if (status !== 'all') conditions.push(eq(clients.status, status as 'active'));
+
+const rows = await database
+  .select({
+    client: clients,
+    invoiced: sql<number>`coalesce(sum(case when ${invoices.status} not in ('draft','void') then ${invoices.total} else 0 end), 0)`,
+    outstanding: sql<number>`coalesce(sum(case when ${invoices.status} not in ('draft','void','paid','written-off') then ${invoices.total} - ${invoices.amountPaid} else 0 end), 0)`,
+    lastInvoice: sql<string | null>`max(${invoices.issuedOn})`,
+  })
+  .from(clients)
+  .leftJoin(invoices, and(eq(invoices.clientId, clients.id), ne(invoices.status, 'void')))
+  .where(and(...conditions))
+  .groupBy(clients.id)
+  .orderBy(desc(sql`sum(case when ${invoices.status} not in ('draft','void') then ${invoices.total} else 0 end)`), clients.name);
+
+const tabs = [
+  { key: 'active', label: 'Active' },
+  { key: 'lead', label: 'Leads' },
+  { key: 'dormant', label: 'Dormant' },
+  { key: 'all', label: 'All' },
+];
+
+const formatDate = (iso: string | null) =>
+  iso
+    ? new Date(`${iso}T00:00:00Z`).toLocaleDateString('en-NZ', {
+        day: 'numeric', month: 'short', year: '2-digit', timeZone: 'UTC',
+      })
+    : '—';
+---
+
+<AppLayout title="Clients" subtitle={`${rows.length} ${status === 'all' ? 'total' : status}`} width="wide">
+  <div slot="actions" class="flex flex-wrap gap-2">
+    <a href="/clients/prospect" class="muted card px-3.5 py-2 text-sm font-medium hover:opacity-80">
+      Find prospects
+    </a>
+    <a href="/clients/new" class="rounded-lg px-3.5 py-2 text-sm font-medium text-white" style="background: var(--color-brand-600)">
+      Add client
+    </a>
+  </div>
+
+  <div class="mb-4 flex flex-wrap gap-1.5">
+    {
+      tabs.map((tab) => (
+        <a
+          href={`/clients?status=${tab.key}`}
+          class:list={[
+            'rounded-lg px-3 py-1.5 text-sm font-medium transition-colors',
+            status === tab.key ? 'text-white' : 'muted card hover:opacity-80',
+          ]}
+          style={status === tab.key ? 'background: var(--color-brand-600)' : ''}
+        >{tab.label}</a>
+      ))
+    }
+  </div>
+
+  {
+    rows.length === 0 ? (
+      <EmptyState
+        title="No clients here yet"
+        description="Add one manually, or let the prospecting mode go and find businesses in a niche that need what you do."
+        actionHref="/clients/new"
+        actionLabel="Add client"
+      />
+    ) : (
+      <div class="card overflow-hidden p-0">
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="muted border-b text-left text-xs" style="border-color: var(--border)">
+                <th scope="col" class="px-4 py-2.5 font-medium">Name</th>
+                <th scope="col" class="px-4 py-2.5 font-medium">Country</th>
+                <th scope="col" class="px-4 py-2.5 font-medium">Last invoice</th>
+                <th scope="col" class="px-4 py-2.5 text-right font-medium">Invoiced</th>
+                <th scope="col" class="px-4 py-2.5 text-right font-medium">Outstanding</th>
+                <th scope="col" class="px-4 py-2.5 font-medium">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(({ client, invoiced, outstanding, lastInvoice }) => (
+                <tr class="border-b last:border-0" style="border-color: var(--border)">
+                  <td class="px-4 py-2.5">
+                    <a href={`/clients/${client.id}`} class="font-medium hover:underline">{client.name}</a>
+                    {client.email && <span class="muted block text-xs">{client.email}</span>}
+                  </td>
+                  <td class="muted px-4 py-2.5">
+                    {client.country}
+                    {client.gstTreatment === 'zero-rated-export' && (
+                      <span class="muted block text-xs">zero-rated</span>
+                    )}
+                  </td>
+                  <td class="muted px-4 py-2.5 whitespace-nowrap">{formatDate(lastInvoice)}</td>
+                  <td class="tabular px-4 py-2.5 text-right">{formatMoney(invoiced, client.currency)}</td>
+                  <td
+                    class="tabular px-4 py-2.5 text-right font-medium"
+                    style={outstanding > 0 ? 'color: var(--color-owing)' : ''}
+                  >{outstanding > 0 ? formatMoney(outstanding, client.currency) : '—'}</td>
+                  <td class="px-4 py-2.5"><StatusBadge status={client.status} /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    )
+  }
+</AppLayout>

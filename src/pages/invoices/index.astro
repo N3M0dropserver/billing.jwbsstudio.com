@@ -1,0 +1,123 @@
+---
+import AppLayout from '~/layouts/AppLayout.astro';
+import StatusBadge from '~/components/ui/StatusBadge.astro';
+import EmptyState from '~/components/ui/EmptyState.astro';
+import { db } from '~/lib/env';
+import { listInvoices } from '~/lib/invoices/service';
+import { formatMoneyWithCode } from '~/lib/tax/money';
+
+const user = Astro.locals.user!;
+const status = Astro.url.searchParams.get('status') ?? 'all';
+const rows = await listInvoices(db(), user.id, { status });
+
+const tabs = [
+  { key: 'all', label: 'All' },
+  { key: 'draft', label: 'Drafts' },
+  { key: 'unpaid', label: 'Unpaid' },
+  { key: 'overdue', label: 'Overdue' },
+  { key: 'paid', label: 'Paid' },
+];
+
+const totals = rows.reduce(
+  (acc, row) => {
+    acc.total += row.total;
+    acc.outstanding += row.total - row.amountPaid;
+    return acc;
+  },
+  { total: 0, outstanding: 0 },
+);
+
+const formatDate = (iso: string) =>
+  new Date(`${iso}T00:00:00Z`).toLocaleDateString('en-NZ', {
+    day: 'numeric', month: 'short', year: '2-digit', timeZone: 'UTC',
+  });
+const today = new Date().toISOString().slice(0, 10);
+---
+
+<AppLayout
+  title="Invoices"
+  subtitle={`${rows.length} invoice${rows.length === 1 ? '' : 's'} · ${formatMoneyWithCode(totals.outstanding, 'NZD')} outstanding`}
+  width="wide"
+>
+  <a
+    slot="actions"
+    href="/invoices/new"
+    class="rounded-lg px-3.5 py-2 text-sm font-medium text-white"
+    style="background: var(--color-brand-600)"
+  >New invoice</a>
+
+  <div class="mb-4 flex flex-wrap gap-1.5">
+    {
+      tabs.map((tab) => (
+        <a
+          href={`/invoices?status=${tab.key}`}
+          class:list={[
+            'rounded-lg px-3 py-1.5 text-sm font-medium transition-colors',
+            status === tab.key ? 'text-white' : 'muted card hover:opacity-80',
+          ]}
+          style={status === tab.key ? 'background: var(--color-brand-600)' : ''}
+        >{tab.label}</a>
+      ))
+    }
+  </div>
+
+  {
+    rows.length === 0 ? (
+      <EmptyState
+        title="No invoices here yet"
+        description="Create one from scratch, or pull in unbilled time from the time tracker."
+        actionHref="/invoices/new"
+        actionLabel="New invoice"
+      />
+    ) : (
+      <div class="card overflow-hidden p-0">
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="muted border-b text-left text-xs" style="border-color: var(--border)">
+                <th scope="col" class="px-4 py-2.5 font-medium">Number</th>
+                <th scope="col" class="px-4 py-2.5 font-medium">Client</th>
+                <th scope="col" class="px-4 py-2.5 font-medium">Issued</th>
+                <th scope="col" class="px-4 py-2.5 font-medium">Due</th>
+                <th scope="col" class="px-4 py-2.5 text-right font-medium">Total</th>
+                <th scope="col" class="px-4 py-2.5 text-right font-medium">Outstanding</th>
+                <th scope="col" class="px-4 py-2.5 font-medium">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => (
+                <tr class="border-b last:border-0" style="border-color: var(--border)">
+                  <td class="px-4 py-2.5">
+                    <a href={`/invoices/${row.id}`} class="font-medium hover:underline">{row.number}</a>
+                    {row.isManualEntry && <span class="muted ml-1.5 text-xs">manual</span>}
+                  </td>
+                  <td class="muted px-4 py-2.5">{row.clientName ?? '—'}</td>
+                  <td class="muted px-4 py-2.5 whitespace-nowrap">{formatDate(row.issuedOn)}</td>
+                  <td
+                    class="px-4 py-2.5 whitespace-nowrap"
+                    style={row.dueOn < today && row.status !== 'paid' ? 'color: var(--color-overdue)' : 'color: var(--text-muted)'}
+                  >{formatDate(row.dueOn)}</td>
+                  <td class="tabular px-4 py-2.5 text-right">{formatMoneyWithCode(row.total, row.currency)}</td>
+                  <td class="tabular px-4 py-2.5 text-right font-medium">
+                    {row.total - row.amountPaid > 0
+                      ? formatMoneyWithCode(row.total - row.amountPaid, row.currency)
+                      : '—'}
+                  </td>
+                  <td class="px-4 py-2.5"><StatusBadge status={row.status} /></td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr class="border-t font-medium" style="border-color: var(--border); background: var(--surface-sunken)">
+                <td class="px-4 py-2.5" colspan="4">{rows.length} invoices</td>
+                <td class="tabular px-4 py-2.5 text-right">{formatMoneyWithCode(totals.total, 'NZD')}</td>
+                <td class="tabular px-4 py-2.5 text-right">{formatMoneyWithCode(totals.outstanding, 'NZD')}</td>
+                <td></td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      </div>
+    )
+  }
+</AppLayout>

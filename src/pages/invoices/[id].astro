@@ -1,0 +1,235 @@
+---
+import AppLayout from '~/layouts/AppLayout.astro';
+import Card from '~/components/ui/Card.astro';
+import StatusBadge from '~/components/ui/StatusBadge.astro';
+import { eq, desc } from 'drizzle-orm';
+import { db, appUrl } from '~/lib/env';
+import { getSettings } from '~/lib/queries/settings';
+import { getInvoice } from '~/lib/invoices/service';
+import { deriveStatus } from '~/lib/invoices/calculate';
+import { payments } from '~/lib/db/schema';
+import { formatMoneyWithCode } from '~/lib/tax/money';
+
+const user = Astro.locals.user!;
+const database = db();
+const invoice = await getInvoice(database, user.id, Astro.params.id!);
+
+if (!invoice) return Astro.redirect('/invoices', 302);
+
+const settings = await getSettings(database, user.id);
+const status = deriveStatus(invoice);
+const paymentRows = await database
+  .select()
+  .from(payments)
+  .where(eq(payments.invoiceId, invoice.id))
+  .orderBy(desc(payments.receivedOn));
+
+const outstanding = invoice.total - invoice.amountPaid;
+const publicUrl = invoice.publicToken ? `${appUrl()}/pay/${invoice.publicToken}` : null;
+
+const sent = Astro.url.searchParams.get('sent');
+const reason = Astro.url.searchParams.get('reason');
+const paymentFlag = Astro.url.searchParams.get('payment');
+
+const formatDate = (iso: string) =>
+  new Date(`${iso}T00:00:00Z`).toLocaleDateString('en-NZ', {
+    day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC',
+  });
+---
+
+<AppLayout title={invoice.number} subtitle={invoice.client?.name ?? 'Manual entry'} width="wide">
+  <div slot="actions" class="flex flex-wrap gap-2">
+    <a
+      href={`/api/invoices/${invoice.id}/pdf`}
+      target="_blank" rel="noopener"
+      class="muted card px-3.5 py-2 text-sm font-medium hover:opacity-80"
+    >Download PDF</a>
+    {publicUrl && (
+      <a href={publicUrl} target="_blank" rel="noopener" class="muted card px-3.5 py-2 text-sm font-medium hover:opacity-80">
+        Client view
+      </a>
+    )}
+  </div>
+
+  {sent === 'ok' && (
+    <p class="card mb-4 px-4 py-3 text-sm" style="color: var(--color-paid)">Invoice emailed.</p>
+  )}
+  {sent === 'failed' && (
+    <p class="card mb-4 px-4 py-3 text-sm" style="color: var(--color-overdue)">
+      Could not send: {reason}
+    </p>
+  )}
+  {sent === 'no-email' && (
+    <p class="card mb-4 px-4 py-3 text-sm" style="color: var(--color-overdue)">
+      No email address on file for this client.
+    </p>
+  )}
+  {paymentFlag === 'ok' && (
+    <p class="card mb-4 px-4 py-3 text-sm" style="color: var(--color-paid)">Payment recorded.</p>
+  )}
+
+  <div class="grid gap-4 lg:grid-cols-3">
+    <div class="space-y-4 lg:col-span-2">
+      <Card>
+        <div class="mb-5 flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div class="mb-1.5 flex items-center gap-2">
+              <StatusBadge status={status} />
+              {invoice.isManualEntry && <span class="muted text-xs">Manual entry</span>}
+            </div>
+            <p class="muted text-sm">Issued {formatDate(invoice.issuedOn)}</p>
+            <p class="muted text-sm">Due {formatDate(invoice.dueOn)}</p>
+            {invoice.reference && <p class="muted text-sm">Ref: {invoice.reference}</p>}
+          </div>
+          <div class="text-right">
+            <p class="muted text-xs uppercase tracking-wide">Amount due</p>
+            <p class="tabular text-3xl font-semibold" style={outstanding > 0 ? '' : 'color: var(--color-paid)'}>
+              {formatMoneyWithCode(outstanding, invoice.currency)}
+            </p>
+          </div>
+        </div>
+
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="muted border-b text-left text-xs" style="border-color: var(--border)">
+              <th scope="col" class="py-2 font-medium">Description</th>
+              <th scope="col" class="py-2 text-right font-medium">Qty</th>
+              <th scope="col" class="py-2 text-right font-medium">Rate</th>
+              <th scope="col" class="py-2 text-right font-medium">Amount</th>
+            </tr>
+          </thead>
+          <tbody>
+            {invoice.lines.map((line) => (
+              <tr class="border-b last:border-0" style="border-color: var(--border)">
+                <td class="py-2.5 pr-3">{line.description}</td>
+                <td class="tabular muted py-2.5 text-right whitespace-nowrap">
+                  {(line.quantity / 1000).toFixed(2).replace(/\.00$/, '')} {line.unit}
+                </td>
+                <td class="tabular muted py-2.5 text-right">{formatMoneyWithCode(line.unitPrice, invoice.currency)}</td>
+                <td class="tabular py-2.5 text-right">{formatMoneyWithCode(line.lineTotal, invoice.currency)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+
+        <dl class="mt-4 ml-auto max-w-xs space-y-1.5 text-sm">
+          <div class="flex justify-between gap-3">
+            <dt class="muted">Subtotal</dt>
+            <dd class="tabular">{formatMoneyWithCode(invoice.subtotal, invoice.currency)}</dd>
+          </div>
+          <div class="flex justify-between gap-3">
+            <dt class="muted">
+              {invoice.gstTreatment === 'standard'
+                ? invoice.jurisdiction === 'NZ' ? 'GST 15%' : 'GST 10%'
+                : invoice.gstTreatment === 'zero-rated-export'
+                  ? invoice.jurisdiction === 'NZ' ? 'Zero-rated export' : 'GST-free export'
+                  : 'No GST'}
+            </dt>
+            <dd class="tabular">{formatMoneyWithCode(invoice.gstAmount, invoice.currency)}</dd>
+          </div>
+          <div class="flex justify-between gap-3 border-t pt-1.5 font-semibold" style="border-color: var(--border)">
+            <dt>Total</dt>
+            <dd class="tabular">{formatMoneyWithCode(invoice.total, invoice.currency)}</dd>
+          </div>
+          {invoice.amountPaid > 0 && (
+            <div class="flex justify-between gap-3">
+              <dt class="muted">Paid</dt>
+              <dd class="tabular" style="color: var(--color-paid)">
+                −{formatMoneyWithCode(invoice.amountPaid, invoice.currency)}
+              </dd>
+            </div>
+          )}
+        </dl>
+
+        {invoice.notes && (
+          <p class="muted mt-5 border-t pt-4 text-sm" style="border-color: var(--border)">{invoice.notes}</p>
+        )}
+      </Card>
+
+      {paymentRows.length > 0 && (
+        <Card title="Payments">
+          <ul class="space-y-2 text-sm">
+            {paymentRows.map((payment) => (
+              <li class="flex items-baseline justify-between gap-3">
+                <span class="muted">{formatDate(payment.receivedOn)} · {payment.method}</span>
+                <span class="tabular font-medium">{formatMoneyWithCode(payment.amount, payment.currency)}</span>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
+    </div>
+
+    <div class="space-y-4">
+      {outstanding > 0 && (
+        <Card title="Record a payment" subtitle="Leave the amount blank to mark it paid in full">
+          <form method="post" action={`/api/invoices/${invoice.id}/payments`} class="space-y-3">
+            <div>
+              <label for="amount" class="muted mb-1 block text-xs font-medium">Amount</label>
+              <input id="amount" name="amount" inputmode="decimal" placeholder={String(outstanding / 100)} class="field" />
+            </div>
+            <div>
+              <label for="receivedOn" class="muted mb-1 block text-xs font-medium">Received on</label>
+              <input
+                id="receivedOn" name="receivedOn" type="date"
+                value={new Date().toISOString().slice(0, 10)} class="field"
+              />
+            </div>
+            <div>
+              <label for="method" class="muted mb-1 block text-xs font-medium">Method</label>
+              <select id="method" name="method" class="field">
+                <option value="bank-transfer">Bank transfer</option>
+                <option value="stripe">Stripe</option>
+                <option value="wise">Wise</option>
+                <option value="paypal">PayPal</option>
+                <option value="cash">Cash</option>
+                <option value="other">Other</option>
+              </select>
+            </div>
+            <div>
+              <label for="fee" class="muted mb-1 block text-xs font-medium">
+                Fee deducted
+              </label>
+              <input id="fee" name="fee" inputmode="decimal" placeholder="0.00" class="field" />
+              <p class="muted mt-1 text-xs">
+                Merchant fees are deductible — record them here rather than banking the net.
+              </p>
+            </div>
+            <button class="w-full rounded-lg px-4 py-2.5 text-sm font-medium text-white" style="background: var(--color-brand-600)">
+              Record payment
+            </button>
+          </form>
+        </Card>
+      )}
+
+      <Card title={invoice.sentAt ? 'Send a reminder' : 'Send to client'}>
+        <form method="post" action={`/api/invoices/${invoice.id}/send`} class="space-y-3">
+          {invoice.sentAt && <input type="hidden" name="kind" value="reminder" />}
+          <div>
+            <label for="to" class="muted mb-1 block text-xs font-medium">To</label>
+            <input id="to" name="to" type="email" value={invoice.client?.email ?? ''} required class="field" />
+          </div>
+          <div>
+            <label for="message" class="muted mb-1 block text-xs font-medium">Message (optional)</label>
+            <textarea id="message" name="message" rows="3" class="field" placeholder="Leave blank for the standard wording"></textarea>
+          </div>
+          <button class="w-full rounded-lg px-4 py-2.5 text-sm font-medium text-white" style="background: var(--color-brand-600)">
+            {invoice.sentAt ? 'Send reminder' : 'Send invoice'}
+          </button>
+          {invoice.sentAt && (
+            <p class="muted text-xs">
+              Sent {formatDate(invoice.sentAt.slice(0, 10))}
+              {invoice.remindersSent > 0 && ` · ${invoice.remindersSent} reminder${invoice.remindersSent === 1 ? '' : 's'}`}
+            </p>
+          )}
+        </form>
+      </Card>
+
+      {publicUrl && (
+        <Card title="Client link" subtitle="Anyone with this link can view and pay">
+          <input readonly value={publicUrl} class="field text-xs" onclick="this.select()" />
+        </Card>
+      )}
+    </div>
+  </div>
+</AppLayout>

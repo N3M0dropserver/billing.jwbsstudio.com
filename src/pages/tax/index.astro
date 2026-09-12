@@ -1,0 +1,402 @@
+---
+import AppLayout from '~/layouts/AppLayout.astro';
+import Card from '~/components/ui/Card.astro';
+import Stat from '~/components/ui/Stat.astro';
+import { db } from '~/lib/env';
+import { getSettings } from '~/lib/queries/settings';
+import { buildTaxPosition } from '~/lib/queries/tax-position';
+import { formatMoney, formatMoneyShort, formatPercent } from '~/lib/tax/money';
+import { EXPENSE_GUIDANCE } from '~/lib/tax/deductions';
+import { NZ_YEARS, AU_YEARS } from '~/lib/tax/rates';
+
+const user = Astro.locals.user!;
+const database = db();
+const settings = await getSettings(database, user.id);
+
+const requestedYear = Astro.url.searchParams.get('year') ?? undefined;
+const position = await buildTaxPosition(database, settings, { year: requestedYear });
+
+const isNz = settings.taxResidence === 'NZ';
+const currency = settings.defaultCurrency;
+const detail = isNz ? position.result.nz : position.result.au;
+const years = isNz ? NZ_YEARS : AU_YEARS;
+
+const yearLabel = isNz
+  ? `1 April ${position.range.startsOn.slice(0, 4)} – 31 March ${position.range.endsOn.slice(0, 4)}`
+  : `1 July ${position.range.startsOn.slice(0, 4)} – 30 June ${position.range.endsOn.slice(0, 4)}`;
+
+const grossIncome = position.invoices.invoicedTotal - position.invoices.gstCollected;
+const guidance = Object.values(EXPENSE_GUIDANCE);
+
+const formatDate = (iso: string) =>
+  new Date(`${iso}T00:00:00Z`).toLocaleDateString('en-NZ', {
+    day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC',
+  });
+---
+
+<AppLayout title="Tax & accounting" subtitle={yearLabel} width="wide">
+  <div slot="actions" class="flex flex-wrap gap-2">
+    <form method="get" class="flex gap-2">
+      <select name="year" class="field w-auto text-sm" onchange="this.form.submit()">
+        {years.map((y) => (
+          <option value={y} selected={y === position.range.year}>{y}</option>
+        ))}
+      </select>
+    </form>
+    <a href="/tax/expenses/new" class="rounded-lg px-3.5 py-2 text-sm font-medium text-white" style="background: var(--color-brand-600)">
+      Log expense
+    </a>
+  </div>
+
+  <!-- Headline -->
+  <div class="grid grid-cols-2 gap-3 lg:grid-cols-4">
+    <Stat label="Gross income" value={formatMoneyShort(grossIncome, currency)} hint="Excluding GST collected" />
+    <Stat label="Deductions" value={formatMoneyShort(position.expenses.claimableTotal + position.depreciation, currency)} hint={position.depreciation > 0
+      ? `${position.expenses.count} expenses + depreciation`
+      : `${position.expenses.count} expense${position.expenses.count === 1 ? '' : 's'}`} />
+    <Stat label="Net profit" value={formatMoneyShort(detail.netBusinessProfit, currency)} tone="paid" hint="What you are taxed on" />
+    <Stat label="Estimated tax" value={formatMoneyShort(position.result.totalLiability, currency)} tone="reserved" hint={`${formatPercent(detail.effectiveRate)} effective rate`} />
+  </div>
+
+  <div class="mt-4 grid gap-4 lg:grid-cols-3">
+    <!-- Breakdown -->
+    <div class="lg:col-span-2 space-y-4">
+      <Card title="How the tax is worked out" subtitle="Every figure below comes from your recorded invoices and expenses">
+        <dl class="space-y-2 text-sm">
+          <div class="flex justify-between gap-3">
+            <dt class="muted">Self-employed income</dt>
+            <dd class="tabular">{formatMoney(grossIncome, currency)}</dd>
+          </div>
+          {position.employment.grossIncome > 0 && (
+            <div class="flex justify-between gap-3">
+              <dt class="muted">Employment income (gross)</dt>
+              <dd class="tabular">{formatMoney(position.employment.grossIncome, currency)}</dd>
+            </div>
+          )}
+          <div class="flex justify-between gap-3">
+            <dt class="muted">Less business expenses</dt>
+            <dd class="tabular">−{formatMoney(position.expenses.claimableTotal, currency)}</dd>
+          </div>
+          {position.depreciation > 0 && (
+            <div class="flex justify-between gap-3">
+              <dt class="muted">Less depreciation</dt>
+              <dd class="tabular">−{formatMoney(position.depreciation, currency)}</dd>
+            </div>
+          )}
+          <div class="flex justify-between gap-3 border-t pt-2 font-medium" style="border-color: var(--border)">
+            <dt>Taxable income</dt>
+            <dd class="tabular">{formatMoney(detail.taxableIncome, currency)}</dd>
+          </div>
+        </dl>
+
+        <!-- Bracket breakdown -->
+        <div class="mt-5">
+          <p class="muted mb-2 text-xs font-medium uppercase tracking-wide">Income tax by bracket</p>
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="muted text-left text-xs">
+                <th scope="col" class="py-1 font-medium">Band</th>
+                <th scope="col" class="py-1 text-right font-medium">Rate</th>
+                <th scope="col" class="py-1 text-right font-medium">Income</th>
+                <th scope="col" class="py-1 text-right font-medium">Tax</th>
+              </tr>
+            </thead>
+            <tbody>
+              {detail.incomeTax.breakdown.filter((b) => b.incomeInBracket > 0).map((band) => (
+                <tr class="border-t" style="border-color: var(--border)">
+                  <td class="tabular py-1.5">
+                    {formatMoneyShort(band.from, currency)}{band.to ? ` – ${formatMoneyShort(band.to, currency)}` : '+'}
+                  </td>
+                  <td class="tabular py-1.5 text-right">{formatPercent(band.rate)}</td>
+                  <td class="tabular py-1.5 text-right">{formatMoney(band.incomeInBracket, currency)}</td>
+                  <td class="tabular py-1.5 text-right font-medium">{formatMoney(band.tax, currency)}</td>
+                </tr>
+              ))}
+              <tr class="border-t font-medium" style="border-color: var(--border)">
+                <td class="py-1.5" colspan="3">Income tax</td>
+                <td class="tabular py-1.5 text-right">{formatMoney(detail.incomeTax.total, currency)}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Levies -->
+        <dl class="mt-5 space-y-2 border-t pt-4 text-sm" style="border-color: var(--border)">
+          {isNz ? (
+            <>
+              <div class="flex justify-between gap-3">
+                <dt class="muted">ACC levies (incl GST)</dt>
+                <dd class="tabular">{formatMoney(position.result.nz.acc.totalIncGst, currency)}</dd>
+              </div>
+              {position.result.nz.studentLoanRepayment > 0 && (
+                <div class="flex justify-between gap-3">
+                  <dt class="muted">Student loan (12% over threshold)</dt>
+                  <dd class="tabular">{formatMoney(position.result.nz.studentLoanRepayment, currency)}</dd>
+                </div>
+              )}
+              {position.employment.taxWithheld > 0 && (
+                <div class="flex justify-between gap-3">
+                  <dt class="muted">Less PAYE already withheld</dt>
+                  <dd class="tabular">−{formatMoney(position.employment.taxWithheld, currency)}</dd>
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              <div class="flex justify-between gap-3">
+                <dt class="muted">Medicare levy (2%)</dt>
+                <dd class="tabular">{formatMoney(position.result.au.medicareLevy, currency)}</dd>
+              </div>
+              {position.result.au.helpRepayment > 0 && (
+                <div class="flex justify-between gap-3">
+                  <dt class="muted">HELP repayment</dt>
+                  <dd class="tabular">{formatMoney(position.result.au.helpRepayment, currency)}</dd>
+                </div>
+              )}
+              {position.employment.taxWithheld > 0 && (
+                <div class="flex justify-between gap-3">
+                  <dt class="muted">Less PAYG already withheld</dt>
+                  <dd class="tabular">−{formatMoney(position.employment.taxWithheld, currency)}</dd>
+                </div>
+              )}
+            </>
+          )}
+          <div class="flex justify-between gap-3 border-t pt-2 text-base font-semibold" style="border-color: var(--border)">
+            <dt>Estimated to pay</dt>
+            <dd class="tabular" style="color: var(--color-reserved)">
+              {formatMoney(position.result.totalLiability, currency)}
+            </dd>
+          </div>
+        </dl>
+      </Card>
+
+      <!-- Expenses by category -->
+      <Card title="Deductions by category" subtitle="Claimable amounts after business-use apportionment">
+        {position.expenses.byCategory.length === 0 ? (
+          <p class="muted text-sm">
+            No expenses recorded for this year. Every dollar you do not claim is a dollar
+            you pay tax on.
+          </p>
+        ) : (
+          <ul class="space-y-2.5">
+            {position.expenses.byCategory.map((row) => {
+              const info = EXPENSE_GUIDANCE[row.category as keyof typeof EXPENSE_GUIDANCE];
+              const top = position.expenses.byCategory[0].claimable || 1;
+              return (
+                <li>
+                  <div class="flex items-baseline justify-between gap-3 text-sm">
+                    <span>{info?.label ?? row.category}</span>
+                    <span class="tabular font-medium">{formatMoney(row.claimable, currency)}</span>
+                  </div>
+                  <div class="mt-1 h-1 overflow-hidden rounded-full" style="background: var(--surface-sunken)">
+                    <div class="h-full rounded-full" style={`width: ${Math.round((row.claimable / top) * 100)}%; background: var(--color-brand-500)`} />
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+        <a href="/tax/expenses" class="muted mt-4 block text-xs underline underline-offset-2">
+          All expenses →
+        </a>
+      </Card>
+
+      <!-- Claimable guidance -->
+      <Card title="What you can claim" subtitle="Rules that differ between New Zealand and Australia are flagged">
+        <div class="space-y-3">
+          {guidance.map((item) => (
+            <details class="group border-b pb-3 last:border-0" style="border-color: var(--border)">
+              <summary class="flex cursor-pointer items-center justify-between gap-3 text-sm font-medium">
+                <span>{item.label}</span>
+                <span
+                  class="rounded-full px-2 py-0.5 text-xs font-normal"
+                  style={
+                    item.deductible === 'yes'
+                      ? 'background: color-mix(in oklch, var(--color-paid) 14%, transparent); color: var(--color-paid)'
+                      : item.deductible === 'usually-no'
+                        ? 'background: color-mix(in oklch, var(--color-overdue) 12%, transparent); color: var(--color-overdue)'
+                        : 'background: var(--surface-sunken); color: var(--text-muted)'
+                  }
+                >
+                  {item.deductible === 'yes' ? 'Deductible'
+                    : item.deductible === 'partial' ? 'Partly'
+                    : item.deductible === 'capital' ? 'Capital'
+                    : 'Not deductible'}
+                </span>
+              </summary>
+              <div class="muted mt-2.5 space-y-2 text-sm leading-relaxed">
+                <p><strong style="color: var(--text)">NZ:</strong> {item.nz}</p>
+                <p><strong style="color: var(--text)">AU:</strong> {item.au}</p>
+                {item.watchOut && (
+                  <p
+                    class="rounded-md px-3 py-2"
+                    style="background: color-mix(in oklch, var(--color-owing) 10%, transparent)"
+                  >
+                    <strong style="color: var(--color-owing)">Watch out.</strong> {item.watchOut}
+                  </p>
+                )}
+              </div>
+            </details>
+          ))}
+        </div>
+      </Card>
+    </div>
+
+    <!-- Sidebar -->
+    <div class="space-y-4">
+      <Card title="What to set aside" subtitle="On every dollar that lands in the account">
+        <div class="space-y-3">
+          {[position.result.reserve.best, position.result.reserve.likely, position.result.reserve.worst].map((band, i) => (
+            <div
+              class="rounded-lg p-3"
+              style={i === 1 ? 'background: color-mix(in oklch, var(--color-reserved) 10%, transparent)' : 'background: var(--surface-sunken)'}
+            >
+              <div class="flex items-baseline justify-between gap-3">
+                <span class="text-sm font-medium">{band.label}</span>
+                <span class="tabular text-lg font-semibold" style={i === 1 ? 'color: var(--color-reserved)' : ''}>
+                  {formatPercent(band.rate)}
+                </span>
+              </div>
+              <p class="muted mt-1 text-xs leading-relaxed">{band.explanation}</p>
+            </div>
+          ))}
+        </div>
+        <p class="muted mt-3 border-t pt-3 text-xs" style="border-color: var(--border)">
+          On what you have received so far, that is
+          <strong style="color: var(--text)"> {formatMoney(position.shouldHaveReserved, currency)}</strong> that
+          should already be sitting aside.
+        </p>
+      </Card>
+
+      <!-- GST -->
+      <Card title={isNz ? 'GST' : 'GST / BAS'}>
+        <dl class="space-y-2 text-sm">
+          <div class="flex justify-between gap-3">
+            <dt class="muted">Registered</dt>
+            <dd>{position.gst.registered ? 'Yes' : 'No'}</dd>
+          </div>
+          <div class="flex justify-between gap-3">
+            <dt class="muted">Rolling 12-month turnover</dt>
+            <dd class="tabular">{formatMoneyShort(position.gst.rollingTurnover, currency)}</dd>
+          </div>
+          <div class="flex justify-between gap-3">
+            <dt class="muted">Threshold</dt>
+            <dd class="tabular">{formatMoneyShort(position.gst.threshold, currency)}</dd>
+          </div>
+          {position.gst.registered && (
+            <>
+              <div class="flex justify-between gap-3 border-t pt-2" style="border-color: var(--border)">
+                <dt class="muted">GST collected</dt>
+                <dd class="tabular">{formatMoney(position.invoices.gstCollected, currency)}</dd>
+              </div>
+              <div class="flex justify-between gap-3">
+                <dt class="muted">GST on purchases</dt>
+                <dd class="tabular">−{formatMoney(position.expenses.gstReclaimable, currency)}</dd>
+              </div>
+              <div class="flex justify-between gap-3 font-medium">
+                <dt>Net GST</dt>
+                <dd class="tabular">
+                  {formatMoney(position.invoices.gstCollected - position.expenses.gstReclaimable, currency)}
+                </dd>
+              </div>
+            </>
+          )}
+        </dl>
+        <p
+          class="muted mt-3 border-t pt-3 text-xs leading-relaxed"
+          style={`border-color: var(--border); ${position.gst.mustRegister ? 'color: var(--color-overdue)' : ''}`}
+        >{position.gst.message}</p>
+      </Card>
+
+      <!-- Instalments -->
+      {isNz ? (
+        <Card title="Provisional tax" subtitle={`For ${Number(position.range.year.slice(0, 4)) + 1}-${String((Number(position.range.year.slice(0, 4)) + 2) % 100).padStart(2, '0')}`}>
+          {position.result.nz.provisionalTax.required ? (
+            <>
+              <ul class="space-y-2 text-sm">
+                {position.result.nz.provisionalTax.instalments.map((i) => (
+                  <li class="flex justify-between gap-3">
+                    <span class="muted">{i.label} · {formatDate(i.dueOn)}</span>
+                    <span class="tabular font-medium">{formatMoney(i.amount, currency)}</span>
+                  </li>
+                ))}
+              </ul>
+              <p class="muted mt-3 border-t pt-3 text-xs leading-relaxed" style="border-color: var(--border)">
+                {position.result.nz.provisionalTax.note}
+              </p>
+            </>
+          ) : (
+            <p class="muted text-sm leading-relaxed">{position.result.nz.provisionalTax.note}</p>
+          )}
+        </Card>
+      ) : (
+        <Card title="PAYG instalments">
+          {position.result.au.paygInstalments.required ? (
+            <>
+              <ul class="space-y-2 text-sm">
+                {position.result.au.paygInstalments.quarterly.map((q) => (
+                  <li class="flex justify-between gap-3">
+                    <span class="muted">{q.label} · {formatDate(q.dueOn)}</span>
+                    <span class="tabular font-medium">{formatMoney(q.amount, currency)}</span>
+                  </li>
+                ))}
+              </ul>
+              <p class="muted mt-3 border-t pt-3 text-xs leading-relaxed" style="border-color: var(--border)">
+                {position.result.au.paygInstalments.note}
+              </p>
+            </>
+          ) : (
+            <p class="muted text-sm leading-relaxed">{position.result.au.paygInstalments.note}</p>
+          )}
+        </Card>
+      )}
+
+      {!isNz && (
+        <Card title="Super" subtitle="The largest legal deduction available to you">
+          <dl class="space-y-2 text-sm">
+            <div class="flex justify-between gap-3">
+              <dt class="muted">Contributed</dt>
+              <dd class="tabular">{formatMoney(position.result.au.superNote.contributed, currency)}</dd>
+            </div>
+            <div class="flex justify-between gap-3">
+              <dt class="muted">Cap remaining</dt>
+              <dd class="tabular">{formatMoney(position.result.au.superNote.capRemaining, currency)}</dd>
+            </div>
+            <div class="flex justify-between gap-3 font-medium">
+              <dt>Tax saved if you used it</dt>
+              <dd class="tabular" style="color: var(--color-paid)">
+                {formatMoney(position.result.au.superNote.taxSavedByContributing, currency)}
+              </dd>
+            </div>
+          </dl>
+          <p class="muted mt-3 border-t pt-3 text-xs leading-relaxed" style="border-color: var(--border)">
+            {position.result.au.superNote.note}
+          </p>
+        </Card>
+      )}
+
+      <!-- Provenance -->
+      {position.result.unverified.length > 0 && (
+        <Card title="Figures to confirm" subtitle="Assembled from secondary sources">
+          <ul class="space-y-2.5 text-xs">
+            {position.result.unverified.map((item) => (
+              <li>
+                <p class="font-medium">{item.jurisdiction} · {item.path}</p>
+                {item.note && <p class="muted mt-0.5 leading-relaxed">{item.note}</p>}
+                <a href={item.source} target="_blank" rel="noopener noreferrer" class="muted underline underline-offset-2">
+                  Check the source →
+                </a>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
+
+      <p class="muted px-1 text-xs leading-relaxed">
+        These are planning estimates to help you set money aside. They are not a return,
+        and they do not replace an accountant — particularly where income spans both
+        countries.
+      </p>
+    </div>
+  </div>
+</AppLayout>

@@ -1,0 +1,24 @@
+---
+interface Props {
+  label: string;
+  value: string;
+  hint?: string;
+  tone?: 'neutral' | 'paid' | 'owing' | 'overdue' | 'reserved';
+  href?: string;
+}
+const { label, value, hint, tone = 'neutral', href } = Astro.props;
+
+const tones: Record<string, string> = {
+  neutral: 'var(--text)',
+  paid: 'var(--color-paid)',
+  owing: 'var(--color-owing)',
+  overdue: 'var(--color-overdue)',
+  reserved: 'var(--color-reserved)',
+};
+const Tag = href ? 'a' : 'div';
+---
+<Tag href={href} class:list={['card block p-4', href && 'transition-opacity hover:opacity-80']}>
+  <p class="muted text-xs font-medium uppercase tracking-wide">{label}</p>
+  <p class="tabular mt-1.5 text-2xl font-semibold" style={`color: ${tones[tone]}`}>{value}</p>
+  {hint && <p class="muted mt-1 text-xs">{hint}</p>}
+</Tag>

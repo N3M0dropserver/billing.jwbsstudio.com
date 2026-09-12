@@ -1,0 +1,56 @@
+---
+import AppLayout from '~/layouts/AppLayout.astro';
+import InvoiceEditor from '~/components/invoices/InvoiceEditor.tsx';
+import { and, eq, isNull, or } from 'drizzle-orm';
+import { db } from '~/lib/env';
+import { getSettings } from '~/lib/queries/settings';
+import { clients, timeEntries } from '~/lib/db/schema';
+
+const user = Astro.locals.user!;
+const database = db();
+const settings = await getSettings(database, user.id);
+
+const clientRows = await database
+  .select({
+    id: clients.id, name: clients.name, country: clients.country,
+    currency: clients.currency, paymentTermsDays: clients.paymentTermsDays,
+    hourlyRate: clients.hourlyRate, gstTreatment: clients.gstTreatment,
+  })
+  .from(clients)
+  .where(and(eq(clients.userId, user.id), or(eq(clients.status, 'active'), eq(clients.status, 'lead'))))
+  .orderBy(clients.name);
+
+const unbilledRows = await database
+  .select({
+    id: timeEntries.id, description: timeEntries.description, minutes: timeEntries.minutes,
+    clientId: timeEntries.clientId, startedAt: timeEntries.startedAt, hourlyRate: timeEntries.hourlyRate,
+  })
+  .from(timeEntries)
+  .where(
+    and(
+      eq(timeEntries.userId, user.id),
+      eq(timeEntries.billable, true),
+      eq(timeEntries.billed, false),
+      isNull(timeEntries.invoiceId),
+    ),
+  )
+  .orderBy(timeEntries.startedAt);
+
+const jurisdiction = settings.taxResidence;
+---
+
+<AppLayout title="New invoice" subtitle="Bill for work done" width="wide">
+  <InvoiceEditor
+    client:load
+    clients={clientRows}
+    unbilled={unbilledRows}
+    defaults={{
+      currency: settings.defaultCurrency,
+      jurisdiction,
+      paymentTermsDays: settings.defaultPaymentTermsDays,
+      hourlyRate: settings.defaultHourlyRate,
+      gstRegistered: jurisdiction === 'NZ' ? settings.nzGstRegistered : settings.auGstRegistered,
+      terms: settings.invoiceFooter,
+    }}
+  />
+</AppLayout>

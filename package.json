@@ -1,0 +1,42 @@
+{
+  "name": "jwbs-billing",
+  "type": "module",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Invoicing, billing and dual-jurisdiction (NZ/AU) tax system for JWBS Studio",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro build && wrangler dev",
+    "deploy": "astro build && wrangler deploy",
+    "check": "astro check",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate:local": "wrangler d1 migrations apply jwbs-billing --local",
+    "db:migrate:remote": "wrangler d1 migrations apply jwbs-billing --remote",
+    "db:seed:local": "node scripts/seed.mjs --local",
+    "user:add": "node scripts/add-user.mjs"
+  },
+  "dependencies": {
+    "@astrojs/cloudflare": "^14.3.1",
+    "@astrojs/react": "^6.0.5",
+    "@tailwindcss/vite": "^4.3.3",
+    "astro": "^7.3.2",
+    "drizzle-orm": "^0.45.2",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "tailwindcss": "^4.3.3"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260911.1",
+    "@types/node": "^22.20.2",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "drizzle-kit": "^0.31.10",
+    "typescript": "^5.9.3",
+    "vitest": "^5.0.0",
+    "wrangler": "^4.131.1"
+  }
+}

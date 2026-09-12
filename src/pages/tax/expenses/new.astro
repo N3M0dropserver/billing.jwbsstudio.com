@@ -1,0 +1,36 @@
+---
+import AppLayout from '~/layouts/AppLayout.astro';
+import Card from '~/components/ui/Card.astro';
+import ExpenseForm from '~/components/tax/ExpenseForm.tsx';
+import { and, eq } from 'drizzle-orm';
+import { db } from '~/lib/env';
+import { getSettings } from '~/lib/queries/settings';
+import { clients } from '~/lib/db/schema';
+
+const user = Astro.locals.user!;
+const database = db();
+const settings = await getSettings(database, user.id);
+
+const clientRows = await database
+  .select({ id: clients.id, name: clients.name })
+  .from(clients)
+  .where(and(eq(clients.userId, user.id), eq(clients.status, 'active')))
+  .orderBy(clients.name);
+
+const jurisdiction = settings.taxResidence;
+const error = Astro.url.searchParams.get('error');
+---
+
+<AppLayout title="Log an expense" subtitle="Every dollar you do not claim is a dollar you pay tax on">
+  {error === 'amount' && (
+    <p class="card mb-4 px-4 py-3 text-sm" style="color: var(--color-overdue)">
+      Enter an amount greater than zero.
+    </p>
+  )}
+  <ExpenseForm
+    client:load
+    clients={clientRows}
+    defaultJurisdiction={jurisdiction}
+    gstRegistered={jurisdiction === 'NZ' ? settings.nzGstRegistered : settings.auGstRegistered}
+  />
+</AppLayout>

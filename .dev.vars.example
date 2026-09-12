@@ -1,0 +1,12 @@
+# Copy to .dev.vars for local development (never commit .dev.vars)
+
+# Secret used to sign session cookies. Generate with:
+#   openssl rand -base64 48
+SESSION_SECRET="change-me-openssl-rand-base64-48"
+
+# Stripe (optional). Leave blank to disable Stripe and use bank transfer only.
+STRIPE_SECRET_KEY=""
+STRIPE_WEBHOOK_SECRET=""
+
+# Resend (only needed when MAIL_PROVIDER=resend)
+RESEND_API_KEY=""

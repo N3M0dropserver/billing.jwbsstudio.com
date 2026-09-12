@@ -1,0 +1,126 @@
+---
+import AppLayout from '~/layouts/AppLayout.astro';
+import Card from '~/components/ui/Card.astro';
+import Timer from '~/components/time/Timer.tsx';
+import { and, eq, desc, sql, gte } from 'drizzle-orm';
+import { db } from '~/lib/env';
+import { getSettings } from '~/lib/queries/settings';
+import { timeEntries, clients } from '~/lib/db/schema';
+import { formatMoney } from '~/lib/tax/money';
+
+const user = Astro.locals.user!;
+const database = db();
+const settings = await getSettings(database, user.id);
+
+const clientRows = await database
+  .select({ id: clients.id, name: clients.name })
+  .from(clients)
+  .where(and(eq(clients.userId, user.id), eq(clients.status, 'active')))
+  .orderBy(clients.name);
+
+const entries = await database
+  .select({ entry: timeEntries, clientName: clients.name, clientRate: clients.hourlyRate })
+  .from(timeEntries)
+  .leftJoin(clients, eq(timeEntries.clientId, clients.id))
+  .where(eq(timeEntries.userId, user.id))
+  .orderBy(desc(timeEntries.startedAt))
+  .limit(100);
+
+const weekAgo = new Date(Date.now() - 7 * 86_400_000).toISOString();
+const weekRows = await database
+  .select({
+    minutes: sql<number>`coalesce(sum(${timeEntries.minutes}), 0)`,
+    billable: sql<number>`coalesce(sum(case when ${timeEntries.billable} = 1 then ${timeEntries.minutes} else 0 end), 0)`,
+  })
+  .from(timeEntries)
+  .where(and(eq(timeEntries.userId, user.id), gte(timeEntries.startedAt, weekAgo)));
+
+const week = weekRows[0] ?? { minutes: 0, billable: 0 };
+
+const unbilled = entries.filter((e) => e.entry.billable && !e.entry.billed);
+const unbilledValue = unbilled.reduce((sum, e) => {
+  const rate = e.entry.hourlyRate ?? e.clientRate ?? settings.defaultHourlyRate;
+  return sum + Math.round((e.entry.minutes / 60) * rate);
+}, 0);
+
+const hours = (minutes: number) => `${(minutes / 60).toFixed(1)}h`;
+const formatDateTime = (iso: string) =>
+  new Date(iso).toLocaleString('en-NZ', {
+    day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit',
+  });
+---
+
+<AppLayout title="Time" subtitle={`${hours(week.minutes)} tracked this week`} width="wide">
+  <div class="grid gap-4 lg:grid-cols-3">
+    <div class="space-y-4 lg:col-span-2">
+      <Timer client:load clients={clientRows} />
+
+      <Card title="Recent entries">
+        {entries.length === 0 ? (
+          <p class="muted text-sm">Nothing tracked yet. Even rough time beats no time.</p>
+        ) : (
+          <table class="w-full text-sm">
+            <tbody>
+              {entries.map(({ entry, clientName }) => (
+                <tr class="border-b last:border-0" style="border-color: var(--border)">
+                  <td class="py-2.5 pr-3">
+                    {entry.description || <span class="muted">Untitled</span>}
+                    {clientName && <span class="muted block text-xs">{clientName}</span>}
+                  </td>
+                  <td class="muted py-2.5 text-xs whitespace-nowrap">{formatDateTime(entry.startedAt)}</td>
+                  <td class="tabular py-2.5 pl-3 text-right font-medium">{hours(entry.minutes)}</td>
+                  <td class="py-2.5 pl-3 text-right">
+                    {!entry.billable ? (
+                      <span class="muted text-xs">non-billable</span>
+                    ) : entry.billed ? (
+                      <span class="text-xs" style="color: var(--color-paid)">billed</span>
+                    ) : (
+                      <span class="text-xs" style="color: var(--color-owing)">unbilled</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </Card>
+    </div>
+
+    <div class="space-y-4">
+      <Card title="This week">
+        <dl class="space-y-2 text-sm">
+          <div class="flex justify-between gap-3">
+            <dt class="muted">Tracked</dt>
+            <dd class="tabular font-medium">{hours(week.minutes)}</dd>
+          </div>
+          <div class="flex justify-between gap-3">
+            <dt class="muted">Billable</dt>
+            <dd class="tabular font-medium">{hours(week.billable)}</dd>
+          </div>
+          <div class="flex justify-between gap-3">
+            <dt class="muted">Utilisation</dt>
+            <dd class="tabular font-medium">
+              {week.minutes > 0 ? `${Math.round((week.billable / week.minutes) * 100)}%` : '—'}
+            </dd>
+          </div>
+        </dl>
+      </Card>
+
+      <Card title="Waiting to be invoiced">
+        <p class="tabular text-2xl font-semibold" style="color: var(--color-owing)">
+          {formatMoney(unbilledValue, settings.defaultCurrency)}
+        </p>
+        <p class="muted mt-1 text-sm">
+          {hours(unbilled.reduce((sum, e) => sum + e.entry.minutes, 0))} across {unbilled.length} entr{unbilled.length === 1 ? 'y' : 'ies'}
+        </p>
+        {unbilled.length > 0 && (
+          <a
+            href="/invoices/new?from=time"
+            class="mt-4 block rounded-lg px-4 py-2.5 text-center text-sm font-medium text-white"
+            style="background: var(--color-brand-600)"
+          >Turn into an invoice</a>
+        )}
+      </Card>
+    </div>
+  </div>
+</AppLayout>

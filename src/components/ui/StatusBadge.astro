@@ -1,0 +1,26 @@
+---
+interface Props {
+  status: string;
+}
+const { status } = Astro.props;
+
+const styles: Record<string, { bg: string; fg: string; label: string }> = {
+  draft:         { bg: 'var(--surface-sunken)', fg: 'var(--text-muted)', label: 'Draft' },
+  sent:          { bg: 'color-mix(in oklch, var(--color-reserved) 15%, transparent)', fg: 'var(--color-reserved)', label: 'Sent' },
+  viewed:        { bg: 'color-mix(in oklch, var(--color-reserved) 15%, transparent)', fg: 'var(--color-reserved)', label: 'Viewed' },
+  partial:       { bg: 'color-mix(in oklch, var(--color-owing) 18%, transparent)', fg: 'var(--color-owing)', label: 'Part paid' },
+  paid:          { bg: 'color-mix(in oklch, var(--color-paid) 15%, transparent)', fg: 'var(--color-paid)', label: 'Paid' },
+  overdue:       { bg: 'color-mix(in oklch, var(--color-overdue) 15%, transparent)', fg: 'var(--color-overdue)', label: 'Overdue' },
+  void:          { bg: 'var(--surface-sunken)', fg: 'var(--text-muted)', label: 'Void' },
+  'written-off': { bg: 'var(--surface-sunken)', fg: 'var(--text-muted)', label: 'Written off' },
+  active:        { bg: 'color-mix(in oklch, var(--color-paid) 15%, transparent)', fg: 'var(--color-paid)', label: 'Active' },
+  lead:          { bg: 'color-mix(in oklch, var(--color-owing) 18%, transparent)', fg: 'var(--color-owing)', label: 'Lead' },
+  dormant:       { bg: 'var(--surface-sunken)', fg: 'var(--text-muted)', label: 'Dormant' },
+  archived:      { bg: 'var(--surface-sunken)', fg: 'var(--text-muted)', label: 'Archived' },
+};
+const s = styles[status] ?? { bg: 'var(--surface-sunken)', fg: 'var(--text-muted)', label: status };
+---
+<span
+  class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium"
+  style={`background: ${s.bg}; color: ${s.fg}`}
+>{s.label}</span>

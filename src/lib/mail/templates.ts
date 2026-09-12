@@ -1,0 +1,109 @@
+import { formatMoneyWithCode, type Cents, type Currency } from '~/lib/tax/money';
+
+export interface InvoiceEmailData {
+  invoiceNumber: string;
+  clientName: string;
+  businessName: string;
+  senderName: string;
+  total: Cents;
+  currency: Currency;
+  dueOn: string;
+  viewUrl: string;
+  payUrl?: string;
+  customMessage?: string;
+}
+
+const formatDate = (iso: string) =>
+  new Date(`${iso}T00:00:00Z`).toLocaleDateString('en-NZ', {
+    day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC',
+  });
+
+export function invoiceEmail(data: InvoiceEmailData): { subject: string; text: string; html: string } {
+  const amount = formatMoneyWithCode(data.total, data.currency);
+  const due = formatDate(data.dueOn);
+  const subject = `Invoice ${data.invoiceNumber} from ${data.businessName} — ${amount}`;
+
+  const intro =
+    data.customMessage?.trim() ||
+    `Please find invoice ${data.invoiceNumber} attached, for ${amount}, due ${due}.`;
+
+  const text = [
+    `Kia ora ${data.clientName},`,
+    '',
+    intro,
+    '',
+    `Invoice:  ${data.invoiceNumber}`,
+    `Amount:   ${amount}`,
+    `Due:      ${due}`,
+    '',
+    `View online: ${data.viewUrl}`,
+    data.payUrl ? `Pay by card: ${data.payUrl}` : '',
+    '',
+    'The PDF is attached, and bank details are on it.',
+    '',
+    'Ngā mihi,',
+    data.senderName,
+    data.businessName,
+  ]
+    .filter((line) => line !== undefined)
+    .join('\n');
+
+  // Email HTML is deliberately table-free and inline-styled — it has to
+  // survive Outlook, which supports roughly none of the last decade of CSS.
+  const html = `<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"></head>
+<body style="margin:0;padding:24px;background:#f6f6f4;font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;color:#1a1a1a;">
+  <div style="max-width:520px;margin:0 auto;background:#ffffff;border:1px solid #e5e5e2;border-radius:12px;padding:28px;">
+    <p style="margin:0 0 16px;font-size:15px;">Kia ora ${escapeHtml(data.clientName)},</p>
+    <p style="margin:0 0 20px;font-size:15px;line-height:1.55;">${escapeHtml(intro)}</p>
+
+    <div style="background:#f6f6f4;border-radius:8px;padding:16px;margin:0 0 20px;">
+      <p style="margin:0 0 6px;font-size:13px;color:#666;">Invoice ${escapeHtml(data.invoiceNumber)}</p>
+      <p style="margin:0 0 4px;font-size:26px;font-weight:600;">${escapeHtml(amount)}</p>
+      <p style="margin:0;font-size:13px;color:#666;">Due ${escapeHtml(due)}</p>
+    </div>
+
+    <p style="margin:0 0 20px;">
+      <a href="${escapeAttr(data.viewUrl)}" style="display:inline-block;background:#1f5c4d;color:#ffffff;text-decoration:none;padding:11px 20px;border-radius:8px;font-size:14px;font-weight:500;">View invoice</a>
+      ${data.payUrl ? `<a href="${escapeAttr(data.payUrl)}" style="display:inline-block;margin-left:8px;border:1px solid #d5d5d2;color:#1a1a1a;text-decoration:none;padding:10px 20px;border-radius:8px;font-size:14px;font-weight:500;">Pay by card</a>` : ''}
+    </p>
+
+    <p style="margin:0 0 20px;font-size:14px;color:#666;line-height:1.55;">The PDF is attached, and bank details are on it.</p>
+
+    <p style="margin:0;font-size:15px;">Ngā mihi,<br>${escapeHtml(data.senderName)}<br>
+      <span style="color:#666;">${escapeHtml(data.businessName)}</span></p>
+  </div>
+</body></html>`;
+
+  return { subject, text, html };
+}
+
+export function reminderEmail(
+  data: InvoiceEmailData & { daysOverdue: number },
+): { subject: string; text: string; html: string } {
+  const amount = formatMoneyWithCode(data.total, data.currency);
+  const overdue = data.daysOverdue > 0;
+
+  const subject = overdue
+    ? `Overdue: invoice ${data.invoiceNumber} — ${amount}`
+    : `Reminder: invoice ${data.invoiceNumber} due soon — ${amount}`;
+
+  const intro = overdue
+    ? `Invoice ${data.invoiceNumber} for ${amount} was due ${formatDate(data.dueOn)}, ${data.daysOverdue} day${data.daysOverdue === 1 ? '' : 's'} ago. If it is already on its way, ignore this.`
+    : `A reminder that invoice ${data.invoiceNumber} for ${amount} falls due on ${formatDate(data.dueOn)}.`;
+
+  const base = invoiceEmail({ ...data, customMessage: intro });
+  return { subject, text: base.text, html: base.html };
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function escapeAttr(value: string): string {
+  return escapeHtml(value).replace(/'/g, '&#39;');
+}

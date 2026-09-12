@@ -1,0 +1,227 @@
+---
+import AppLayout from '~/layouts/AppLayout.astro';
+import Card from '~/components/ui/Card.astro';
+import StatusBadge from '~/components/ui/StatusBadge.astro';
+import { and, eq, desc, ne, sql } from 'drizzle-orm';
+import { db } from '~/lib/env';
+import { clients, invoices, communications, timeEntries, proposals } from '~/lib/db/schema';
+import { deriveStatus } from '~/lib/invoices/calculate';
+import { formatMoney, formatMoneyShort } from '~/lib/tax/money';
+
+const user = Astro.locals.user!;
+const database = db();
+
+const clientRows = await database
+  .select()
+  .from(clients)
+  .where(and(eq(clients.id, Astro.params.id!), eq(clients.userId, user.id)))
+  .limit(1);
+
+const client = clientRows[0];
+if (!client) return Astro.redirect('/clients', 302);
+
+const [invoiceRows, commsRows, proposalRows, timeTotals] = await Promise.all([
+  database.select().from(invoices)
+    .where(and(eq(invoices.clientId, client.id), ne(invoices.status, 'void')))
+    .orderBy(desc(invoices.issuedOn)).limit(50),
+  database.select().from(communications)
+    .where(eq(communications.clientId, client.id))
+    .orderBy(desc(communications.occurredAt)).limit(20),
+  database.select().from(proposals)
+    .where(eq(proposals.clientId, client.id))
+    .orderBy(desc(proposals.createdAt)).limit(10),
+  database.select({
+    minutes: sql<number>`coalesce(sum(${timeEntries.minutes}), 0)`,
+    unbilled: sql<number>`coalesce(sum(case when ${timeEntries.billed} = 0 and ${timeEntries.billable} = 1 then ${timeEntries.minutes} else 0 end), 0)`,
+  }).from(timeEntries).where(eq(timeEntries.clientId, client.id)),
+]);
+
+const totals = invoiceRows.reduce(
+  (acc, row) => {
+    if (row.status !== 'draft') {
+      acc.invoiced += row.total;
+      acc.paid += row.amountPaid;
+    }
+    return acc;
+  },
+  { invoiced: 0, paid: 0 },
+);
+const time = timeTotals[0] ?? { minutes: 0, unbilled: 0 };
+
+const formatDate = (iso: string) =>
+  new Date(`${iso.slice(0, 10)}T00:00:00Z`).toLocaleDateString('en-NZ', {
+    day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC',
+  });
+
+const address = [client.addressLine1, client.addressLine2, client.city, client.postcode, client.country]
+  .filter(Boolean)
+  .join(', ');
+---
+
+<AppLayout title={client.name} subtitle={client.legalName || client.country} width="wide">
+  <div slot="actions" class="flex flex-wrap gap-2">
+    <a href={`/invoices/new?client=${client.id}`} class="rounded-lg px-3.5 py-2 text-sm font-medium text-white" style="background: var(--color-brand-600)">
+      New invoice
+    </a>
+  </div>
+
+  <div class="grid grid-cols-2 gap-3 lg:grid-cols-4">
+    <div class="card p-4">
+      <p class="muted text-xs font-medium uppercase tracking-wide">Invoiced</p>
+      <p class="tabular mt-1.5 text-2xl font-semibold">{formatMoneyShort(totals.invoiced, client.currency)}</p>
+    </div>
+    <div class="card p-4">
+      <p class="muted text-xs font-medium uppercase tracking-wide">Received</p>
+      <p class="tabular mt-1.5 text-2xl font-semibold" style="color: var(--color-paid)">
+        {formatMoneyShort(totals.paid, client.currency)}
+      </p>
+    </div>
+    <div class="card p-4">
+      <p class="muted text-xs font-medium uppercase tracking-wide">Outstanding</p>
+      <p class="tabular mt-1.5 text-2xl font-semibold" style={totals.invoiced - totals.paid > 0 ? 'color: var(--color-owing)' : ''}>
+        {formatMoneyShort(totals.invoiced - totals.paid, client.currency)}
+      </p>
+    </div>
+    <div class="card p-4">
+      <p class="muted text-xs font-medium uppercase tracking-wide">Time tracked</p>
+      <p class="tabular mt-1.5 text-2xl font-semibold">{(time.minutes / 60).toFixed(1)}h</p>
+      {time.unbilled > 0 && (
+        <p class="muted mt-1 text-xs">{(time.unbilled / 60).toFixed(1)}h unbilled</p>
+      )}
+    </div>
+  </div>
+
+  <div class="mt-4 grid gap-4 lg:grid-cols-3">
+    <div class="space-y-4 lg:col-span-2">
+      <Card title="Invoices">
+        {invoiceRows.length === 0 ? (
+          <p class="muted text-sm">No invoices yet.</p>
+        ) : (
+          <table class="w-full text-sm">
+            <tbody>
+              {invoiceRows.map((invoice) => (
+                <tr class="border-b last:border-0" style="border-color: var(--border)">
+                  <td class="py-2.5">
+                    <a href={`/invoices/${invoice.id}`} class="font-medium hover:underline">{invoice.number}</a>
+                  </td>
+                  <td class="muted py-2.5 whitespace-nowrap">{formatDate(invoice.issuedOn)}</td>
+                  <td class="tabular py-2.5 text-right">{formatMoney(invoice.total, invoice.currency)}</td>
+                  <td class="py-2.5 pl-3 text-right"><StatusBadge status={deriveStatus(invoice)} /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </Card>
+
+      {proposalRows.length > 0 && (
+        <Card title="Proposals">
+          <ul class="space-y-2 text-sm">
+            {proposalRows.map((proposal) => (
+              <li class="flex items-baseline justify-between gap-3">
+                <span>{proposal.title}</span>
+                <span class="flex items-center gap-2">
+                  <span class="tabular muted">{formatMoney(proposal.amount, proposal.currency)}</span>
+                  <StatusBadge status={proposal.status} />
+                </span>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
+
+      <Card title="Communications">
+        <form method="post" action={`/api/clients/${client.id}/notes`} class="mb-4 flex gap-2">
+          <input name="body" placeholder="Log a call, email or note…" required class="field flex-1" />
+          <button class="rounded-lg px-3.5 py-2 text-sm font-medium text-white whitespace-nowrap" style="background: var(--color-brand-600)">
+            Log
+          </button>
+        </form>
+        {commsRows.length === 0 ? (
+          <p class="muted text-sm">Nothing logged yet.</p>
+        ) : (
+          <ul class="space-y-3">
+            {commsRows.map((entry) => (
+              <li class="border-b pb-3 text-sm last:border-0 last:pb-0" style="border-color: var(--border)">
+                <div class="flex items-baseline justify-between gap-3">
+                  <span class="font-medium">{entry.subject || entry.kind}</span>
+                  <span class="muted shrink-0 text-xs">{formatDate(entry.occurredAt)}</span>
+                </div>
+                {entry.body && <p class="muted mt-1 leading-relaxed">{entry.body}</p>}
+              </li>
+            ))}
+          </ul>
+        )}
+      </Card>
+    </div>
+
+    <div class="space-y-4">
+      <Card title="Contact">
+        <dl class="space-y-2 text-sm">
+          {client.email && (
+            <div>
+              <dt class="muted text-xs">Email</dt>
+              <dd><a href={`mailto:${client.email}`} class="hover:underline">{client.email}</a></dd>
+            </div>
+          )}
+          {client.phone && (
+            <div><dt class="muted text-xs">Phone</dt><dd>{client.phone}</dd></div>
+          )}
+          {client.website && (
+            <div>
+              <dt class="muted text-xs">Website</dt>
+              <dd><a href={client.website} target="_blank" rel="noopener noreferrer" class="hover:underline">{client.website}</a></dd>
+            </div>
+          )}
+          {address && (
+            <div><dt class="muted text-xs">Address</dt><dd>{address}</dd></div>
+          )}
+          {client.taxNumber && (
+            <div><dt class="muted text-xs">Tax number</dt><dd class="tabular">{client.taxNumber}</dd></div>
+          )}
+        </dl>
+      </Card>
+
+      <Card title="Billing defaults">
+        <dl class="space-y-2 text-sm">
+          <div class="flex justify-between gap-3">
+            <dt class="muted">Currency</dt><dd>{client.currency}</dd>
+          </div>
+          {client.hourlyRate !== null && (
+            <div class="flex justify-between gap-3">
+              <dt class="muted">Hourly rate</dt>
+              <dd class="tabular">{formatMoney(client.hourlyRate, client.currency)}</dd>
+            </div>
+          )}
+          {client.paymentTermsDays !== null && (
+            <div class="flex justify-between gap-3">
+              <dt class="muted">Terms</dt><dd>{client.paymentTermsDays} days</dd>
+            </div>
+          )}
+          <div class="flex justify-between gap-3">
+            <dt class="muted">GST</dt>
+            <dd>
+              {client.gstTreatment === 'auto'
+                ? 'Automatic'
+                : client.gstTreatment === 'zero-rated-export'
+                  ? 'Zero-rated export'
+                  : client.gstTreatment}
+            </dd>
+          </div>
+        </dl>
+        {client.gstTreatment === 'zero-rated-export' && (
+          <p class="muted mt-3 border-t pt-3 text-xs leading-relaxed" style="border-color: var(--border)">
+            Invoices to this client carry no GST. Keep evidence they are a non-resident
+            receiving the work offshore — the billing address on its own is thin.
+          </p>
+        )}
+      </Card>
+
+      {client.notes && (
+        <Card title="Notes">
+          <p class="muted text-sm leading-relaxed whitespace-pre-wrap">{client.notes}</p>
+        </Card>
+      )}
+    </div>
+  </div>
+</AppLayout>
