@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { EmailEditor, type EmailEditorRef } from '@react-email/editor';
 import { Inspector } from '@react-email/editor/ui';
@@ -18,22 +18,30 @@ import {
   variablesFor,
   type TemplateKind,
 } from '~/lib/mail/variables';
-import { BLOCK_GROUPS } from './blocks';
+import { blockById, type Block } from './blocks';
+import BlockPalette from './builder/BlockPalette';
+import LayersPanel from './builder/LayersPanel';
+import Overlay, { type DropIndicator } from './builder/Overlay';
+import { blockFromCoords, insertBlockAt, moveBlockTo, rectFor } from './builder/targeting';
 
 /**
- * The template editor.
+ * The template builder.
+ *
+ * Three panes: blocks on the left, the email in the middle, settings for
+ * whatever is selected on the right. The middle is a real rich-text editor —
+ * click into it and type — and everything around it is chrome that reads the
+ * same document. There is no second model of the email anywhere in here, which
+ * is the whole reason the builder and the text editing can coexist rather than
+ * fight: a block dragged in and a paragraph typed by hand produce the same
+ * kind of node.
  *
  * Mounted `client:only="react"` — this component and its Tiptap dependencies
  * must never reach the Worker bundle. The rendered email HTML is produced here
  * in the browser by `getEmail()` and posted to the server already finished, so
  * the Worker never runs React Email at all.
  *
- * Three representations are saved together: the Tiptap JSON (what this editor
+ * Three representations are saved together: the Tiptap JSON (what this builder
  * reloads from), the HTML, and the plain-text alternative.
- *
- * Three ways in to the same document, because they suit different moments:
- * a base template for starting, the block palette for building, and the
- * inspector for adjusting what is already there.
  */
 
 export interface TemplateEditorProps {
@@ -55,9 +63,20 @@ export interface TemplateEditorProps {
 }
 
 type SaveState = 'idle' | 'saving' | 'saved' | 'error';
-/** What the body card is showing. The editor stays mounted behind all three. */
+/** What the middle pane is showing. The editor stays mounted behind all three. */
 type View = 'edit' | 'preview' | 'starters';
-type Rail = 'design' | 'variables';
+type LeftTab = 'blocks' | 'layers';
+type RightTab = 'design' | 'variables';
+type Device = 'desktop' | 'mobile';
+
+/** What is being dragged, if anything. */
+type Drag = { kind: 'block'; block: Block } | { kind: 'move'; pos: number };
+
+/** A drop indicator, plus the document position it stands for. */
+type Drop = DropIndicator & { pos: number };
+
+/** Roughly the width a desktop client gives an email, and a mid-size phone. */
+const DEVICE_WIDTH: Record<Device, number> = { desktop: 640, mobile: 380 };
 
 /** The Tiptap document, or undefined for a fresh template. */
 function parseDoc(raw: string): object | undefined {
@@ -65,7 +84,7 @@ function parseDoc(raw: string): object | undefined {
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === 'object' && 'type' in parsed) return parsed;
   } catch {
-    // A corrupt document should open as an empty editor, not a blank screen.
+    // A corrupt document should open as an empty builder, not a blank screen.
   }
   return undefined;
 }
@@ -87,22 +106,32 @@ export default function TemplateEditor({ template, starterId }: TemplateEditorPr
   const [test, setTest] = useState<string | null>(null);
 
   const [view, setView] = useState<View>('edit');
-  const [rail, setRail] = useState<Rail>('variables');
+  const [leftTab, setLeftTab] = useState<LeftTab>('blocks');
+  const [rightTab, setRightTab] = useState<RightTab>('design');
+  const [device, setDevice] = useState<Device>('desktop');
   const [previewHtml, setPreviewHtml] = useState('');
   const [missing, setMissing] = useState<string[]>([]);
 
-  /**
-   * The inspector must live inside the editor's React context to read the
-   * selection, but belongs on screen in the right-hand rail. A portal is the
-   * one arrangement that gives both: it stays a child of `EmailEditor` in the
-   * React tree and renders into the rail in the DOM.
+  /*
+   * The layers tree and the inspector both need the editor's context to read
+   * the document, and both belong in a rail on the far side of the screen. A
+   * portal is the one arrangement that gives both: they stay children of
+   * `EmailEditor` in the React tree and render into a rail in the DOM.
    */
   const [inspectorHost, setInspectorHost] = useState<HTMLDivElement | null>(null);
+  const [layersHost, setLayersHost] = useState<HTMLDivElement | null>(null);
+  const [canvas, setCanvas] = useState<HTMLDivElement | null>(null);
 
-  const initialContent = useMemo(
-    () => saved ?? starterById(starterId)?.html,
-    [saved, starterId],
-  );
+  /*
+   * Drag state is a ref as well as state: the drop handler needs the current
+   * value at the moment of the drop, and a handler attached during a render
+   * would otherwise read whatever was true when that render happened.
+   */
+  const dragRef = useRef<Drag | null>(null);
+  const dropRef = useRef<Drop | null>(null);
+  const [drop, setDrop] = useState<Drop | null>(null);
+
+  const initialContent = useMemo(() => saved ?? starterById(starterId)?.html, [saved, starterId]);
   const values = useMemo(() => sampleValues(kind), [kind]);
   const starters = useMemo(() => startersFor(kind), [kind]);
 
@@ -111,7 +140,7 @@ export default function TemplateEditor({ template, starterId }: TemplateEditorPr
     setSave('idle');
   }, []);
 
-  /** Warn before losing unsaved work — this editor has no autosave. */
+  /** Warn before losing unsaved work — this builder has no autosave. */
   useEffect(() => {
     if (!dirty) return;
     const onLeave = (event: BeforeUnloadEvent) => event.preventDefault();
@@ -119,17 +148,107 @@ export default function TemplateEditor({ template, starterId }: TemplateEditorPr
     return () => window.removeEventListener('beforeunload', onLeave);
   }, [dirty]);
 
+  // ---------------------------------------------------------------- dragging
+
+  const clearDrag = useCallback(() => {
+    dragRef.current = null;
+    dropRef.current = null;
+    setDrop(null);
+  }, []);
+
+  /**
+   * Where a drop would land, from a point on screen.
+   *
+   * The answer is always relative to a block: above the one you are pointing
+   * at, or below it, depending on which half of it the pointer is in. That
+   * one rule covers dropping between two paragraphs and dropping inside an
+   * empty section, because in both cases the block under the pointer is the
+   * block you meant.
+   */
+  const dropAt = useCallback(
+    (clientX: number, clientY: number): Drop | null => {
+      const editor = editorRef.current?.editor;
+      if (!editor || !canvas) return null;
+
+      const target = blockFromCoords(editor, clientX, clientY);
+      if (!target) return null;
+
+      const rect = rectFor(editor, target.pos);
+      if (!rect) return null;
+
+      const frame = canvas.getBoundingClientRect();
+      const below = clientY > rect.top + rect.height / 2;
+
+      return {
+        pos: below ? target.end : target.pos,
+        top: (below ? rect.bottom : rect.top) - frame.top + canvas.scrollTop,
+        left: rect.left - frame.left + canvas.scrollLeft,
+        width: rect.width,
+      };
+    },
+    [canvas],
+  );
+
+  /*
+   * Capture phase, and the event stops here.
+   *
+   * ProseMirror has its own drop handling on the element underneath, and it is
+   * good at what it does — but it would read a palette tile as dropped text.
+   * Taking the event in the capture phase means it never gets there.
+   */
+  const onDragOver = useCallback(
+    (event: React.DragEvent) => {
+      if (!dragRef.current) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.dataTransfer.dropEffect = dragRef.current.kind === 'move' ? 'move' : 'copy';
+
+      const next = dropAt(event.clientX, event.clientY);
+      dropRef.current = next;
+      setDrop(next);
+    },
+    [dropAt],
+  );
+
+  const onDrop = useCallback(
+    (event: React.DragEvent) => {
+      const drag = dragRef.current;
+      const at = dropRef.current;
+      if (!drag) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      const editor = editorRef.current?.editor;
+      clearDrag();
+      if (!editor || !at) return;
+
+      if (drag.kind === 'move') moveBlockTo(editor, drag.pos, at.pos);
+      else if (drag.block.content) insertBlockAt(editor, at.pos, drag.block.content);
+    },
+    [clearDrag],
+  );
+
+  const insertBlock = useCallback((block: Block) => {
+    const editor = editorRef.current?.editor;
+    if (!editor) return;
+
+    if (block.action) block.action(editor);
+    else if (block.content) editor.chain().focus().insertContent(block.content).run();
+  }, []);
+
+  // ------------------------------------------------------------------ actions
+
+  const run = useCallback((command: (editor: NonNullable<EmailEditorRef['editor']>) => void) => {
+    const editor = editorRef.current?.editor;
+    if (editor) command(editor);
+  }, []);
+
   const insertVariable = useCallback((key: string) => {
     const editor = editorRef.current?.editor;
     if (!editor) return;
     editor.chain().focus().insertContent(`{{${key}}}`).run();
     setDirty(true);
-  }, []);
-
-  const insertBlock = useCallback((insert: (editor: NonNullable<EmailEditorRef['editor']>) => void) => {
-    const editor = editorRef.current?.editor;
-    if (!editor) return;
-    insert(editor);
   }, []);
 
   /**
@@ -233,87 +352,159 @@ export default function TemplateEditor({ template, starterId }: TemplateEditorPr
   const subjectPreview = renderTemplate(subject, values, { escape: false });
 
   return (
-    <div className="email-editor grid gap-4 lg:grid-cols-[1fr_19rem] lg:items-start">
-      <div className="min-w-0 space-y-4">
-        <div className="card space-y-3 p-4">
-          <div className="grid gap-3 sm:grid-cols-[1fr_12rem]">
-            <div>
-              <label htmlFor="tpl-name" className="label-xs muted mb-1 block">
-                Template name
-              </label>
-              <input
-                id="tpl-name"
-                className="field"
-                value={name}
-                onChange={(event) => {
-                  setName(event.target.value);
-                  markDirty();
-                }}
-              />
-            </div>
-            <div>
-              <label htmlFor="tpl-kind" className="label-xs muted mb-1 block">
-                Used for
-              </label>
-              <select
-                id="tpl-kind"
-                className="field"
-                value={kind}
-                onChange={(event) => {
-                  setKind(event.target.value as TemplateKind);
-                  markDirty();
-                }}
-              >
-                {TEMPLATE_KINDS.map((option) => (
-                  <option key={option} value={option}>
-                    {KIND_LABELS[option]}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-
+    <div className="email-builder space-y-3">
+      <div className="card space-y-3 p-4">
+        <div className="grid gap-3 sm:grid-cols-[1fr_12rem]">
           <div>
-            <label htmlFor="tpl-subject" className="label-xs muted mb-1 block">
-              Subject
+            <label htmlFor="tpl-name" className="label-xs muted mb-1 block">
+              Template name
             </label>
             <input
-              id="tpl-subject"
+              id="tpl-name"
               className="field"
-              value={subject}
-              placeholder="Invoice {{invoice.number}} from {{business.name}}"
+              value={name}
               onChange={(event) => {
-                setSubject(event.target.value);
+                setName(event.target.value);
                 markDirty();
               }}
             />
-            {subject.includes('{{') && (
-              <p className="muted mt-1 truncate text-xs">Preview: {subjectPreview}</p>
-            )}
           </div>
-
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={isDefault}
+          <div>
+            <label htmlFor="tpl-kind" className="label-xs muted mb-1 block">
+              Used for
+            </label>
+            <select
+              id="tpl-kind"
+              className="field"
+              value={kind}
               onChange={(event) => {
-                setIsDefault(event.target.checked);
+                setKind(event.target.value as TemplateKind);
                 markDirty();
               }}
-            />
-            Pre-select this template when sending a {KIND_LABELS[kind].toLowerCase()}
-          </label>
+            >
+              {TEMPLATE_KINDS.map((option) => (
+                <option key={option} value={option}>
+                  {KIND_LABELS[option]}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
 
+        <div>
+          <label htmlFor="tpl-subject" className="label-xs muted mb-1 block">
+            Subject
+          </label>
+          <input
+            id="tpl-subject"
+            className="field"
+            value={subject}
+            placeholder="Invoice {{invoice.number}} from {{business.name}}"
+            onChange={(event) => {
+              setSubject(event.target.value);
+              markDirty();
+            }}
+          />
+          {subject.includes('{{') && (
+            <p className="muted mt-1 truncate text-xs">Preview: {subjectPreview}</p>
+          )}
+        </div>
+
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={isDefault}
+            onChange={(event) => {
+              setIsDefault(event.target.checked);
+              markDirty();
+            }}
+          />
+          Pre-select this template when sending a {KIND_LABELS[kind].toLowerCase()}
+        </label>
+      </div>
+
+      <div className="grid gap-3 xl:grid-cols-[13.5rem_minmax(0,1fr)_19rem] xl:items-start">
+        {/* ------------------------------------------------------- left rail */}
+        <aside className="card overflow-hidden xl:sticky xl:top-4">
+          <div className="flex gap-1 border-b p-2" style={{ borderColor: 'var(--border)' }}>
+            <button
+              type="button"
+              className={`seg btn-sm flex-1 ${leftTab === 'blocks' ? 'seg-on' : ''}`}
+              onClick={() => setLeftTab('blocks')}
+            >
+              Blocks
+            </button>
+            <button
+              type="button"
+              className={`seg btn-sm flex-1 ${leftTab === 'layers' ? 'seg-on' : ''}`}
+              onClick={() => setLeftTab('layers')}
+            >
+              Layers
+            </button>
+          </div>
+
+          <div className="p-3" hidden={leftTab !== 'blocks'}>
+            <BlockPalette
+              onInsert={insertBlock}
+              onDragStart={(block) => {
+                dragRef.current = { kind: 'block', block };
+              }}
+              onDragEnd={clearDrag}
+            />
+            <p className="muted mt-4 text-xs leading-relaxed">
+              Drag onto the email, or click to drop one in at the cursor. Typing{' '}
+              <span className="font-mono">/</span> in the email does the same.
+            </p>
+          </div>
+
+          {/* Filled by the portal below, which is what puts the tree inside the
+              editor's context while it sits out here. */}
+          <div className="p-3" hidden={leftTab !== 'layers'} ref={setLayersHost} />
+        </aside>
+
+        {/* ----------------------------------------------------------- canvas */}
         <div className="card overflow-hidden">
           <div
-            className="flex items-center justify-between gap-2 border-b px-4 py-2"
+            className="flex flex-wrap items-center justify-between gap-2 border-b px-3 py-2"
             style={{ borderColor: 'var(--border)' }}
           >
-            <span className="label-xs muted">
-              {view === 'preview' ? 'Preview' : view === 'starters' ? 'Base templates' : 'Body'}
-            </span>
-            <div className="flex gap-1">
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                title="Undo"
+                onClick={() => run((editor) => editor.commands.undo())}
+              >
+                Undo
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                title="Redo"
+                onClick={() => run((editor) => editor.commands.redo())}
+              >
+                Redo
+              </button>
+            </div>
+
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                className={`seg btn-sm ${device === 'desktop' ? 'seg-on' : ''}`}
+                onClick={() => setDevice('desktop')}
+              >
+                Desktop
+              </button>
+              <button
+                type="button"
+                className={`seg btn-sm ${device === 'mobile' ? 'seg-on' : ''}`}
+                onClick={() => setDevice('mobile')}
+              >
+                Mobile
+              </button>
+            </div>
+
+            <div className="flex items-center gap-1">
               <button
                 type="button"
                 className="btn btn-ghost btn-sm"
@@ -331,210 +522,196 @@ export default function TemplateEditor({ template, starterId }: TemplateEditorPr
             </div>
           </div>
 
-          {/* The block palette. The same commands as typing '/', on a surface
-              you can see without being told it exists. */}
-          {view === 'edit' && (
+          <div
+            className="builder-canvas"
+            ref={setCanvas}
+            onDragOverCapture={onDragOver}
+            onDropCapture={onDrop}
+            onDragLeaveCapture={(event) => {
+              // Leaving for a child element is not leaving the canvas.
+              if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDrop(null);
+            }}
+          >
+            {/* The editor stays mounted behind the other views so its document
+                and undo history survive toggling back and forth. */}
             <div
-              className="flex flex-wrap items-center gap-1 border-b px-3 py-2"
-              style={{ borderColor: 'var(--border)' }}
+              className="builder-sheet"
+              style={{ maxWidth: DEVICE_WIDTH[device] }}
+              hidden={view !== 'edit'}
             >
-              {BLOCK_GROUPS.map((group, index) => (
-                <Fragment key={group.label}>
-                  {index > 0 && (
-                    <span
-                      aria-hidden="true"
-                      className="mx-1 h-5 w-px"
-                      style={{ background: 'var(--border)' }}
-                    />
+              <EmailEditor
+                ref={editorRef}
+                content={initialContent}
+                onUpdate={markDirty}
+                onUploadImage={uploadImage}
+                placeholder="Write the email, or drag a block in from the left."
+                className="builder-content"
+              >
+                <Overlay
+                  canvas={view === 'edit' ? canvas : null}
+                  indicator={drop}
+                  onMoveStart={(pos) => {
+                    dragRef.current = { kind: 'move', pos };
+                  }}
+                  onMoveEnd={clearDrag}
+                />
+
+                {inspectorHost &&
+                  createPortal(
+                    <Inspector.Root className="re-inspector space-y-3">
+                      <Inspector.Breadcrumb />
+                      <Inspector.Node />
+                      <Inspector.Text />
+                      <div className="border-t pt-3" style={{ borderColor: 'var(--border)' }}>
+                        <p className="label-xs muted mb-2">Whole email</p>
+                        <Inspector.Document />
+                      </div>
+                    </Inspector.Root>,
+                    inspectorHost,
                   )}
-                  {group.blocks.map((block) => (
+
+                {layersHost && createPortal(<LayersPanel />, layersHost)}
+              </EmailEditor>
+            </div>
+
+            {view === 'starters' && (
+              <div className="builder-panel">
+                <p className="muted mb-3 max-w-prose text-xs leading-relaxed">
+                  A finished layout to edit down, rather than a blank page. Picking one replaces the
+                  body — the variables in it are already the right ones for a{' '}
+                  {KIND_LABELS[kind].toLowerCase()} email.
+                </p>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {starters.map((starter) => (
                     <button
-                      key={block.id}
+                      key={starter.id}
                       type="button"
-                      className="seg btn-sm"
-                      title={block.hint}
-                      onClick={() => insertBlock(block.insert)}
+                      className="card p-3 text-left"
+                      style={{ borderColor: 'var(--border)' }}
+                      onClick={() => applyStarter(starter)}
                     >
-                      {block.label}
+                      <span className="block text-sm font-medium">{starter.name}</span>
+                      <span className="muted mt-1 block text-xs leading-relaxed">
+                        {starter.description}
+                      </span>
                     </button>
                   ))}
-                </Fragment>
-              ))}
-            </div>
-          )}
+                </div>
+              </div>
+            )}
 
-          {/* The editor stays mounted behind the other views so its document
-              and undo history survive toggling back and forth. */}
-          <div hidden={view !== 'edit'}>
-            <EmailEditor
-              ref={editorRef}
-              content={initialContent}
-              onUpdate={markDirty}
-              onUploadImage={uploadImage}
-              placeholder="Write the email. Press '/' for blocks, or use the palette above."
-              className="min-h-[26rem] p-4"
+            {view === 'preview' && (
+              <iframe
+                title="Email preview"
+                // Sandboxed with no allow-scripts: this renders HTML the editor
+                // produced, and it should never be able to run anything.
+                sandbox=""
+                srcDoc={previewHtml}
+                className="builder-sheet min-h-[30rem] w-full border-0 bg-white"
+                style={{ maxWidth: DEVICE_WIDTH[device] }}
+              />
+            )}
+          </div>
+        </div>
+
+        {/* ------------------------------------------------------ right rail */}
+        <aside className="space-y-3 xl:sticky xl:top-4">
+          <div className="card space-y-2 p-4">
+            <button
+              type="button"
+              className="btn btn-primary w-full"
+              onClick={handleSave}
+              disabled={save === 'saving'}
             >
-              {inspectorHost &&
-                createPortal(
-                  <Inspector.Root className="re-inspector space-y-3">
-                    <Inspector.Breadcrumb />
-                    <Inspector.Node />
-                    <Inspector.Text />
-                    <div className="border-t pt-3" style={{ borderColor: 'var(--border)' }}>
-                      <p className="label-xs muted mb-2">Whole email</p>
-                      <Inspector.Document />
-                    </div>
-                  </Inspector.Root>,
-                  inspectorHost,
-                )}
-            </EmailEditor>
+              {save === 'saving' ? 'Saving…' : dirty ? 'Save changes' : 'Saved'}
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary w-full"
+              onClick={handleTestSend}
+              disabled={save === 'saving'}
+            >
+              Send test to myself
+            </button>
+            {save === 'saved' && !dirty && <p className="muted text-xs">Saved.</p>}
+            {error && (
+              <p className="text-xs" style={{ color: 'var(--danger, #b3261e)' }}>
+                {error}
+              </p>
+            )}
+            {test && <p className="muted text-xs">{test}</p>}
           </div>
 
-          {view === 'starters' && (
-            <div className="p-4">
-              <p className="muted mb-3 max-w-prose text-xs leading-relaxed">
-                A finished layout to edit down, rather than a blank page. Picking one replaces the
-                body — the variables in it are already the right ones for a{' '}
-                {KIND_LABELS[kind].toLowerCase()} email.
+          <div className="card overflow-hidden">
+            <div className="flex gap-1 border-b p-2" style={{ borderColor: 'var(--border)' }}>
+              <button
+                type="button"
+                className={`seg btn-sm flex-1 ${rightTab === 'design' ? 'seg-on' : ''}`}
+                onClick={() => setRightTab('design')}
+              >
+                Design
+              </button>
+              <button
+                type="button"
+                className={`seg btn-sm flex-1 ${rightTab === 'variables' ? 'seg-on' : ''}`}
+                onClick={() => setRightTab('variables')}
+              >
+                Variables
+              </button>
+            </div>
+
+            <div className="p-4" hidden={rightTab !== 'design'}>
+              <p className="muted mb-3 text-xs leading-relaxed">
+                Click a block on the canvas to change its spacing, colour and size. Settings for
+                the whole email are at the bottom.
               </p>
-              <div className="grid gap-2 sm:grid-cols-2">
-                {starters.map((starter) => (
-                  <button
-                    key={starter.id}
-                    type="button"
-                    className="card p-3 text-left"
-                    style={{ borderColor: 'var(--border)' }}
-                    onClick={() => applyStarter(starter)}
-                  >
-                    <span className="block text-sm font-medium">{starter.name}</span>
-                    <span className="muted mt-1 block text-xs leading-relaxed">
-                      {starter.description}
-                    </span>
-                  </button>
+              <div ref={setInspectorHost} />
+            </div>
+
+            <div className="p-4" hidden={rightTab !== 'variables'}>
+              <p className="muted mb-3 text-xs leading-relaxed">
+                Click to insert at the cursor. Each one is replaced with the real value when the
+                email is sent.
+              </p>
+
+              <div className="space-y-3">
+                {VARIABLE_GROUPS[kind].map((group) => (
+                  <div key={group.label}>
+                    <p className="label-xs muted mb-1">{group.label}</p>
+                    <div className="flex flex-wrap gap-1">
+                      {group.variables.map((variable) => (
+                        <button
+                          key={variable.key}
+                          type="button"
+                          className="seg btn-sm"
+                          title={`${variable.label} — e.g. ${variable.sample}`}
+                          onClick={() => insertVariable(variable.key)}
+                        >
+                          {variable.key}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                 ))}
               </div>
+
+              <p className="muted mt-3 text-xs">
+                {variablesFor(kind).length} available for {KIND_LABELS[kind].toLowerCase()} emails.
+              </p>
             </div>
-          )}
-
-          {view === 'preview' && (
-            <iframe
-              title="Email preview"
-              // Sandboxed with no allow-scripts: this renders HTML the editor
-              // produced, and it should never be able to run anything.
-              sandbox=""
-              srcDoc={previewHtml}
-              className="min-h-[26rem] w-full border-0 bg-white"
-            />
-          )}
-        </div>
-
-        {missing.length > 0 && (
-          <div className="card p-3 text-xs" style={{ borderColor: 'var(--border-strong)' }}>
-            <p className="mb-1 font-medium">
-              {missing.length === 1 ? 'This variable is' : 'These variables are'} not recognised and
-              will send as blank space:
-            </p>
-            <p className="muted font-mono">{missing.map((key) => `{{${key}}}`).join('  ')}</p>
           </div>
-        )}
+        </aside>
       </div>
 
-      <aside className="space-y-3 lg:sticky lg:top-4">
-        <div className="card space-y-2 p-4">
-          <button
-            type="button"
-            className="btn btn-primary w-full"
-            onClick={handleSave}
-            disabled={save === 'saving'}
-          >
-            {save === 'saving' ? 'Saving…' : dirty ? 'Save changes' : 'Saved'}
-          </button>
-          <button
-            type="button"
-            className="btn btn-secondary w-full"
-            onClick={handleTestSend}
-            disabled={save === 'saving'}
-          >
-            Send test to myself
-          </button>
-          {save === 'saved' && !dirty && <p className="muted text-xs">Saved.</p>}
-          {error && (
-            <p className="text-xs" style={{ color: 'var(--danger, #b3261e)' }}>
-              {error}
-            </p>
-          )}
-          {test && <p className="muted text-xs">{test}</p>}
+      {missing.length > 0 && (
+        <div className="card p-3 text-xs" style={{ borderColor: 'var(--border-strong)' }}>
+          <p className="mb-1 font-medium">
+            {missing.length === 1 ? 'This variable is' : 'These variables are'} not recognised and
+            will send as blank space:
+          </p>
+          <p className="muted font-mono">{missing.map((key) => `{{${key}}}`).join('  ')}</p>
         </div>
-
-        <div className="card overflow-hidden">
-          <div
-            className="flex gap-1 border-b p-2"
-            style={{ borderColor: 'var(--border)' }}
-            role="tablist"
-          >
-            <button
-              type="button"
-              role="tab"
-              aria-selected={rail === 'variables'}
-              className={`seg btn-sm flex-1 ${rail === 'variables' ? 'seg-on' : ''}`}
-              onClick={() => setRail('variables')}
-            >
-              Variables
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={rail === 'design'}
-              className={`seg btn-sm flex-1 ${rail === 'design' ? 'seg-on' : ''}`}
-              onClick={() => setRail('design')}
-            >
-              Design
-            </button>
-          </div>
-
-          <div className="p-4" hidden={rail !== 'variables'}>
-            <p className="muted mb-3 text-xs leading-relaxed">
-              Click to insert at the cursor. Each one is replaced with the real value when the email
-              is sent.
-            </p>
-
-            <div className="space-y-3">
-              {VARIABLE_GROUPS[kind].map((group) => (
-                <div key={group.label}>
-                  <p className="label-xs muted mb-1">{group.label}</p>
-                  <div className="flex flex-wrap gap-1">
-                    {group.variables.map((variable) => (
-                      <button
-                        key={variable.key}
-                        type="button"
-                        className="seg btn-sm"
-                        title={`${variable.label} — e.g. ${variable.sample}`}
-                        onClick={() => insertVariable(variable.key)}
-                      >
-                        {variable.key}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            <p className="muted mt-3 text-xs">
-              {variablesFor(kind).length} available for {KIND_LABELS[kind].toLowerCase()} emails.
-            </p>
-          </div>
-
-          <div className="p-4" hidden={rail !== 'design'}>
-            <p className="muted mb-3 text-xs leading-relaxed">
-              Click a block in the email to change its spacing, colour and size. Settings for the
-              whole email are at the bottom.
-            </p>
-            {/* Filled by the portal above, which is what puts the inspector
-                inside the editor's context while it sits out here. */}
-            <div ref={setInspectorHost} />
-          </div>
-        </div>
-      </aside>
+      )}
     </div>
   );
 }

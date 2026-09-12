@@ -361,8 +361,16 @@ textarea.field {
 }
 
 /*
- * The email editor's chrome — bubble menu, slash menu, inspector.
+ * The email builder.
  *
+ * Three panes: blocks, canvas, settings. The canvas is the only one that is
+ * not an ordinary app surface — it is a picture of an email, so it gets a
+ * workspace grey behind a white sheet, the way every visual editor since
+ * PageMaker has done it. The rest is the same instrument panel as everywhere
+ * else in the app.
+ */
+
+/*
  * `@react-email/editor` ships layout only, plus a `--re-*` palette it switches
  * on `prefers-color-scheme`. This app switches on `data-theme`, so left alone
  * the menus go dark inside an app someone has pinned to light. Mapping the
@@ -390,15 +398,223 @@ textarea.field {
   --re-danger: var(--color-overdue);
 }
 
-/*
- * The editing surface stays white in dark mode, and that is not an oversight.
- * It is a picture of an email, and the email will be white in the client's
- * inbox. Darkening it here would mean designing against a background nobody
- * ever sees.
- */
-.email-editor .tiptap.ProseMirror {
-  border-radius: var(--radius-ctl);
+/* The workspace the sheet sits on. Positioned, because every outline the
+   builder draws is measured against this box. */
+.builder-canvas {
+  position: relative;
+  min-height: 30rem;
+  padding: 1.5rem 1rem;
+  background: var(--surface-sunken);
 }
+
+/*
+ * The sheet stays white in dark mode, and that is not an oversight. It is a
+ * picture of an email, and the email will be white in the client's inbox.
+ * Darkening it here would mean designing against a background nobody sees.
+ */
+.builder-sheet {
+  margin: 0 auto;
+  background: #fff;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.12);
+  transition: max-width 0.15s ease-out;
+}
+
+.builder-content {
+  min-height: 26rem;
+  padding: 1.5rem;
+}
+
+.builder-panel {
+  padding: 0.5rem;
+}
+
+/* ---------------------------------------------------------------- overlay */
+
+/*
+ * Chrome drawn over the canvas. It never takes the pointer — only the two
+ * controls that need clicks turn it back on. Anything else would put a sheet
+ * of glass over the text.
+ */
+.builder-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 5;
+}
+
+.builder-hover {
+  outline: 1px dashed var(--accent);
+  outline-offset: 1px;
+}
+
+.builder-selected {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* The block's name, and the only way to select one you cannot put a cursor
+   in — a section, a column, the row holding them. */
+.builder-chip {
+  position: absolute;
+  top: -1.125rem;
+  left: 0;
+  pointer-events: auto;
+  padding: 0 0.3rem;
+  border-radius: 2px 2px 0 0;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-family: var(--font-mono);
+  font-size: 0.5625rem;
+  font-weight: 600;
+  line-height: 1.125rem;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.builder-chip-on {
+  pointer-events: none;
+  border-radius: 2px;
+}
+
+.builder-toolbar {
+  position: absolute;
+  top: -1.375rem;
+  right: 0;
+  display: flex;
+  align-items: stretch;
+  gap: 1px;
+  pointer-events: auto;
+}
+
+.builder-toolbar > button,
+.builder-grip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.25rem;
+  height: 1.125rem;
+  padding: 0 0.25rem;
+  border: 1px solid var(--accent);
+  background: var(--surface-raised);
+  color: var(--text);
+  font-size: 0.625rem;
+  line-height: 1;
+}
+
+.builder-toolbar > button:hover {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.builder-grip {
+  cursor: grab;
+  letter-spacing: -0.1em;
+}
+
+.builder-grip:active {
+  cursor: grabbing;
+}
+
+/* Where the thing you are dragging would land. */
+.builder-drop {
+  height: 2px;
+  margin-top: -1px;
+  background: var(--accent);
+  box-shadow: 0 0 0 1px color-mix(in oklab, var(--accent) 30%, transparent);
+}
+
+.builder-drop::before {
+  content: '';
+  position: absolute;
+  top: -3px;
+  left: -3px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+/* ---------------------------------------------------------------- palette */
+
+@utility block-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
+  padding: 0.625rem 0.25rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-ctl);
+  background: var(--surface-raised);
+  color: var(--text-muted);
+  font-size: 0.6875rem;
+  text-align: center;
+  cursor: grab;
+
+  &:hover {
+    border-color: var(--accent);
+    color: var(--text);
+  }
+
+  &:active {
+    cursor: grabbing;
+  }
+}
+
+/* ----------------------------------------------------------------- layers */
+
+.layer-tree,
+.layer-tree ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.layer-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.375rem;
+  width: 100%;
+  padding: 0.25rem 0.5rem;
+  border-radius: var(--radius-ctl);
+  text-align: left;
+}
+
+.layer-row:hover {
+  background: var(--surface-sunken);
+}
+
+.layer-row-on {
+  background: var(--surface-inverse);
+}
+
+.layer-label {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 0.5625rem;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.layer-excerpt {
+  overflow: hidden;
+  font-size: 0.6875rem;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--text);
+}
+
+.layer-row-on .layer-label {
+  color: color-mix(in oklab, var(--text-inverse) 70%, transparent);
+}
+
+.layer-row-on .layer-excerpt {
+  color: var(--text-inverse);
+}
+
+/* -------------------------------------------------------------- inspector */
 
 /* The inspector sits in a narrow rail; its own stylesheet does the layout,
    this only brings the type down to the size of the labels around it. */

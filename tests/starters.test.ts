@@ -5,6 +5,7 @@ import { StarterKit } from '@react-email/editor/extensions';
 import type { JSONContent } from '@tiptap/core';
 
 import { STARTERS } from '~/lib/mail/starters';
+import { BLOCKS } from '~/components/email/blocks';
 
 /**
  * The base templates, run through the real editor schema.
@@ -131,6 +132,58 @@ describe('base templates, parsed by the editor', () => {
           expect(column.type).toBe('columnsColumn');
         }
       }
+    }
+  });
+});
+
+describe('palette blocks, parsed by the editor', () => {
+  /** What each tile must actually produce when dropped. */
+  const PRODUCES: Record<string, string> = {
+    paragraph: 'paragraph',
+    h1: 'heading',
+    h2: 'heading',
+    bullets: 'bulletList',
+    numbers: 'orderedList',
+    quote: 'blockquote',
+    button: 'button',
+    divider: 'horizontalRule',
+    section: 'section',
+    'columns-2': 'twoColumns',
+    'columns-3': 'threeColumns',
+  };
+
+  it('covers every block in the palette', () => {
+    // A tile added without a line here would go untested, which is exactly the
+    // tile most likely to have a typo in its markup.
+    const draggable = BLOCKS.filter((block) => block.content).map((block) => block.id);
+    expect(draggable.sort()).toEqual(Object.keys(PRODUCES).sort());
+  });
+
+  it('inserts the block each tile claims to insert', () => {
+    for (const block of BLOCKS) {
+      if (!block.content) continue;
+      const types = typesIn(parse(block.content));
+      expect(types, `the ${block.id} tile does not insert a ${PRODUCES[block.id]}`).toContain(
+        PRODUCES[block.id],
+      );
+    }
+  });
+
+  it('gives Image an action rather than markup, and everything else markup', () => {
+    // There is nothing to insert for an image until a file has been chosen.
+    for (const block of BLOCKS) {
+      expect(Boolean(block.content) !== Boolean(block.action), `${block.id} needs exactly one`).toBe(
+        true,
+      );
+    }
+    expect(BLOCKS.find((block) => block.action)?.id).toBe('image');
+  });
+
+  it('leaves the palette unstyled, so the theme and inspector own the look', () => {
+    // A tile that carried its own colours would fight both the email theme and
+    // any change made in the Design panel afterwards.
+    for (const block of BLOCKS) {
+      expect(block.content ?? '', `${block.id} carries hard-coded styling`).not.toContain('style=');
     }
   });
 });

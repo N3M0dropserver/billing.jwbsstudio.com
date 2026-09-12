@@ -1,21 +1,36 @@
 /**
- * The insertable blocks, as a visible palette.
+ * The block catalogue — what you can drag onto the canvas.
  *
- * The editor already understands these — typing `/` brings up the same list.
- * But `/` is knowledge you either have or do not, and a template is edited
- * rarely enough that nobody remembers it between visits. The palette is the
- * same commands with a surface you can see, which costs a row of buttons and
- * removes the only thing about this editor you would otherwise have to be told.
+ * Each block is a piece of HTML the editor parses back into a real node. That
+ * choice buys three things: the same markup contract the base templates use
+ * (see `starters.ts`), a drop that works at an arbitrary position rather than
+ * only at the cursor, and a catalogue the schema test can parse and check.
  *
- * Each entry is the command the matching slash item runs, minus the
- * `deleteRange` that slash needs to clear the typed `/`.
+ * Image is the exception — there is nothing to insert until a file has been
+ * chosen, so it carries an action instead of markup.
  */
 
 import type { Editor } from '@tiptap/core';
+import {
+  BoxIcon,
+  Columns2Icon,
+  Columns3Icon,
+  Heading1Icon,
+  Heading2Icon,
+  ImageIcon,
+  LayoutIcon,
+  ListIcon,
+  ListOrderedIcon,
+  MousePointerClickIcon,
+  SplitSquareVerticalIcon,
+  TextQuoteIcon,
+  TypeIcon,
+  type IconProps,
+} from '@react-email/editor/ui';
 
-// Type-only, emitting nothing: these modules declare the `setButton`,
-// `insertSection`, `insertColumns` and `uploadImage` commands onto Tiptap's
-// `Commands` interface, and without them the chains below do not typecheck.
+// Type-only, emitting nothing: these modules declare `uploadImage` onto
+// Tiptap's `Commands` interface, and without them the call below does not
+// typecheck.
 import type {} from '@react-email/editor/extensions';
 import type {} from '@react-email/editor/plugins';
 
@@ -24,7 +39,15 @@ export interface Block {
   label: string;
   /** Shown on hover — what it is for, not what it is called. */
   hint: string;
-  insert: (editor: Editor) => void;
+  icon: (props: IconProps) => React.ReactElement;
+  /**
+   * The markup to insert. Deliberately unstyled: the editor theme dresses
+   * these, and the inspector is where a block gets its own look. A palette
+   * that inserted hard-coded colours would fight both.
+   */
+  content?: string;
+  /** For blocks that cannot be expressed as markup — only Image, so far. */
+  action?: (editor: Editor) => void;
 }
 
 export interface BlockGroup {
@@ -39,82 +62,102 @@ export const BLOCK_GROUPS: BlockGroup[] = [
       {
         id: 'paragraph',
         label: 'Text',
-        hint: 'Plain paragraph',
-        insert: (editor) => editor.chain().focus().toggleNode('paragraph', 'paragraph').run(),
+        hint: 'A paragraph',
+        icon: TypeIcon,
+        content: '<p>Write something here.</p>',
       },
       {
         id: 'h1',
         label: 'Title',
         hint: 'Largest heading — one per email is plenty',
-        insert: (editor) => editor.chain().focus().setNode('heading', { level: 1 }).run(),
+        icon: Heading1Icon,
+        content: '<h1>Title</h1>',
       },
       {
         id: 'h2',
         label: 'Subtitle',
         hint: 'Second-level heading',
-        insert: (editor) => editor.chain().focus().setNode('heading', { level: 2 }).run(),
+        icon: Heading2Icon,
+        content: '<h2>Subtitle</h2>',
       },
       {
         id: 'bullets',
         label: 'Bullets',
         hint: 'Bulleted list',
-        insert: (editor) => editor.chain().focus().toggleBulletList().run(),
+        icon: ListIcon,
+        content: '<ul><li><p>First thing</p></li><li><p>Second thing</p></li></ul>',
       },
       {
         id: 'numbers',
         label: 'Numbers',
         hint: 'Numbered list',
-        insert: (editor) => editor.chain().focus().toggleOrderedList().run(),
+        icon: ListOrderedIcon,
+        content: '<ol><li><p>First thing</p></li><li><p>Second thing</p></li></ol>',
       },
       {
         id: 'quote',
         label: 'Quote',
         hint: 'Indented quotation',
-        insert: (editor) =>
-          editor.chain().focus().toggleNode('paragraph', 'paragraph').toggleBlockquote().run(),
+        icon: TextQuoteIcon,
+        content: '<blockquote><p>Quoted text</p></blockquote>',
       },
     ],
   },
   {
-    label: 'Blocks',
+    label: 'Layout',
     blocks: [
       {
         id: 'button',
         label: 'Button',
-        hint: 'A link that looks like a button — set its address by clicking it',
-        insert: (editor) => editor.chain().focus().setButton().run(),
-      },
-      {
-        id: 'section',
-        label: 'Section',
-        hint: 'A band you can give its own background and padding',
-        insert: (editor) => editor.chain().focus().insertSection().run(),
+        hint: 'A link that looks like a button — set its address in the panel on the right',
+        icon: MousePointerClickIcon,
+        content: '<a data-id="react-email-button" href="#">Button</a>',
       },
       {
         id: 'divider',
         label: 'Divider',
         hint: 'Horizontal rule',
-        insert: (editor) => editor.chain().focus().setHorizontalRule().run(),
+        icon: SplitSquareVerticalIcon,
+        content: '<hr>',
+      },
+      {
+        id: 'section',
+        label: 'Section',
+        hint: 'A band you can give its own background and padding',
+        icon: LayoutIcon,
+        content: '<section data-type="section"><p>Section</p></section>',
       },
       {
         id: 'columns-2',
         label: '2 columns',
         hint: 'Side-by-side columns — they stack on a phone',
-        insert: (editor) => editor.chain().focus().insertColumns(2).run(),
+        icon: Columns2Icon,
+        content:
+          '<div data-type="two-columns">' +
+          '<div data-type="column"><p>Left</p></div>' +
+          '<div data-type="column"><p>Right</p></div>' +
+          '</div>',
       },
       {
         id: 'columns-3',
         label: '3 columns',
         hint: 'Three columns — they stack on a phone',
-        insert: (editor) => editor.chain().focus().insertColumns(3).run(),
+        icon: Columns3Icon,
+        content:
+          '<div data-type="three-columns">' +
+          '<div data-type="column"><p>One</p></div>' +
+          '<div data-type="column"><p>Two</p></div>' +
+          '<div data-type="column"><p>Three</p></div>' +
+          '</div>',
       },
       {
         id: 'image',
         label: 'Image',
         hint: 'Upload an image',
-        // Opens the file picker; the upload itself is `onUploadImage` on the
-        // editor, which posts to the image endpoint.
-        insert: (editor) => {
+        icon: ImageIcon,
+        // No markup: there is nothing to insert until a file is chosen. The
+        // upload itself is `onUploadImage` on the editor.
+        action: (editor) => {
           editor.commands.focus();
           editor.commands.uploadImage();
         },
@@ -122,3 +165,13 @@ export const BLOCK_GROUPS: BlockGroup[] = [
     ],
   },
 ];
+
+export const BLOCKS: Block[] = BLOCK_GROUPS.flatMap((group) => group.blocks);
+
+export function blockById(id: string | null | undefined): Block | null {
+  if (!id) return null;
+  return BLOCKS.find((block) => block.id === id) ?? null;
+}
+
+/** The icon for a node type in the document, for the layers tree. */
+export const BOX_ICON = BoxIcon;

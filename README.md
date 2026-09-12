@@ -20,12 +20,11 @@ emails it with the PDF attached, and gives the client a public link to view and
 pay. Bank transfer always; Stripe card payment optionally, with a webhook that
 marks the invoice paid.
 
-**Email templates** — a WYSIWYG block editor at `/templates` (built on
-`@react-email/editor`) for writing the wording once and reusing it, with merge
-variables like `{{invoice.number}}` and `{{client.firstName}}`. Six base
-templates to start from, a palette of email blocks — buttons, sections,
-columns, dividers, images — and an inspector for the spacing and colour of
-whichever block is selected. Templates are
+**Email templates** — a drag-and-drop email builder at `/templates` for writing
+the wording once and reusing it, with merge variables like
+`{{invoice.number}}` and `{{client.firstName}}`. Blocks on the left, the email
+in the middle, settings for the selected block on the right; six base templates
+to start from. Templates are
 optional: choosing none falls back to the built-in wording, so sending works on
 a fresh account with no templates at all. Sends are recorded, with approximate
 open tracking — read the caveats in *Email* before trusting the numbers.
@@ -327,28 +326,43 @@ entirely.
 
 ### Templates
 
-`/templates` is a block editor for the outbound wording. It saves three things
-per template: the Tiptap JSON it reloads from, the rendered HTML that gets
+`/templates` is a visual builder for the outbound wording. It saves three
+things per template: the Tiptap JSON it reloads from, the rendered HTML that gets
 mailed, and a plain-text alternative. Rendering happens **in the browser** —
 the Worker never runs React Email, which keeps Tiptap out of the Worker bundle
-entirely (it is a ~2.5 MB client chunk, loaded only on the editor page).
+entirely (it is a ~2.5 MB client chunk, ~790 KB gzipped, loaded only on the
+builder page).
 
-Three ways into the same document, because they suit different moments. **Base
-templates** (`src/lib/mail/starters.ts`) give a finished layout to edit down
-rather than a blank page; one can be chosen when the template is created or
-applied later from *Start from a base*. The **block palette** above the editor
-inserts buttons, sections, columns, dividers, lists and images — the same
-commands as typing `/`, on a surface you can see without being told it exists.
-The **inspector** in the right-hand rail edits the padding, colour, size and
-alignment of the selected block, and the whole email's background and width.
+A three-pane builder, in the shape anyone who has used Klaviyo or GrapesJS
+expects: **blocks** and **layers** on the left, the **canvas** in the middle,
+**design** and **variables** on the right. Blocks drag onto the canvas (or
+click, for touch and keyboard); the selected block gets an outline and a
+toolbar to move, duplicate or delete it; the design panel edits its spacing,
+colour, size and alignment, and the email's own background and width. A
+desktop/mobile toggle changes the canvas width the way a client would.
 
-Starters are authored as HTML rather than editor JSON, for two reasons:
-hand-written Tiptap JSON is unreviewable, and converting HTML into it needs the
-editor schema, which must stay out of the Worker. So a starter's id rides along
-on the redirect into the editor and the browser applies the body.
-`tests/starters.test.ts` parses every starter through the real schema and
-asserts each block arrives as itself — a button missing one attribute is still
-valid HTML, it just silently turns into a paragraph.
+The thing that makes this work is that **there is no second model of the
+email**. The canvas is a real rich-text editor — click in and type, paste, undo
+— and every piece of builder chrome is a reading of that same document rather
+than a parallel tree kept in sync with it. A block dragged in and a paragraph
+typed by hand produce the same kind of node, which is why the builder and the
+text editing can coexist instead of fighting. `builder/targeting.ts` is the
+whole translation layer: which block is under this point, where is it on
+screen, and how do you move it. `tests/builder.test.ts` drives those against a
+real editor, because ProseMirror position arithmetic is where this kind of
+thing quietly goes wrong — a node's position is not its index, and nothing
+throws when you get it a little bit off.
+
+**Base templates** (`src/lib/mail/starters.ts`) give a finished layout to edit
+down rather than a blank page; one can be chosen when the template is created
+or applied later from *Start from a base*. They are authored as HTML rather
+than editor JSON, for two reasons: hand-written Tiptap JSON is unreviewable,
+and converting HTML into it needs the editor schema, which must stay out of
+the Worker. So a starter's id rides along on the redirect into the editor and
+the browser applies the body. `tests/starters.test.ts` parses every starter and
+every palette block through the real schema and asserts each one arrives as the
+block it claims to be — a button missing one attribute is still valid HTML, it
+just silently turns into a paragraph.
 
 Bodies use `{{variable}}` tokens, substituted at send time. The catalogue lives
 in `src/lib/mail/variables.ts` and is shared by the editor palette and the send
@@ -476,6 +490,6 @@ src/
   pages/          Astro routes and API endpoints
   components/     Astro components and React islands
 migrations/       D1 migrations
-tests/            270 tests, mostly the tax engine
+tests/            300 tests, mostly the tax engine
 docs/             the tax research
 ```
