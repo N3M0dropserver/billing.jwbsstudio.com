@@ -1,64 +1,62 @@
 {
-  "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "jwbs-billing",
-  "compatibility_date": "2026-09-01",
-  "compatibility_flags": ["nodejs_compat"],
-
-  // `main` and `assets` are set by the Astro Cloudflare adapter's Vite
-  // plugin at build time — do not add them here, it will fail the build.
-
-  "observability": {
-    "enabled": true
-  },
-
-  "d1_databases": [
-    {
-      "binding": "DB",
-      "database_name": "jwbs-billing",
-      "database_id": "REPLACE_WITH_YOUR_D1_DATABASE_ID",
-      "migrations_dir": "migrations"
+    "$schema": "node_modules/wrangler/config-schema.json",
+    "name": "jwbs-billing",
+    "compatibility_date": "2026-09-01",
+    "compatibility_flags": [
+        "nodejs_compat"
+    ],
+    // `main` and `assets` are set by the Astro Cloudflare adapter's Vite
+    // plugin at build time — do not add them here, it will fail the build.
+    "observability": {
+        "enabled": true
+    },
+    "d1_databases": [
+        {
+            "binding": "DB",
+            "database_name": "jwbs-billing",
+            "database_id": "da0a78d0-af29-4c41-ba3c-47ee983b6bdc",
+            "migrations_dir": "migrations"
+        }
+    ],
+    "r2_buckets": [
+        {
+            "binding": "FILES",
+            "bucket_name": "jwbs-billing-files"
+        }
+    ],
+    "kv_namespaces": [
+        {
+            "binding": "SESSION",
+            "id": "f9558282d10a4562a48ae4e44d6d547b"
+        }
+    ],
+    "ai": {
+        "binding": "AI"
+    },
+    "vars": {
+        "APP_NAME": "JWBS Studio Billing",
+        "APP_URL": "https://billing.jwbsstudio.com",
+        // "cloudflare" uses the EMAIL binding below (Cloudflare Email Service,
+        // public beta). "resend" uses RESEND_API_KEY. "none" disables sending.
+        "MAIL_PROVIDER": "cloudflare",
+        "MAIL_FROM": "invoices@jwbsstudio.com",
+        "MAIL_FROM_NAME": "JWBS Studio"
     }
-  ],
-
-  "r2_buckets": [
-    {
-      "binding": "FILES",
-      "bucket_name": "jwbs-billing-files"
-    }
-  ],
-
-  "kv_namespaces": [
-    {
-      "binding": "SESSION",
-      "id": "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
-    }
-  ],
-
-  "ai": {
-    "binding": "AI"
-  },
-
-  "vars": {
-    "APP_NAME": "JWBS Studio Billing",
-    "APP_URL": "https://billing.jwbsstudio.com",
-    // "cloudflare" uses the EMAIL binding below (Cloudflare Email Service).
-    // "resend" uses RESEND_API_KEY instead. "none" disables sending.
-    "MAIL_PROVIDER": "cloudflare",
-    "MAIL_FROM": "invoices@jwbsstudio.com",
-    "MAIL_FROM_NAME": "JWBS Studio"
-  },
-
-  // Cloudflare Email Service. The sending domain must use Cloudflare DNS and
-  // be onboarded to Email Service before this can reach arbitrary recipients
-  // — until then it delivers only to destination addresses verified in your
-  // account. See README.
-  //
-  // `remote: true` lets `wrangler dev` send through the real service while the
-  // Worker runs locally; there is no local emulation of email delivery.
-  "send_email": [
-    {
-      "name": "EMAIL",
-      "remote": true
-    }
-  ]
+    // Cloudflare Email Service. The sending domain must use Cloudflare DNS and
+    // be onboarded to Email Service before this can reach arbitrary recipients
+    // — until then it delivers only to destination addresses verified in your
+    // account. See README.
+    //
+    // `remote: true` lets `wrangler dev` send through the real service while the
+    // Worker runs locally; there is no local emulation of email delivery.
+    "send_email": [
+      {
+        "name": "EMAIL",
+        "remote": true
+      }
+    ]
+    // To send through Cloudflare Email Service instead of Resend, set
+    // MAIL_PROVIDER to "cloudflare" and uncomment:
+    //
+    // "send_email": [{ "name": "EMAIL" }]
 }
