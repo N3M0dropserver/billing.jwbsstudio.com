@@ -96,6 +96,63 @@ export function reminderEmail(
   return { subject, text: base.text, html: base.html };
 }
 
+export interface MagicLinkEmailData {
+  /** Who the link belongs to, for the greeting. */
+  name: string;
+  appName: string;
+  url: string;
+  expiresMinutes: number;
+  /** Where the link was asked for, so an unexpected mail is recognisable. */
+  requestedIp?: string | null;
+}
+
+/**
+ * The sign-in link.
+ *
+ * Kept deliberately plain: no tracking pixel, no shortener, no redirect hop.
+ * Anything that rewrites the URL will be fetched by a mail scanner and burn
+ * the one-shot token before the recipient ever clicks it.
+ */
+export function magicLinkEmail(data: MagicLinkEmailData): {
+  subject: string;
+  text: string;
+  html: string;
+} {
+  const subject = `Your sign-in link for ${data.appName}`;
+  const from = data.requestedIp ? ` from ${data.requestedIp}` : '';
+
+  const text = [
+    `Kia ora ${data.name},`,
+    '',
+    `Here is your sign-in link for ${data.appName}. It works once and expires in ${data.expiresMinutes} minutes.`,
+    '',
+    data.url,
+    '',
+    `If you did not ask for this${from}, you can ignore this email — the link is useless without your inbox, and nothing has changed on your account.`,
+    '',
+    data.appName,
+  ].join('\n');
+
+  const html = `<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"></head>
+<body style="margin:0;padding:24px;background:#f6f6f4;font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;color:#1a1a1a;">
+  <div style="max-width:520px;margin:0 auto;background:#ffffff;border:1px solid #e5e5e2;border-radius:12px;padding:28px;">
+    <p style="margin:0 0 16px;font-size:15px;">Kia ora ${escapeHtml(data.name)},</p>
+    <p style="margin:0 0 20px;font-size:15px;line-height:1.55;">Here is your sign-in link for ${escapeHtml(data.appName)}. It works once and expires in ${data.expiresMinutes} minutes.</p>
+
+    <p style="margin:0 0 20px;">
+      <a href="${escapeAttr(data.url)}" style="display:inline-block;background:#1f5c4d;color:#ffffff;text-decoration:none;padding:11px 20px;border-radius:8px;font-size:14px;font-weight:500;">Sign in</a>
+    </p>
+
+    <p style="margin:0 0 20px;font-size:13px;color:#666;line-height:1.55;word-break:break-all;">If the button does not work, paste this into your browser:<br>${escapeHtml(data.url)}</p>
+
+    <p style="margin:0;font-size:14px;color:#666;line-height:1.55;">If you did not ask for this${escapeHtml(from)}, you can ignore this email — the link is useless without your inbox, and nothing has changed on your account.</p>
+  </div>
+</body></html>`;
+
+  return { subject, text, html };
+}
+
 function escapeHtml(value: string): string {
   return value
     .replace(/&/g, '&amp;')

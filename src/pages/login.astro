@@ -2,13 +2,26 @@
 import '~/styles/app.css';
 
 const error = Astro.url.searchParams.get('error');
+const sent = Astro.url.searchParams.get('sent') === '1';
 const next = Astro.url.searchParams.get('next') ?? '/';
 
+/**
+ * Password failures share one message on purpose — the server log says which
+ * it actually was. Link failures are named, because by the time you are
+ * holding a link you have already proved you can read the mailbox, and
+ * "expired" versus "already used" is the difference between asking for
+ * another one and realising something else opened it first.
+ */
 const messages: Record<string, string> = {
   invalid: 'That email and password combination was not recognised.',
-  locked: 'Too many failed attempts. Try again in 15 minutes.',
+  locked: 'Too many failed attempts. Try again in 15 minutes, or use a sign-in link.',
   disabled: 'That account has been disabled.',
   expired: 'Your session expired. Sign in again.',
+  'missing-fields': 'Fill in both fields.',
+  'link-expired': 'That sign-in link has expired. Ask for a new one.',
+  'link-used': 'That sign-in link has already been used. Ask for a new one.',
+  'link-unknown': 'That sign-in link is not valid. Ask for a new one.',
+  'account-disabled': 'That account has been disabled.',
 };
 ---
 
@@ -38,6 +51,19 @@ const messages: Record<string, string> = {
           <p class="muted text-sm">Invoicing, billing and tax</p>
         </div>
       </div>
+
+      {
+        sent && (
+          <div
+            class="mb-4 rounded-lg border px-3 py-2.5 text-sm"
+            style="border-color: color-mix(in oklch, var(--color-paid) 40%, transparent); background: color-mix(in oklch, var(--color-paid) 10%, transparent); color: var(--color-paid)"
+            role="status"
+          >
+            If that address has an account, a sign-in link is on its way. It
+            works once and expires in 15 minutes.
+          </div>
+        )
+      }
 
       {
         error && (
@@ -85,6 +111,42 @@ const messages: Record<string, string> = {
           style="background: var(--color-brand-600)"
         >
           Sign in
+        </button>
+      </form>
+
+      <div class="my-5 flex items-center gap-3">
+        <span class="h-px flex-1" style="background: var(--border)"></span>
+        <span class="muted text-xs uppercase tracking-wide">or</span>
+        <span class="h-px flex-1" style="background: var(--border)"></span>
+      </div>
+
+      <form method="post" action="/api/auth/magic-link" class="card space-y-4 p-6">
+        <input type="hidden" name="next" value={next} />
+
+        <div>
+          <label for="magic-email" class="mb-1.5 block text-sm font-medium">
+            Email me a sign-in link
+          </label>
+          <input
+            id="magic-email"
+            name="email"
+            type="email"
+            required
+            autocomplete="username"
+            placeholder="you@example.com"
+            class="field"
+          />
+          <p class="muted mt-1.5 text-xs">
+            No password needed. The link works once and expires in 15 minutes.
+          </p>
+        </div>
+
+        <button
+          type="submit"
+          class="w-full rounded-lg border px-4 py-2.5 text-sm font-medium transition-opacity hover:opacity-80"
+          style="border-color: var(--border)"
+        >
+          Send sign-in link
         </button>
       </form>
 

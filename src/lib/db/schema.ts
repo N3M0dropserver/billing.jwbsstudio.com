@@ -65,6 +65,41 @@ export const sessions = sqliteTable(
   ],
 );
 
+/**
+ * Single-use tokens for signing in by email link, and anything else that
+ * proves possession of the mailbox rather than knowledge of a password.
+ *
+ * As with sessions, only the SHA-256 of the token is stored — the raw value
+ * exists in the emailed URL and nowhere else. A leaked database therefore
+ * yields no usable sign-in link.
+ */
+export const loginTokens = sqliteTable(
+  'login_tokens',
+  {
+    id: id(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    purpose: text('purpose', { enum: ['magic-link'] })
+      .notNull()
+      .default('magic-link'),
+    /** SHA-256 of the token. The raw token only ever lives in the emailed URL. */
+    tokenHash: text('token_hash').notNull(),
+    expiresAt: text('expires_at').notNull(),
+    /** Set the moment the link is redeemed, so it cannot be used twice. */
+    consumedAt: text('consumed_at'),
+    /** Where the link was asked for, which is not necessarily where it is used. */
+    requestedIp: text('requested_ip'),
+    requestedUserAgent: text('requested_user_agent'),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex('login_tokens_token_idx').on(t.tokenHash),
+    index('login_tokens_user_idx').on(t.userId, t.createdAt),
+    index('login_tokens_expiry_idx').on(t.expiresAt),
+  ],
+);
+
 /* ------------------------------------------------------------------ */
 /* Settings                                                            */
 /* ------------------------------------------------------------------ */
@@ -736,6 +771,7 @@ export const activityLog = sqliteTable(
 
 export type User = typeof users.$inferSelect;
 export type Session = typeof sessions.$inferSelect;
+export type LoginToken = typeof loginTokens.$inferSelect;
 export type Settings = typeof settings.$inferSelect;
 export type Client = typeof clients.$inferSelect;
 export type Contact = typeof contacts.$inferSelect;

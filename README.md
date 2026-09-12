@@ -120,6 +120,12 @@ npm run user:add -- --email you@example.com --name "Your Name" --local
 existence. It prints a generated password once and flags the account so the
 password must be changed at first sign-in.
 
+The generated password is 24 characters of mixed case, digits and `!@#$%^&*`.
+Copy it in one go — a character lost to a line wrap or a shell that ate the
+`$` presents later as "that email and password combination was not
+recognised", with no hint that the password is nearly right. If that happens,
+sign in with an emailed link instead (below) and set a password you chose.
+
 ### 4. Run it
 
 ```bash
@@ -145,6 +151,84 @@ npm run user:add -- --email you@example.com --name "Your Name" --remote
 
 Then set your business details, tax residence, GST registration and bank details
 in **Settings** — the invoices depend on them.
+
+---
+
+## Signing in
+
+Two ways in, both against the same account:
+
+**Password.** What `user:add` sets up. Eight wrong attempts locks the account
+for fifteen minutes.
+
+**A link by email.** On the sign-in page, enter your address under *Email me a
+sign-in link*. The link is single-use, expires in fifteen minutes, and is
+invalidated the moment a newer one is requested. Redeeming it also clears a
+lockout, so it is the way back in when the password is lost or the account has
+locked itself.
+
+The page answers identically whether or not the address has an account. What
+actually happened is in the log — see below.
+
+### Auth logging
+
+Every decision the auth code makes is written to the Worker log as a single
+JSON line behind an `[auth]` prefix, and mirrored into the `activity_log`
+table where it belongs to a real user. Passwords and raw tokens are never
+logged; a token appears as the first eight characters of its hash, which is
+enough to follow one link across the "issued" and "redeemed" lines.
+
+```bash
+npx wrangler tail --format pretty | grep '\[auth\]'
+```
+
+Or query the audit trail directly:
+
+```bash
+npx wrangler d1 execute jwbs-billing --remote --command \
+  "SELECT created_at, action, detail FROM activity_log WHERE action LIKE 'auth.%' ORDER BY created_at DESC LIMIT 20;"
+```
+
+The reasons worth recognising:
+
+| `reason` | What it means |
+| --- | --- |
+| `unknown-email` | No account with that address in *this* database. |
+| `bad-password` | The account exists and the password did not match. `failedAttempts` climbing on every try means the password is simply wrong, not that something is misconfigured. |
+| `account-locked` | Eight failures. Wait it out or use a link. |
+| `no-cookie` | No session cookie arrived. If this follows an `auth.login` that logged `ok`, the credentials were right and the **browser threw the cookie away** — see below. |
+| `unknown-token` | A cookie arrived naming a session this database has never seen. Usually means the request reached a different D1 than the one that issued it (local vs remote). |
+| `session-expired` | Past its fourteen days. |
+| `no-db-binding` | Running under `astro dev`, which has no bindings. Use `npm run preview`. |
+| `mail-failed` / `mail-disabled` | The link was minted but the email did not go. The line carries the provider's own error. |
+
+### Signed in successfully but bounced back to the login page
+
+That is `auth.login` → `ok` followed immediately by `auth.session.required` →
+`no-cookie`, and it means the cookie was rejected rather than the password.
+
+In production the cookie is named `__Host-jwbs_session`. The `__Host-` prefix
+requires the `Secure` attribute, which browsers only accept over https —
+Chrome and Firefox make an exception for `localhost`, **Safari does not** and
+drops the cookie silently. So over plain http the app issues an unprefixed,
+non-Secure `jwbs_session_dev` cookie instead, and keeps the hardened name for
+https. Nothing to configure; the log line records which name was issued
+(`cookieName`) and which cookies the browser actually sent back
+(`cookiesSeen`, names only).
+
+### Signing in locally with no working mail path
+
+Cloudflare Email Service will not deliver to an arbitrary address until the
+sending domain is onboarded, which makes emailed links useless on a fresh
+setup. Set `AUTH_DEBUG="1"` in `.dev.vars` and the link is printed to the
+Worker log instead of only being mailed:
+
+```
+[auth] {"action":"auth.magic-link.debug", ... "detail":"... https://.../login/link/xxxx"}
+```
+
+A printed link is a live credential for fifteen minutes. Keep `AUTH_DEBUG` out
+of production.
 
 ---
 
@@ -207,6 +291,7 @@ npm test                 # run the test suite
 npm run typecheck        # tsc --noEmit
 npm run db:generate      # generate a migration from schema changes
 npm run db:migrate:local # apply migrations locally
+npm run db:migrate:remote # apply migrations to the deployed database
 npm run user:add         # create or reset a user
 ```
 

@@ -4,6 +4,11 @@
 #   openssl rand -base64 48
 SESSION_SECRET="change-me-openssl-rand-base64-48"
 
+# Set to "1" to print magic-link sign-in URLs into the Worker log, so you can
+# sign in locally without a working mail path. Never set this in production —
+# the printed URL is a live credential for fifteen minutes.
+AUTH_DEBUG="1"
+
 # Stripe (optional). Leave blank to disable Stripe and use bank transfer only.
 STRIPE_SECRET_KEY=""
 STRIPE_WEBHOOK_SECRET=""

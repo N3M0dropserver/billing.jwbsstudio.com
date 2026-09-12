@@ -55,6 +55,12 @@ interface Env {
   MAIL_FROM_NAME: string;
 
   SESSION_SECRET: string;
+  /**
+   * "1" prints magic-link URLs to the Worker log instead of relying on mail
+   * getting through. A printed link is a working credential, so this belongs
+   * in .dev.vars and nowhere near production.
+   */
+  AUTH_DEBUG?: string;
   STRIPE_SECRET_KEY?: string;
   STRIPE_WEBHOOK_SECRET?: string;
   RESEND_API_KEY?: string;

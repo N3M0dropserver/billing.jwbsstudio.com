@@ -2,12 +2,13 @@ import type { APIRoute } from 'astro';
 import { eq } from 'drizzle-orm';
 import { db } from '~/lib/env';
 import { hashPassword, verifyPassword, checkPasswordStrength } from '~/lib/auth/password';
-import { destroyAllSessionsFor, createSession, SESSION_COOKIE, sessionCookieOptions } from '~/lib/auth/session';
+import { destroyAllSessionsFor, createSession, setSessionCookie } from '~/lib/auth/session';
+import { recordAuth } from '~/lib/auth/log';
 import { users } from '~/lib/db/schema';
 
 export const prerender = false;
 
-export const POST: APIRoute = async ({ request, locals, cookies, redirect, clientAddress }) => {
+export const POST: APIRoute = async ({ request, url, locals, cookies, redirect, clientAddress }) => {
   const user = locals.user;
   if (!user) return redirect('/login', 302);
 
@@ -16,18 +17,27 @@ export const POST: APIRoute = async ({ request, locals, cookies, redirect, clien
   const password = String(form.get('password') ?? '');
   const confirm = String(form.get('confirm') ?? '');
 
-  const fail = (message: string) =>
-    redirect(`/account/password?error=${encodeURIComponent(message)}`, 302);
+  const fail = async (reason: string, message: string) => {
+    await recordAuth(db(), {
+      action: 'auth.password.change-refused',
+      outcome: 'denied',
+      userId: user.id,
+      email: user.email,
+      ip: clientAddress ?? null,
+      detail: reason,
+    });
+    return redirect(`/account/password?error=${encodeURIComponent(message)}`, 302);
+  };
 
-  if (password !== confirm) return fail('The two new passwords do not match.');
+  if (password !== confirm) return fail('mismatch', 'The two new passwords do not match.');
 
   const strength = checkPasswordStrength(password);
-  if (!strength.ok) return fail(strength.problems.join(' '));
+  if (!strength.ok) return fail('weak', strength.problems.join(' '));
 
   // Only skip the current-password check on a forced first-time change.
   if (!user.mustChangePassword) {
     const ok = await verifyPassword(current, user.passwordHash);
-    if (!ok) return fail('Your current password was not correct.');
+    if (!ok) return fail('bad-current-password', 'Your current password was not correct.');
   }
 
   const database = db();
@@ -47,7 +57,17 @@ export const POST: APIRoute = async ({ request, locals, cookies, redirect, clien
     userAgent: request.headers.get('user-agent'),
     ipAddress: clientAddress ?? null,
   });
-  cookies.set(SESSION_COOKIE, session.token, sessionCookieOptions(session.expiresAt));
+  setSessionCookie(cookies, url, session.token, session.expiresAt);
+
+  await recordAuth(database, {
+    action: 'auth.password.changed',
+    outcome: 'ok',
+    userId: user.id,
+    email: user.email,
+    ip: clientAddress ?? null,
+    userAgent: request.headers.get('user-agent'),
+    extra: { wasForced: user.mustChangePassword },
+  });
 
   return redirect('/account/password?changed=1', 302);
 };

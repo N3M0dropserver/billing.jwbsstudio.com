@@ -1,15 +1,18 @@
 import { defineMiddleware } from 'astro:middleware';
 import { bindings, db as getDbFromEnv } from '~/lib/env';
 import {
-  SESSION_COOKIE,
+  readSessionToken,
   resolveSession,
-  sessionCookieOptions,
+  sessionCookieName,
+  setSessionCookie,
 } from '~/lib/auth/session';
+import { logAuth } from '~/lib/auth/log';
 
 /** Routes reachable without a session. Everything else requires one. */
 const PUBLIC_PREFIXES = [
-  '/login',
+  '/login', // also covers /login/link/<token>, the emailed sign-in link
   '/api/auth/login',
+  '/api/auth/magic-link',
   '/api/stripe/webhook',
   '/pay/', // public invoice view + payment page
   '/proposal/', // public proposal view
@@ -22,6 +25,15 @@ function isPublic(pathname: string): boolean {
   return PUBLIC_PREFIXES.some((p) => pathname === p || pathname.startsWith(p));
 }
 
+/**
+ * Paths worth a log line when they turn someone away. Static assets and
+ * favicons bounce constantly and drown out the signal, so only real page and
+ * API requests are recorded.
+ */
+function worthLogging(pathname: string): boolean {
+  return !pathname.startsWith('/_astro/') && !pathname.startsWith('/favicon');
+}
+
 export const onRequest = defineMiddleware(async (context, next) => {
   const { locals, cookies, url, request, redirect } = context;
 
@@ -31,7 +43,13 @@ export const onRequest = defineMiddleware(async (context, next) => {
   let env: Env | null = null;
   try {
     env = bindings();
-  } catch {
+  } catch (error) {
+    logAuth({
+      action: 'auth.env.bindings-unavailable',
+      outcome: 'error',
+      detail: String(error),
+      path: url.pathname,
+    });
     env = null;
   }
 
@@ -39,6 +57,13 @@ export const onRequest = defineMiddleware(async (context, next) => {
     // No binding means the app is misconfigured rather than the user being
     // logged out; fail loudly instead of bouncing them to a login page that
     // will not work either.
+    logAuth({
+      action: 'auth.env.no-db',
+      outcome: 'error',
+      reason: 'no-db-binding',
+      path: url.pathname,
+      detail: 'No D1 binding named DB. `astro dev` has no bindings — run `bun run preview` or deploy.',
+    });
     if (!isPublic(url.pathname)) {
       return new Response(
         'Database binding not available. Check that wrangler.jsonc has a D1 binding named DB and that you are running through `wrangler dev` or a deployed Worker.',
@@ -49,26 +74,69 @@ export const onRequest = defineMiddleware(async (context, next) => {
   }
 
   const db = getDbFromEnv();
-  const token = cookies.get(SESSION_COOKIE)?.value;
-  const resolved = await resolveSession(db, token);
+  const token = readSessionToken(cookies, url);
+  const lookup = await resolveSession(db, token);
 
-  if (resolved) {
-    locals.user = resolved.user;
-    locals.session = resolved.session;
-    if (resolved.refreshedExpiry && token) {
-      cookies.set(SESSION_COOKIE, token, sessionCookieOptions(resolved.refreshedExpiry));
+  if (lookup.session) {
+    locals.user = lookup.session.user;
+    locals.session = lookup.session.session;
+    if (lookup.session.refreshedExpiry && token) {
+      setSessionCookie(cookies, url, token, lookup.session.refreshedExpiry);
     }
+  } else if (lookup.reason !== 'no-cookie' && worthLogging(url.pathname)) {
+    /**
+     * A cookie arrived and we would not honour it. Worth knowing about on
+     * every route, public or not — this is the line that distinguishes an
+     * expired session from a token the database has never seen (which means
+     * the sessions table was reset, or the request reached a different D1
+     * than the one the session was written to).
+     */
+    logAuth({
+      action: 'auth.session.rejected',
+      outcome: 'denied',
+      reason: lookup.reason,
+      path: url.pathname,
+      ip: context.clientAddress ?? null,
+      extra: { cookieName: sessionCookieName(url) },
+    });
   }
 
   if (!isPublic(url.pathname) && !locals.user) {
+    /**
+     * The diagnostic that matters most. `no-cookie` here, immediately after
+     * a sign-in that logged `auth.login ok`, means the browser threw the
+     * cookie away rather than the password being wrong — which is what the
+     * __Host- prefix does over plain http in Safari. `secureCookie: false`
+     * on the login line plus `no-cookie` here narrows it further.
+     */
+    if (worthLogging(url.pathname)) {
+      logAuth({
+        action: 'auth.session.required',
+        outcome: 'denied',
+        reason: lookup.reason ?? 'no-cookie',
+        path: url.pathname,
+        ip: context.clientAddress ?? null,
+        extra: {
+          cookieName: sessionCookieName(url),
+          cookiePresent: Boolean(token),
+          // Names only — never the values.
+          cookiesSeen: request.headers
+            .get('cookie')
+            ?.split(';')
+            .map((c) => c.split('=')[0]?.trim())
+            .filter(Boolean) ?? [],
+        },
+      });
+    }
+
     if (url.pathname.startsWith('/api/')) {
       return new Response(JSON.stringify({ error: 'Not authenticated' }), {
         status: 401,
         headers: { 'content-type': 'application/json' },
       });
     }
-    const next = url.pathname + url.search;
-    return redirect(`/login?next=${encodeURIComponent(next)}`, 302);
+    const nextPath = url.pathname + url.search;
+    return redirect(`/login?next=${encodeURIComponent(nextPath)}`, 302);
   }
 
   // Already signed in and hitting the login page — go to the dashboard.
@@ -89,6 +157,13 @@ export const onRequest = defineMiddleware(async (context, next) => {
   if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method)) {
     const origin = request.headers.get('origin');
     if (origin && new URL(origin).origin !== url.origin) {
+      logAuth({
+        action: 'auth.csrf.rejected',
+        outcome: 'denied',
+        path: url.pathname,
+        ip: context.clientAddress ?? null,
+        detail: `Origin ${origin} does not match ${url.origin}`,
+      });
       return new Response(JSON.stringify({ error: 'Cross-origin request rejected' }), {
         status: 403,
         headers: { 'content-type': 'application/json' },
