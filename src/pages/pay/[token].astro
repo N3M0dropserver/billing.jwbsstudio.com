@@ -13,6 +13,8 @@ import { deriveStatus } from '~/lib/invoices/calculate';
 import { invoices } from '~/lib/db/schema';
 import { formatMoneyWithCode } from '~/lib/tax/money';
 import { stripeEnabled } from '~/lib/stripe';
+import { isNewOccurrence, recordInvoiceEvent } from '~/lib/activity/events';
+import { lastEventAt } from '~/lib/activity/timeline';
 
 const token = Astro.params.token!;
 const database = db();
@@ -26,12 +28,37 @@ const settings = await getSettings(database, invoice.userId);
 const status = deriveStatus(invoice);
 const outstanding = invoice.total - invoice.amountPaid;
 
-// Record the first view, so the sender can see it landed.
-if (!invoice.viewedAt) {
-  await database
-    .update(invoices)
-    .set({ viewedAt: new Date().toISOString() })
-    .where(eq(invoices.id, invoice.id));
+/*
+ * Record the view.
+ *
+ * `invoices.viewedAt` keeps the first view only, because that is what the
+ * status badge is derived from. Every later visit goes to the activity log
+ * instead, where "they have opened this four times and still not paid" is
+ * worth knowing. Both are best effort — a client must never see an error
+ * page because a log write failed.
+ */
+try {
+  const now = new Date().toISOString();
+
+  if (!invoice.viewedAt) {
+    await database.update(invoices).set({ viewedAt: now }).where(eq(invoices.id, invoice.id));
+  }
+
+  const previous = await lastEventAt(database, invoice.id, 'viewed');
+  if (isNewOccurrence(previous, now)) {
+    await recordInvoiceEvent(database, {
+      invoiceId: invoice.id,
+      clientId: invoice.clientId,
+      type: 'viewed',
+      actor: 'client',
+      detail: { first: !invoice.viewedAt },
+      ipAddress: Astro.request.headers.get('cf-connecting-ip'),
+      userAgent: Astro.request.headers.get('user-agent'),
+      occurredAt: now,
+    });
+  }
+} catch (error) {
+  console.error(`[activity] could not record a view of ${invoice.number}: ${String(error)}`);
 }
 
 const canPayByCard =

@@ -7,7 +7,9 @@ import { toPdfData } from '~/lib/invoices/pdf-data';
 import { renderInvoicePdf } from '~/lib/pdf/invoice';
 import { sendMail } from '~/lib/mail';
 import { invoiceEmail, reminderEmail } from '~/lib/mail/templates';
-import { invoices, communications, activityLog } from '~/lib/db/schema';
+import { invoices, activityLog } from '~/lib/db/schema';
+import { recordInvoiceEvent } from '~/lib/activity/events';
+import { trackingPixelUrl } from '~/lib/activity/tracking';
 import { newId } from '~/lib/id';
 
 export const prerender = false;
@@ -36,6 +38,15 @@ export const POST: APIRoute = async ({ params, request, locals, redirect }) => {
     (Date.now() - new Date(`${invoice.dueOn}T00:00:00Z`).getTime()) / 86_400_000,
   );
 
+  // The send event's id is generated up front because the tracking pixel URL
+  // has to carry it, and the URL has to exist before the email is rendered.
+  // Nothing is written until the send actually succeeds.
+  const sendEventId = newId();
+  const pixelUrl =
+    settings.trackEmailOpens && invoice.publicToken
+      ? trackingPixelUrl(appUrl(), invoice.publicToken, sendEventId)
+      : undefined;
+
   const emailData = {
     invoiceNumber: invoice.number,
     clientName: invoice.client?.name ?? 'there',
@@ -47,6 +58,7 @@ export const POST: APIRoute = async ({ params, request, locals, redirect }) => {
     viewUrl: payUrl ?? appUrl(),
     payUrl: settings.stripeEnabled ? payUrl : undefined,
     customMessage: customMessage || undefined,
+    trackingPixelUrl: pixelUrl,
   };
 
   const content = isReminder
@@ -66,6 +78,22 @@ export const POST: APIRoute = async ({ params, request, locals, redirect }) => {
   });
 
   if (!result.ok) {
+    // A failed send is the most useful row in the log — it is the one that
+    // explains why a client never paid an invoice they never received.
+    await recordInvoiceEvent(database, {
+      invoiceId: invoice.id,
+      clientId: invoice.clientId,
+      userId: user.id,
+      type: 'send-failed',
+      actor: 'system',
+      detail: {
+        to: recipient,
+        kind: isReminder ? 'reminder' : 'invoice',
+        provider: result.provider,
+        error: result.error ?? 'unknown',
+      },
+    });
+
     return redirect(
       `/invoices/${invoice.id}?sent=failed&reason=${encodeURIComponent(result.error ?? 'unknown')}`,
       302,
@@ -95,18 +123,28 @@ export const POST: APIRoute = async ({ params, request, locals, redirect }) => {
     })
     .where(eq(invoices.id, invoice.id));
 
-  if (invoice.clientId) {
-    await database.insert(communications).values({
-      id: newId(),
-      userId: user.id,
-      clientId: invoice.clientId,
-      kind: 'invoice-sent',
+  // No `communications` row for the send any more: the invoice event below
+  // carries the same fact with the recipient, the provider and the reminder
+  // number attached, and the client timeline merges both logs — so writing
+  // both would show every send twice. `communications` keeps its original
+  // job, the calls, meetings and notes logged by hand.
+  await recordInvoiceEvent(database, {
+    id: sendEventId,
+    invoiceId: invoice.id,
+    clientId: invoice.clientId,
+    userId: user.id,
+    type: isReminder ? 'reminder-sent' : 'sent',
+    actor: 'user',
+    detail: {
+      to: recipient,
       subject: content.subject,
-      body: isReminder ? 'Payment reminder sent.' : 'Invoice sent.',
-      occurredAt: now,
-      createdAt: now,
-    });
-  }
+      provider: result.provider,
+      messageId: result.id ?? '',
+      reminderNumber: isReminder ? invoice.remindersSent + 1 : 0,
+      tracked: Boolean(pixelUrl),
+    },
+    occurredAt: now,
+  });
 
   await database.insert(activityLog).values({
     id: newId(),

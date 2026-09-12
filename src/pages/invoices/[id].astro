@@ -2,6 +2,7 @@
 import AppLayout from '~/layouts/AppLayout.astro';
 import Card from '~/components/ui/Card.astro';
 import StatusBadge from '~/components/ui/StatusBadge.astro';
+import Timeline from '~/components/activity/Timeline.astro';
 import { eq, desc } from 'drizzle-orm';
 import { db, appUrl } from '~/lib/env';
 import { getSettings } from '~/lib/queries/settings';
@@ -9,6 +10,7 @@ import { getInvoice } from '~/lib/invoices/service';
 import { deriveStatus } from '~/lib/invoices/calculate';
 import { payments } from '~/lib/db/schema';
 import { formatMoneyWithCode } from '~/lib/tax/money';
+import { invoiceEngagement, invoiceTimeline } from '~/lib/activity/timeline';
 
 const user = Astro.locals.user!;
 const database = db();
@@ -18,11 +20,15 @@ if (!invoice) return Astro.redirect('/invoices', 302);
 
 const settings = await getSettings(database, user.id);
 const status = deriveStatus(invoice);
-const paymentRows = await database
-  .select()
-  .from(payments)
-  .where(eq(payments.invoiceId, invoice.id))
-  .orderBy(desc(payments.receivedOn));
+const [paymentRows, timeline, engagement] = await Promise.all([
+  database
+    .select()
+    .from(payments)
+    .where(eq(payments.invoiceId, invoice.id))
+    .orderBy(desc(payments.receivedOn)),
+  invoiceTimeline(database, invoice.id),
+  invoiceEngagement(database, invoice.id),
+]);
 
 const outstanding = invoice.total - invoice.amountPaid;
 const publicUrl = invoice.publicToken ? `${appUrl()}/pay/${invoice.publicToken}` : null;
@@ -35,6 +41,19 @@ const formatDate = (iso: string) =>
   new Date(`${iso}T00:00:00Z`).toLocaleDateString('en-NZ', {
     day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC',
   });
+
+const plural = (count: number, word: string) =>
+  `${count} ${word}${count === 1 ? '' : 's'}`;
+
+// The one-line answer to "have they actually looked at it?", which is the
+// question you have before deciding whether a reminder is fair.
+const engagementSummary = [
+  engagement.webViews > 0 && plural(engagement.webViews, 'web view'),
+  engagement.pdfDownloads > 0 && plural(engagement.pdfDownloads, 'PDF download'),
+  engagement.emailOpens > 0 && plural(engagement.emailOpens, 'email open'),
+]
+  .filter(Boolean)
+  .join(' · ');
 ---
 
 <AppLayout title={invoice.number} subtitle={invoice.client?.name ?? 'Manual entry'} width="wide">
@@ -143,6 +162,27 @@ const formatDate = (iso: string) =>
 
         {invoice.notes && (
           <p class="muted mt-5 border-t pt-4 text-sm" style="border-color: var(--border)">{invoice.notes}</p>
+        )}
+      </Card>
+
+      <Card
+        title="Activity"
+        subtitle={
+          invoice.sentAt
+            ? engagementSummary || 'Sent, but the client has not opened it yet'
+            : 'Not sent yet'
+        }
+      >
+        <Timeline
+          entries={timeline}
+          emptyMessage="Nothing recorded yet. Sending this invoice starts the log."
+        />
+        {engagement.emailOpens > 0 && (
+          <p class="muted mt-4 border-t pt-3 text-xs leading-relaxed" style="border-color: var(--border)">
+            Email opens are weak evidence: many clients block remote images, and some
+            providers load them automatically whether or not anyone read the message.
+            A web view or a PDF download is worth far more.
+          </p>
         )}
       </Card>
 

@@ -87,6 +87,7 @@ export const POST: APIRoute = async ({ request, locals, redirect }) => {
       bankSwift: text('bankSwift', 20),
 
       stripeEnabled: flag('stripeEnabled'),
+      trackEmailOpens: flag('trackEmailOpens'),
       taxReserveRate: parseRate(String(form.get('taxReserveRate') ?? '')) ?? current.taxReserveRate,
 
       updatedAt: new Date().toISOString(),

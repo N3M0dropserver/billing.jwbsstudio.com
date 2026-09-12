@@ -239,6 +239,19 @@ const unverified = unverifiedFigures(s.taxResidence, range.year);
             Also needs STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET set as Worker secrets.
           </p>
         </div>
+        <div class="sm:col-span-2 border-t pt-4" style="border-color: var(--border)">
+          <label class="flex items-center gap-2.5 text-sm">
+            <input type="checkbox" name="trackEmailOpens" value="yes" checked={s.trackEmailOpens} />
+            Record when a client opens an invoice email
+          </label>
+          <p class="muted mt-1.5 text-xs leading-relaxed">
+            Adds an invisible 1×1 image to invoice emails so an open shows on the
+            <a href="/activity" class="underline">activity log</a>. It is a weak signal —
+            many clients block remote images, and some providers load them automatically
+            whether or not anyone read the message. Turn it off and invoice emails carry no
+            remote images at all; web invoice views and PDF downloads are still logged.
+          </p>
+        </div>
       </div>
     </Card>
 

@@ -1,0 +1,71 @@
+---
+/**
+ * The account-wide activity feed.
+ *
+ * Everything that has gone out and everything the clients have done with it,
+ * in one list. The point of the page is the unprompted glance: you open it
+ * after sending a batch of invoices and see which ones landed.
+ */
+import AppLayout from '~/layouts/AppLayout.astro';
+import Card from '~/components/ui/Card.astro';
+import Timeline from '~/components/activity/Timeline.astro';
+import { db } from '~/lib/env';
+import { isActivityFilter, recentActivity, type ActivityFilter } from '~/lib/activity/timeline';
+
+const user = Astro.locals.user!;
+const database = db();
+
+const requested = Astro.url.searchParams.get('show');
+const filter: ActivityFilter = isActivityFilter(requested) ? requested : 'all';
+
+const entries = await recentActivity(database, user.id, { filter, limit: 150 });
+
+const filters: Array<{ value: ActivityFilter; label: string }> = [
+  { value: 'all', label: 'Everything' },
+  { value: 'outbound', label: 'Sent' },
+  { value: 'client', label: 'Client activity' },
+  { value: 'money', label: 'Payments' },
+];
+
+const EMPTY_MESSAGES: Record<ActivityFilter, string> = {
+  all: 'Nothing yet. Sending an invoice starts the log.',
+  outbound: 'No invoices or reminders have been emailed yet.',
+  client: 'No client has opened an email or viewed a web invoice yet.',
+  money: 'No payments recorded yet.',
+};
+---
+
+<AppLayout
+  title="Activity"
+  subtitle="What went out, and what your clients did with it"
+  width="wide"
+>
+  <div class="mb-4 flex flex-wrap gap-2">
+    {
+      filters.map((option) => (
+        <a
+          href={option.value === 'all' ? '/activity' : `/activity?show=${option.value}`}
+          class:list={[
+            'rounded-lg px-3 py-1.5 text-sm font-medium',
+            option.value === filter ? 'text-white' : 'muted card hover:opacity-80',
+          ]}
+          style={option.value === filter ? 'background: var(--color-brand-600)' : ''}
+          aria-current={option.value === filter ? 'page' : undefined}
+        >
+          {option.label}
+        </a>
+      ))
+    }
+  </div>
+
+  <Card>
+    <Timeline entries={entries} showInvoice showClient emptyMessage={EMPTY_MESSAGES[filter]} />
+  </Card>
+
+  <p class="muted mt-4 text-xs leading-relaxed">
+    Client activity is evidence, not proof. An email open only means remote images were
+    loaded — plenty of clients block them, and some providers load them automatically.
+    A web view or a PDF download is much stronger. Open tracking can be switched off in
+    <a href="/settings" class="underline">Settings</a>.
+  </p>
+</AppLayout>

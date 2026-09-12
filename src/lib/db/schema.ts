@@ -173,6 +173,13 @@ export const settings = sqliteTable('settings', {
 
   stripeEnabled: integer('stripe_enabled', { mode: 'boolean' }).notNull().default(false),
 
+  /**
+   * Put a tracking pixel in invoice emails, so an open is recorded on the
+   * activity log. Off means the emails carry no remote images at all and the
+   * log simply has no `email-opened` events — everything else still works.
+   */
+  trackEmailOpens: integer('track_email_opens', { mode: 'boolean' }).notNull().default(true),
+
   /** Share of each payment to move into the tax account, as a decimal. */
   taxReserveRate: real('tax_reserve_rate').notNull().default(0.33),
 
@@ -398,6 +405,85 @@ export const payments = sqliteTable(
   (t) => [
     index('payments_invoice_idx').on(t.invoiceId),
     index('payments_user_date_idx').on(t.userId, t.receivedOn),
+  ],
+);
+
+/* ------------------------------------------------------------------ */
+/* Invoice delivery and engagement                                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * What happened to an invoice, and whether the client engaged with it.
+ *
+ * This is a third log, and it exists because the other two cannot answer the
+ * question:
+ *
+ *   activity_log   — the internal audit trail, keyed by the acting user. Says
+ *                    nothing about the client, because the client has no
+ *                    account here.
+ *   communications — the client relationship log, keyed by client. Records a
+ *                    call or a note, but is not tied to an invoice.
+ *
+ * Neither can tell you "invoice INV-0042 went out on Tuesday, the reminder on
+ * Friday, and they opened both but have never opened the web invoice" — which
+ * is exactly what you want to know before chasing a payment. So delivery and
+ * engagement events live here, tied to the invoice, and the two client-facing
+ * logs are merged for display.
+ *
+ * Client-side events (an email open, a web view, a PDF download) are
+ * *evidence, not proof*. A mail scanner can fetch a tracking pixel before the
+ * recipient ever sees the message, Apple Mail Privacy Protection proxies and
+ * pre-fetches images, and image loading is off by default in plenty of
+ * clients — so an open can be a false positive and a silence can be a false
+ * negative. Never treat one as having been read.
+ */
+export const invoiceEvents = sqliteTable(
+  'invoice_events',
+  {
+    id: id(),
+    invoiceId: text('invoice_id')
+      .notNull()
+      .references(() => invoices.id, { onDelete: 'cascade' }),
+    /** Denormalised so a client timeline is one query, not a join per row. */
+    clientId: text('client_id').references(() => clients.id, { onDelete: 'set null' }),
+    /** Null for anything the client did — they are not a user of this app. */
+    userId: text('user_id').references(() => users.id, { onDelete: 'set null' }),
+    type: text('type', {
+      enum: [
+        'created',
+        'sent',
+        'reminder-sent',
+        'send-failed',
+        'email-opened',
+        'viewed',
+        'pdf-downloaded',
+        'payment-started',
+        'payment-recorded',
+        'paid',
+        'note',
+      ],
+    }).notNull(),
+    /** Who caused it: you, the client, or the system reacting to a webhook. */
+    actor: text('actor', { enum: ['user', 'client', 'system'] })
+      .notNull()
+      .default('user'),
+    /** Event-specific JSON — recipient, provider, amount, failure reason. */
+    detail: text('detail').notNull().default('{}'),
+    /**
+     * The send this event belongs to: the id of the `sent` or `reminder-sent`
+     * event whose tracking pixel was fetched. Lets an open be attributed to
+     * the original invoice or to a particular reminder.
+     */
+    parentId: text('parent_id'),
+    ipAddress: text('ip_address'),
+    userAgent: text('user_agent'),
+    occurredAt: text('occurred_at').notNull(),
+  },
+  (t) => [
+    index('invoice_events_invoice_idx').on(t.invoiceId, t.occurredAt),
+    index('invoice_events_client_idx').on(t.clientId, t.occurredAt),
+    index('invoice_events_user_idx').on(t.userId, t.occurredAt),
+    index('invoice_events_parent_idx').on(t.parentId),
   ],
 );
 
@@ -779,6 +865,7 @@ export type Communication = typeof communications.$inferSelect;
 export type Invoice = typeof invoices.$inferSelect;
 export type InvoiceLine = typeof invoiceLines.$inferSelect;
 export type Payment = typeof payments.$inferSelect;
+export type InvoiceEvent = typeof invoiceEvents.$inferSelect;
 export type Expense = typeof expenses.$inferSelect;
 export type Asset = typeof assets.$inferSelect;
 export type DepreciationEntry = typeof depreciationEntries.$inferSelect;

@@ -13,6 +13,7 @@ import {
   type Invoice, type InvoiceLine, type Client, type Settings,
 } from '~/lib/db/schema';
 import { newId, newToken } from '~/lib/id';
+import { createdEventStatement, recordInvoiceEvent } from '~/lib/activity/events';
 import { calculateInvoice, formatInvoiceNumber, dueDateFrom, deriveStatus, type LineInput } from './calculate';
 import { assessExportTreatment, type GstTreatment } from '~/lib/tax/gst';
 import { nzTaxYearFor, auFinancialYearFor } from '~/lib/tax/engine';
@@ -211,6 +212,18 @@ export async function createInvoice(
   }
 
   statements.push(
+    createdEventStatement(db, {
+      invoiceId,
+      clientId: input.clientId,
+      userId: input.userId,
+      type: 'created',
+      actor: 'user',
+      detail: { number, total: totals.total, currency: input.currency },
+      occurredAt: now,
+    }),
+  );
+
+  statements.push(
     db.insert(activityLog).values({
       id: newId(),
       userId: input.userId,
@@ -365,6 +378,37 @@ export async function recordPayment(db: Db, input: RecordPaymentInput): Promise<
     detail: JSON.stringify({ amount: input.amount, method: input.method }),
     createdAt: now,
   });
+
+  // A Stripe payment arrives on a webhook with nobody signed in, so the actor
+  // is the system rather than the user who happens to own the invoice.
+  const actor = input.method === 'stripe' ? 'system' : 'user';
+
+  await recordInvoiceEvent(db, {
+    invoiceId: input.invoiceId,
+    clientId: invoice.clientId,
+    userId: input.userId,
+    type: 'payment-recorded',
+    actor,
+    detail: {
+      amount: input.amount,
+      currency: invoice.currency,
+      method: input.method,
+      reference: input.reference ?? '',
+    },
+    occurredAt: now,
+  });
+
+  if (status === 'paid') {
+    await recordInvoiceEvent(db, {
+      invoiceId: input.invoiceId,
+      clientId: invoice.clientId,
+      userId: input.userId,
+      type: 'paid',
+      actor: 'system',
+      detail: { total: invoice.total, currency: invoice.currency },
+      occurredAt: now,
+    });
+  }
 }
 
 export interface InvoiceListFilters {
