@@ -528,18 +528,37 @@ export const incomeSources = sqliteTable(
       enum: ['employment', 'interest', 'dividends', 'rental', 'foreign', 'other'],
     }).notNull(),
     label: text('label').notNull(),
-    /** Gross amount before any withholding. */
+    /**
+     * The period the income was actually earned over, inclusive. This is what
+     * makes part-time or seasonal work usable: the NZ tax year (1 Apr-31 Mar)
+     * and the AU financial year (1 Jul-30 Jun) do not line up, so a period of
+     * work is apportioned across whichever years it overlaps rather than
+     * being dumped whole into one label. Null on rows created before periods
+     * existed, which fall back to the whole of `taxYear`.
+     */
+    earnedFrom: text('earned_from'),
+    earnedTo: text('earned_to'),
+    /** Gross amount before any withholding, in `currency`. */
     grossAmount: integer('gross_amount').notNull().default(0),
-    /** PAYE (NZ) or PAYG withholding (AU) already taken. */
+    /** PAYE (NZ) or PAYG withholding (AU) already taken, in `currency`. */
     taxWithheld: integer('tax_withheld').notNull().default(0),
     /** ACC earner levy collected through PAYE, NZ employment only. */
     accLevyWithheld: integer('acc_levy_withheld').notNull().default(0),
     currency: text('currency', { enum: ['NZD', 'AUD'] }).notNull().default('NZD'),
+    /**
+     * Rate that converts `currency` into the tax-residence currency. Stored
+     * per row because the rate at the time of the pay period is what the
+     * return uses, not today's rate. 1 when the two currencies are the same.
+     */
+    fxRateToResidence: real('fx_rate_to_residence').notNull().default(1),
     notes: text('notes').notNull().default(''),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
-  (t) => [index('income_sources_user_year_idx').on(t.userId, t.taxYear)],
+  (t) => [
+    index('income_sources_user_year_idx').on(t.userId, t.taxYear),
+    index('income_sources_user_period_idx').on(t.userId, t.earnedFrom),
+  ],
 );
 
 /* ------------------------------------------------------------------ */

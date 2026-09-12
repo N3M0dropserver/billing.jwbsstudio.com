@@ -17,9 +17,9 @@ import {
   getInvoiceTotals,
   getExpenseTotals,
   getDepreciationForYear,
-  getEmploymentIncome,
-  getOtherIncome,
+  getIncomeForYear,
   getRollingTurnover,
+  type IncomeForYear,
   type TaxYearRange,
   type InvoiceTotals,
   type ExpenseTotals,
@@ -31,8 +31,17 @@ export interface TaxPosition {
   invoices: InvoiceTotals;
   expenses: ExpenseTotals;
   depreciation: Cents;
+  /** Employment and other income, split domestic/foreign, in residence currency. */
+  income: IncomeForYear;
+  /** Salary or wages sourced in the country of residence. */
   employment: { grossIncome: Cents; taxWithheld: Cents; accLevyWithheld: Cents };
   otherIncome: { gross: Cents; credits: Cents };
+  /**
+   * Everything sourced in the OTHER country — a part-time job across the
+   * Tasman, most often. Taxed at home with a credit for the tax withheld
+   * there, which is why it is tracked apart from the domestic figures.
+   */
+  foreign: { grossIncome: Cents; taxPaid: Cents };
   result: CombinedResult;
   gst: TurnoverCheck;
   /**
@@ -61,15 +70,30 @@ export async function buildTaxPosition(
 
   const userId = settings.userId;
 
-  const [invoiceTotals, expenseTotals, depreciation, employment, other, rollingTurnover] =
+  const [invoiceTotals, expenseTotals, depreciation, income, rollingTurnover] =
     await Promise.all([
       getInvoiceTotals(db, userId, resolvedRange),
       getExpenseTotals(db, userId, resolvedRange),
       getDepreciationForYear(db, userId, resolvedRange.year),
-      getEmploymentIncome(db, userId, resolvedRange.year, jurisdiction),
-      getOtherIncome(db, userId, resolvedRange.year, jurisdiction),
+      // The currency the engine's figures are in follows tax RESIDENCE, not
+      // the invoicing default — they are separate settings and can disagree.
+      getIncomeForYear(db, userId, resolvedRange, jurisdiction === 'NZ' ? 'NZD' : 'AUD'),
       getRollingTurnover(db, userId),
     ]);
+
+  const employment = income.domesticEmployment;
+  const other = {
+    gross: income.domesticOther.grossIncome,
+    credits: income.domesticOther.taxWithheld,
+  };
+
+  // Everything sourced in the other country, whatever its kind. The residence
+  // country taxes it and credits the tax already paid there — it must NOT go
+  // in alongside domestic credits, or the same tax is relieved twice.
+  const foreign = {
+    grossIncome: income.foreignEmployment.grossIncome + income.foreignOther.grossIncome,
+    taxPaid: income.foreignEmployment.taxWithheld + income.foreignOther.taxWithheld,
+  };
 
   // The self-employed income figure is GST-exclusive: GST collected is not
   // your income, it is the government's money passing through your account.
@@ -110,6 +134,10 @@ export async function buildTaxPosition(
       hasHelpDebt: settings.auHasHelpDebt,
       hasPrivateHospitalCover: settings.auHasPrivateHospitalCover,
     },
+    // Already converted into the residence currency by getIncomeForYear, at
+    // the rate recorded against each pay period rather than today's rate.
+    foreignIncomeInResidenceCurrency: foreign.grossIncome,
+    foreignTaxPaidInResidenceCurrency: foreign.taxPaid,
   });
 
   const gst = checkTurnoverThreshold({
@@ -134,8 +162,10 @@ export async function buildTaxPosition(
     invoices: invoiceTotals,
     expenses: expenseTotals,
     depreciation,
+    income,
     employment,
     otherIncome: other,
+    foreign,
     result,
     gst,
     shouldHaveReserved,

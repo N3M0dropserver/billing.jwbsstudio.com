@@ -26,6 +26,14 @@ tax and PAYG instalments. Expense tracking with business-use apportionment,
 depreciation schedules, and guidance on what is actually claimable — including
 the rules that differ between NZ and AU.
 
+**Other income** — a part-time job, interest, dividends or rent, recorded per
+pay period in either currency. Employment income changes the bracket your
+self-employed income is taxed in, so it changes what you should be setting
+aside. Work done across the Tasman is taxed by your country of residence with a
+credit for the tax withheld at source, and because the two tax years are three
+months out of step, a period crossing the boundary is split across both by
+days. See *Working across both countries* in the research doc.
+
 **Clients** — contacts, communications log, per-client revenue, proposals. Plus
 scaffolding for an AI prospecting mode (see *Known limitations*).
 
@@ -38,7 +46,7 @@ and projects, with the quick actions exposed as commands.
 ## The tax engine
 
 This is the part that has to be right, so it is a pure, dependency-free module
-with **185 tests** covering both jurisdictions.
+with **251 tests** covering both jurisdictions.
 
 - `src/lib/tax/rates.ts` — versioned rate tables. Every figure carries a source
   URL and a confidence marker. Figures marked `verify` are surfaced in the UI
@@ -49,6 +57,8 @@ with **185 tests** covering both jurisdictions.
 - `src/lib/tax/nz.ts` / `au.ts` — per-jurisdiction calculation.
 - `src/lib/tax/engine.ts` — the combined position, foreign tax credits, and the
   three reserve bands.
+- `src/lib/tax/period.ts` — attributing income earned over a period to a tax
+  year, and converting between the two currencies.
 - `src/lib/tax/gst.ts` — GST, export treatment, threshold monitoring.
 - `src/lib/tax/deductions.ts` — depreciation, home office, vehicle, and the
   claimable-guidance rules.

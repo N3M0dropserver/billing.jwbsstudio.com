@@ -43,6 +43,9 @@ const formatDate = (iso: string) =>
         ))}
       </select>
     </form>
+    <a href="/tax/income" class="rounded-lg border px-3.5 py-2 text-sm font-medium" style="border-color: var(--border)">
+      Other income
+    </a>
     <a href="/tax/expenses/new" class="rounded-lg px-3.5 py-2 text-sm font-medium text-white" style="background: var(--color-brand-600)">
       Log expense
     </a>
@@ -69,8 +72,22 @@ const formatDate = (iso: string) =>
           </div>
           {position.employment.grossIncome > 0 && (
             <div class="flex justify-between gap-3">
-              <dt class="muted">Employment income (gross)</dt>
+              <dt class="muted">{isNz ? 'New Zealand' : 'Australian'} salary or wages (gross)</dt>
               <dd class="tabular">{formatMoney(position.employment.grossIncome, currency)}</dd>
+            </div>
+          )}
+          {position.foreign.grossIncome > 0 && (
+            <div class="flex justify-between gap-3">
+              <dt class="muted">
+                {isNz ? 'Australian' : 'New Zealand'} income (converted)
+              </dt>
+              <dd class="tabular">{formatMoney(position.foreign.grossIncome, currency)}</dd>
+            </div>
+          )}
+          {position.otherIncome.gross > 0 && (
+            <div class="flex justify-between gap-3">
+              <dt class="muted">Interest, dividends and other</dt>
+              <dd class="tabular">{formatMoney(position.otherIncome.gross, currency)}</dd>
             </div>
           )}
           <div class="flex justify-between gap-3">
@@ -161,6 +178,17 @@ const formatDate = (iso: string) =>
               )}
             </>
           )}
+          {position.result.foreignTaxCredit.claimed > 0 && (
+            <div class="flex justify-between gap-3">
+              <dt class="muted">
+                Less foreign tax credit
+                {position.result.foreignTaxCredit.capped && (
+                  <span style="color: var(--color-owing)"> · capped</span>
+                )}
+              </dt>
+              <dd class="tabular">−{formatMoney(position.result.foreignTaxCredit.claimed, currency)}</dd>
+            </div>
+          )}
           <div class="flex justify-between gap-3 border-t pt-2 text-base font-semibold" style="border-color: var(--border)">
             <dt>Estimated to pay</dt>
             <dd class="tabular" style="color: var(--color-reserved)">
@@ -168,7 +196,32 @@ const formatDate = (iso: string) =>
             </dd>
           </div>
         </dl>
+
+        {position.foreign.grossIncome > 0 && (
+          <p class="muted mt-4 border-t pt-4 text-xs leading-relaxed" style="border-color: var(--border)">
+            {formatMoney(position.foreign.grossIncome, currency)} of {isNz ? 'Australian' : 'New Zealand'} income
+            is in the figures above, because {isNz ? 'New Zealand' : 'Australia'} taxes your worldwide income.
+            Of the {formatMoney(position.result.foreignTaxCredit.available, currency)} already
+            withheld there, {formatMoney(position.result.foreignTaxCredit.claimed, currency)} is credited —
+            the ceiling is the {currency === 'NZD' ? 'NZ' : 'AU'} tax on that same income, which is
+            {' '}{formatMoney(position.result.foreignTaxCredit.cap, currency)}.
+            {position.result.foreignTaxCredit.capped && ' The excess is not refundable and generally cannot be carried forward.'}
+          </p>
+        )}
       </Card>
+
+      {position.result.warnings.length > 0 && (
+        <Card title="Worth knowing" subtitle="Raised by your current position, not general advice">
+          <ul class="space-y-2.5 text-sm leading-relaxed">
+            {position.result.warnings.map((w) => (
+              <li class="muted flex gap-2.5">
+                <span aria-hidden="true" style="color: var(--color-owing)">•</span>
+                <span>{w}</span>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
 
       <!-- Expenses by category -->
       <Card title="Deductions by category" subtitle="Claimable amounts after business-use apportionment">

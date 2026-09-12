@@ -30,6 +30,7 @@ const ACTIONS: SearchHit[] = [
   { type: 'action', id: 'new-invoice', title: 'New invoice', subtitle: 'Bill for work done', href: '/invoices/new' },
   { type: 'action', id: 'new-client', title: 'Add client', subtitle: 'Record a new customer', href: '/clients/new' },
   { type: 'action', id: 'new-expense', title: 'Log expense', subtitle: 'Capture a deduction', href: '/tax/expenses/new' },
+  { type: 'action', id: 'new-income', title: 'Record other income', subtitle: 'Part-time work, interest, rent — in NZD or AUD', href: '/tax/income' },
   { type: 'action', id: 'tax', title: 'Tax position', subtitle: 'What you owe and when', href: '/tax' },
   { type: 'action', id: 'time', title: 'Track time', subtitle: 'Start or log a session', href: '/time' },
   { type: 'action', id: 'settings', title: 'Settings', subtitle: 'Business and tax details', href: '/settings' },

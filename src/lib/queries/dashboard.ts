@@ -21,6 +21,14 @@ import {
 import type { Cents } from '~/lib/tax/money';
 import { nzTaxYearFor, auFinancialYearFor } from '~/lib/tax/engine';
 import type { Jurisdiction } from '~/lib/tax/rates';
+import {
+  apportion,
+  overlapDays,
+  straddles,
+  toResidenceCurrency,
+  yearRangeFor,
+  type DateRange,
+} from '~/lib/tax/period';
 import { nzRates, auRates } from '~/lib/tax/rates';
 
 export interface TaxYearRange {
@@ -187,74 +195,151 @@ export async function getDepreciationForYear(
   return rows[0]?.claimable ?? 0;
 }
 
-export interface EmploymentTotals {
+/**
+ * Income recorded outside the invoicing system — a part-time job, interest,
+ * dividends, rent — resolved against a tax year window.
+ *
+ * Three things happen here that did not before, and each of them matters to
+ * anyone with work on both sides of the Tasman:
+ *
+ *  1. **Nothing is filtered out by jurisdiction.** Income sourced in the
+ *     country you are NOT resident in is still taxed by the country you ARE
+ *     resident in. Dropping it produced a tax estimate that was simply too
+ *     low.
+ *  2. **Amounts are converted.** A row in AUD is multiplied by the rate
+ *     stored on the row before it is added to anything denominated in NZD.
+ *  3. **Periods are apportioned.** A pay period is attributed to the years it
+ *     overlaps, weighted by days, rather than dumped whole into one label.
+ *     The NZ and AU years are three months out of step, so a period that sits
+ *     inside one straddles the other.
+ */
+export interface IncomeSlice {
+  /** Converted into the residence currency. */
   grossIncome: Cents;
   taxWithheld: Cents;
   accLevyWithheld: Cents;
+  /** Before conversion, for showing the user what they actually entered. */
+  grossInSourceCurrency: Cents;
+  taxWithheldInSourceCurrency: Cents;
 }
 
-export async function getEmploymentIncome(
+export interface IncomeForYear {
+  /** Salary or wages sourced in the residence country. */
+  domesticEmployment: IncomeSlice;
+  /** Salary or wages sourced in the other country. */
+  foreignEmployment: IncomeSlice;
+  /** Interest, dividends, rent and the like, sourced in the residence country. */
+  domesticOther: IncomeSlice;
+  /** The same, sourced in the other country. */
+  foreignOther: IncomeSlice;
+  /** Rows whose period crosses the year boundary and so were split. */
+  apportionedRowCount: number;
+  /** Rows in a currency other than the residence currency. */
+  convertedRowCount: number;
+  /** Rows in a foreign currency left at a rate of exactly 1. */
+  unconvertedForeignCurrencyRowCount: number;
+}
+
+function emptySlice(): IncomeSlice {
+  return {
+    grossIncome: 0,
+    taxWithheld: 0,
+    accLevyWithheld: 0,
+    grossInSourceCurrency: 0,
+    taxWithheldInSourceCurrency: 0,
+  };
+}
+
+function emptyIncomeForYear(): IncomeForYear {
+  return {
+    domesticEmployment: emptySlice(),
+    foreignEmployment: emptySlice(),
+    domesticOther: emptySlice(),
+    foreignOther: emptySlice(),
+    apportionedRowCount: 0,
+    convertedRowCount: 0,
+    unconvertedForeignCurrencyRowCount: 0,
+  };
+}
+
+/**
+ * The period a row covers. Rows created before periods existed carry only a
+ * year label, so they fall back to the whole of that year in their own
+ * jurisdiction's calendar.
+ */
+function periodFor(row: {
+  earnedFrom: string | null;
+  earnedTo: string | null;
+  taxYear: string;
+  jurisdiction: Jurisdiction;
+}): DateRange {
+  if (row.earnedFrom && row.earnedTo) {
+    return { startsOn: row.earnedFrom, endsOn: row.earnedTo };
+  }
+  if (row.earnedFrom) return { startsOn: row.earnedFrom, endsOn: row.earnedFrom };
+  return yearRangeFor(row.jurisdiction, row.taxYear);
+}
+
+export async function getIncomeForYear(
   db: Db,
   userId: string,
-  taxYear: string,
-  jurisdiction: Jurisdiction,
-): Promise<EmploymentTotals> {
+  range: TaxYearRange,
+  residenceCurrency: 'NZD' | 'AUD',
+): Promise<IncomeForYear> {
   const rows = await db
     .select({
       kind: incomeSources.kind,
+      jurisdiction: incomeSources.jurisdiction,
+      taxYear: incomeSources.taxYear,
+      earnedFrom: incomeSources.earnedFrom,
+      earnedTo: incomeSources.earnedTo,
       grossAmount: incomeSources.grossAmount,
       taxWithheld: incomeSources.taxWithheld,
       accLevyWithheld: incomeSources.accLevyWithheld,
+      currency: incomeSources.currency,
+      fxRateToResidence: incomeSources.fxRateToResidence,
     })
     .from(incomeSources)
-    .where(
-      and(
-        eq(incomeSources.userId, userId),
-        eq(incomeSources.taxYear, taxYear),
-        eq(incomeSources.jurisdiction, jurisdiction),
-      ),
-    );
+    .where(eq(incomeSources.userId, userId));
 
-  const totals: EmploymentTotals = { grossIncome: 0, taxWithheld: 0, accLevyWithheld: 0 };
+  const window: DateRange = { startsOn: range.startsOn, endsOn: range.endsOn };
+  const totals = emptyIncomeForYear();
+
   for (const row of rows) {
-    if (row.kind !== 'employment') continue;
-    totals.grossIncome += row.grossAmount;
-    totals.taxWithheld += row.taxWithheld;
-    totals.accLevyWithheld += row.accLevyWithheld;
+    const period = periodFor(row);
+    if (overlapDays(period, window) <= 0) continue;
+
+    const gross = apportion(row.grossAmount, period, window);
+    const withheld = apportion(row.taxWithheld, period, window);
+    const accLevy = apportion(row.accLevyWithheld, period, window);
+    const fx = row.fxRateToResidence;
+
+    const isForeign = row.jurisdiction !== range.jurisdiction;
+    const slice =
+      row.kind === 'employment'
+        ? isForeign
+          ? totals.foreignEmployment
+          : totals.domesticEmployment
+        : isForeign
+          ? totals.foreignOther
+          : totals.domesticOther;
+
+    slice.grossInSourceCurrency += gross;
+    slice.taxWithheldInSourceCurrency += withheld;
+    slice.grossIncome += toResidenceCurrency(gross, fx);
+    slice.taxWithheld += toResidenceCurrency(withheld, fx);
+    slice.accLevyWithheld += toResidenceCurrency(accLevy, fx);
+
+    if (straddles(period, window)) totals.apportionedRowCount += 1;
+    if (row.currency !== residenceCurrency) {
+      totals.convertedRowCount += 1;
+      // A foreign-currency row left at 1:1 is being added to the residence
+      // figures as though the currencies were at par. Worth saying out loud.
+      if (fx === 1) totals.unconvertedForeignCurrencyRowCount += 1;
+    }
   }
+
   return totals;
-}
-
-/** Non-employment, non-business income for the year. */
-export async function getOtherIncome(
-  db: Db,
-  userId: string,
-  taxYear: string,
-  jurisdiction: Jurisdiction,
-): Promise<{ gross: Cents; credits: Cents }> {
-  const rows = await db
-    .select({
-      kind: incomeSources.kind,
-      grossAmount: incomeSources.grossAmount,
-      taxWithheld: incomeSources.taxWithheld,
-    })
-    .from(incomeSources)
-    .where(
-      and(
-        eq(incomeSources.userId, userId),
-        eq(incomeSources.taxYear, taxYear),
-        eq(incomeSources.jurisdiction, jurisdiction),
-      ),
-    );
-
-  let gross = 0;
-  let credits = 0;
-  for (const row of rows) {
-    if (row.kind === 'employment') continue;
-    gross += row.grossAmount;
-    credits += row.taxWithheld;
-  }
-  return { gross, credits };
 }
 
 export interface CumulativePoint {

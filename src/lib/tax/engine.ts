@@ -30,6 +30,12 @@ export type Residence = 'NZ' | 'AU';
 export interface CombinedInput {
   /** Where you are tax resident. Drives which country taxes worldwide income. */
   residence: Residence;
+  /**
+   * The residence country's own figures. Do NOT put foreign income in here —
+   * pass it in `foreignIncomeInResidenceCurrency` and it is added to the
+   * taxable base for you, so the credit below always has a liability to sit
+   * against.
+   */
   nz: NzInput;
   au: AuInput;
   /**
@@ -56,12 +62,22 @@ export interface CombinedResult {
   /** Currency the headline figures are expressed in. */
   currency: 'NZD' | 'AUD';
 
+  /**
+   * Foreign-sourced income folded into the residence country's taxable
+   * income, in residence currency. Zero when everything was earned at home.
+   */
+  foreignIncomeTaxedAtHome: Cents;
+
   /** Total tax and levies across both countries, after foreign tax credits. */
   totalLiability: Cents;
   foreignTaxCredit: {
     claimed: Cents;
     available: Cents;
+    /** The residence country's own tax on the foreign income — the ceiling. */
+    cap: Cents;
     capped: boolean;
+    /** How the cap was worked out, which differs between the two countries. */
+    method: 'nz-effective-rate' | 'au-incremental';
     note: string;
   };
 
@@ -83,48 +99,95 @@ export interface CombinedResult {
 /**
  * The foreign tax credit is capped at the residence country's own tax on the
  * foreign income — you never get back more than you would have paid at home.
+ *
+ * The two countries derive that ceiling differently, and the difference is
+ * worth honouring rather than averaging away:
+ *
+ *  - **New Zealand** segments foreign income by country and source and
+ *    allows the NZ tax attributable to each segment, which works out as the
+ *    effective rate on your whole income applied to that segment (IR461).
+ *  - **Australia** works the foreign income tax offset limit out
+ *    incrementally: your tax with the foreign income, less your tax
+ *    recalculated with that income disregarded — Medicare levy included on
+ *    both sides (ITAA 1997 s 770-75).
+ *
+ * Either way, the credit only makes sense because the foreign income has
+ * already been added to the residence country's taxable income. Crediting
+ * tax against a liability that was never computed would simply hand the
+ * money back.
  */
 function foreignTaxCredit(
   foreignIncome: Cents,
   foreignTaxPaid: Cents,
-  domesticEffectiveRate: number,
-): { claimed: Cents; available: Cents; capped: boolean; note: string } {
+  cap: Cents,
+  method: 'nz-effective-rate' | 'au-incremental',
+): CombinedResult['foreignTaxCredit'] {
   if (foreignIncome <= 0 || foreignTaxPaid <= 0) {
     return {
       claimed: 0,
       available: 0,
+      cap: 0,
       capped: false,
+      method,
       note: 'No foreign income recorded, so no foreign tax credit applies.',
     };
   }
-  const cap = Math.round(foreignIncome * domesticEffectiveRate);
-  const claimed = Math.min(foreignTaxPaid, cap);
+  const ceiling = atLeastZero(cap);
+  const claimed = Math.min(foreignTaxPaid, ceiling);
   return {
     claimed,
     available: foreignTaxPaid,
-    capped: foreignTaxPaid > cap,
+    cap: ceiling,
+    capped: foreignTaxPaid > ceiling,
+    method,
     note:
-      foreignTaxPaid > cap
+      foreignTaxPaid > ceiling
         ? 'The foreign tax you paid is more than the tax your residence country would charge on the same income, so the credit is capped. The excess is not refundable and generally cannot be carried forward.'
         : 'Foreign tax paid is fully credited against your residence-country liability.',
   };
 }
 
 export function calculateCombined(input: CombinedInput): CombinedResult {
-  const nz = calculateNz(input.nz);
-  const au = calculateAu(input.au);
-
   const isNz = input.residence === 'NZ';
   const currency = isNz ? ('NZD' as const) : ('AUD' as const);
+  const foreignIncome = atLeastZero(input.foreignIncomeInResidenceCurrency ?? 0);
+  const foreignTaxPaid = atLeastZero(input.foreignTaxPaidInResidenceCurrency ?? 0);
+
+  // The residence country taxes worldwide income, so foreign earnings are
+  // folded into its taxable base BEFORE any credit is considered. Doing this
+  // here rather than asking callers to remember is the whole point: a credit
+  // granted against a liability that was never computed reduces the bill by
+  // the foreign tax paid, which is precisely backwards.
+  //
+  // It goes in as other income, which is also right for the levies: NZ ACC
+  // earner levy is not charged on overseas earnings, while the AU Medicare
+  // levy and HELP repayment are worked out on taxable income and so pick it
+  // up automatically.
+  const nzInput: NzInput = isNz
+    ? { ...input.nz, otherIncome: (input.nz.otherIncome ?? 0) + foreignIncome }
+    : input.nz;
+  const auInput: AuInput = isNz
+    ? input.au
+    : { ...input.au, otherIncome: (input.au.otherIncome ?? 0) + foreignIncome };
+
+  const nz = calculateNz(nzInput);
+  const au = calculateAu(auInput);
 
   const home = isNz ? nz : au;
-  const domesticEffectiveRate = home.effectiveRate;
 
-  const credit = foreignTaxCredit(
-    input.foreignIncomeInResidenceCurrency ?? 0,
-    input.foreignTaxPaidInResidenceCurrency ?? 0,
-    domesticEffectiveRate,
-  );
+  // The ceiling on the credit, worked out the way the residence country
+  // works it out. See foreignTaxCredit() above.
+  let cap: Cents;
+  if (isNz) {
+    cap = Math.round(foreignIncome * nz.effectiveRate);
+  } else {
+    const withoutForeign = calculateAu(input.au);
+    cap = atLeastZero(
+      au.incomeTax.total + au.medicareLevy - (withoutForeign.incomeTax.total + withoutForeign.medicareLevy),
+    );
+  }
+
+  const credit = foreignTaxCredit(foreignIncome, foreignTaxPaid, cap, isNz ? 'nz-effective-rate' : 'au-incremental');
 
   const homeLiability = isNz
     ? nz.residualIncomeTax + nz.studentLoanRepayment + nz.acc.totalIncGst
@@ -179,10 +242,18 @@ export function calculateCombined(input: CombinedInput): CombinedResult {
     }
   }
 
-  if ((input.foreignIncomeInResidenceCurrency ?? 0) > 0) {
+  if (foreignIncome > 0) {
+    warnings.push(
+      `Your ${isNz ? 'Australian' : 'New Zealand'} earnings are included in your ${isNz ? 'New Zealand' : 'Australian'} taxable income here, because your country of residence taxes worldwide income. The tax withheld there is credited back, but only up to the ${currency === 'NZD' ? 'NZ' : 'AU'} tax on that same income — so a slice of foreign work usually costs you more at home than the withholding covered.`,
+    );
     warnings.push(
       'You have income from both countries. Which country taxes what depends on your residence and, if both countries treat you as resident, on the DTA tie-breaker. Get this confirmed — it changes the whole calculation, not just a line of it.',
     );
+    if (credit.capped) {
+      warnings.push(
+        `You paid more tax on the foreign income than your residence country charges on it, so ${((credit.available - credit.claimed) / 100).toFixed(2)} of the credit is lost. Where the other country taxed income it was not entitled to tax under the DTA, the fix is a refund claim there, not a bigger credit here.`,
+      );
+    }
   }
 
   const unverified = [
@@ -195,6 +266,7 @@ export function calculateCombined(input: CombinedInput): CombinedResult {
     nz,
     au,
     currency,
+    foreignIncomeTaxedAtHome: foreignIncome,
     totalLiability,
     foreignTaxCredit: credit,
     reserve: {
