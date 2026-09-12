@@ -1,14 +1,19 @@
 /**
  * Outbound email.
  *
- * Cloudflare's own Email Service is the obvious fit for a Worker (a native
- * binding, no API key to leak), but it is in public beta — so this sits
- * behind an interface with a Resend fallback, and either can be switched by
- * changing MAIL_PROVIDER. Nothing else in the app knows which is in use.
+ * Two providers behind one interface:
  *
- * Note: Cloudflare Email ROUTING is inbound only and cannot send. The
- * MailChannels integration that Workers used for years was withdrawn in
- * August 2024 and must not be reintroduced.
+ *   cloudflare — Cloudflare Email Service via the `send_email` binding. No API
+ *                key to leak, co-located with the Worker. Public beta.
+ *   resend     — a plain HTTPS API, as a fallback or if you would rather not
+ *                run on a beta product.
+ *
+ * Nothing else in the app knows which is in use. Switch with MAIL_PROVIDER in
+ * wrangler.jsonc.
+ *
+ * Note: Cloudflare Email ROUTING is inbound only and cannot send — it is a
+ * different product from Email Service. The MailChannels integration Workers
+ * used for years was withdrawn in August 2024 and must not be reintroduced.
  */
 
 export interface Attachment {
@@ -34,13 +39,34 @@ export interface SendResult {
   error?: string;
 }
 
+/**
+ * Cloudflare Email Service caps a message at 5 MiB including attachments.
+ * Checked before sending so the failure names the cause rather than surfacing
+ * a generic API error.
+ */
+const MAX_MESSAGE_BYTES = 5 * 1024 * 1024;
+
 function toBase64(bytes: Uint8Array): string {
   let binary = '';
-  const chunk = 0x8000;
+  const chunk = 0x8000; // Chunked to stay under the argument-count limit.
   for (let i = 0; i < bytes.length; i += chunk) {
     binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
   }
   return btoa(binary);
+}
+
+function attachmentBytes(message: Message): number {
+  return (message.attachments ?? []).reduce((sum, a) => sum + a.content.byteLength, 0);
+}
+
+function tooLarge(message: Message): string | null {
+  // Base64 inflates by ~4/3; compare against the encoded size that is
+  // actually transmitted.
+  const encoded = Math.ceil(attachmentBytes(message) * 1.37) + message.text.length + (message.html?.length ?? 0);
+  if (encoded > MAX_MESSAGE_BYTES) {
+    return `Message is about ${(encoded / 1024 / 1024).toFixed(1)} MiB, over the 5 MiB limit. Attach fewer or smaller files.`;
+  }
+  return null;
 }
 
 export async function sendMail(env: Env, message: Message): Promise<SendResult> {
@@ -54,10 +80,79 @@ export async function sendMail(env: Env, message: Message): Promise<SendResult> 
     };
   }
 
-  if (provider === 'resend') return sendViaResend(env, message);
+  const oversize = tooLarge(message);
+  if (oversize) return { ok: false, provider, error: oversize };
+
   if (provider === 'cloudflare') return sendViaCloudflare(env, message);
+  if (provider === 'resend') return sendViaResend(env, message);
 
   return { ok: false, provider, error: `Unknown mail provider "${provider}".` };
+}
+
+/**
+ * Cloudflare Email Service.
+ *
+ * Uses the structured send() API rather than the older raw-MIME EmailMessage
+ * form — Cloudflare assembles the MIME itself, including attachment parts, so
+ * there is no hand-rolled message to get subtly wrong.
+ *
+ * Attachment content goes as base64 rather than an ArrayBuffer: both are
+ * accepted, but binary content cannot be serialised across the local dev
+ * boundary unless the binding is marked `remote`, and base64 works either way.
+ */
+async function sendViaCloudflare(env: Env, message: Message): Promise<SendResult> {
+  if (!env.EMAIL) {
+    return {
+      ok: false,
+      provider: 'cloudflare',
+      error:
+        'The EMAIL binding is missing. Add `"send_email": [{ "name": "EMAIL", "remote": true }]` to wrangler.jsonc and redeploy.',
+    };
+  }
+
+  try {
+    const result = await env.EMAIL.send({
+      from: { email: env.MAIL_FROM, name: env.MAIL_FROM_NAME },
+      to: message.toName ? { email: message.to, name: message.toName } : message.to,
+      subject: message.subject,
+      text: message.text,
+      ...(message.html ? { html: message.html } : {}),
+      ...(message.replyTo ? { replyTo: message.replyTo } : {}),
+      ...(message.attachments?.length
+        ? {
+            attachments: message.attachments.map((a) => ({
+              filename: a.filename,
+              content: toBase64(a.content),
+              type: a.contentType,
+              disposition: 'attachment' as const,
+            })),
+          }
+        : {}),
+    });
+
+    return { ok: true, provider: 'cloudflare', id: result?.messageId };
+  } catch (error) {
+    return { ok: false, provider: 'cloudflare', error: describeCloudflareError(error) };
+  }
+}
+
+/**
+ * Turn the common Email Service failures into something that says what to do.
+ * The raw errors are terse and the causes are nearly always configuration.
+ */
+function describeCloudflareError(error: unknown): string {
+  const text = String(error);
+
+  if (/not verified|unverified|verify/i.test(text)) {
+    return `${text} — until the sending domain is fully onboarded, Email Service will only deliver to destination addresses verified in your account. Verify the recipient, or finish onboarding the domain so you can send to clients.`;
+  }
+  if (/domain/i.test(text) && /not|invalid|unknown/i.test(text)) {
+    return `${text} — the MAIL_FROM address must be on a domain you have onboarded to Email Service, and that domain must use Cloudflare DNS.`;
+  }
+  if (/quota|limit|rate/i.test(text)) {
+    return `${text} — you may have hit the sending quota. Messages to verified destination addresses do not count towards it.`;
+  }
+  return text;
 }
 
 async function sendViaResend(env: Env, message: Message): Promise<SendResult> {
@@ -107,90 +202,4 @@ async function sendViaResend(env: Env, message: Message): Promise<SendResult> {
   }
 }
 
-/**
- * Cloudflare Email Service, via the `send_email` binding.
- *
- * The binding takes a raw RFC 5322 message, so a MIME document has to be
- * assembled by hand — which is also what lets the invoice PDF ride along as
- * an attachment.
- */
-async function sendViaCloudflare(env: Env, message: Message): Promise<SendResult> {
-  if (!env.EMAIL) {
-    return {
-      ok: false,
-      provider: 'cloudflare',
-      error:
-        'The EMAIL binding is not configured. Uncomment the send_email binding in wrangler.jsonc and redeploy.',
-    };
-  }
-
-  try {
-    const raw = buildMimeMessage(env, message);
-    await env.EMAIL.send({ from: env.MAIL_FROM, to: message.to, raw });
-    return { ok: true, provider: 'cloudflare' };
-  } catch (error) {
-    return { ok: false, provider: 'cloudflare', error: String(error) };
-  }
-}
-
-/** Build a multipart/mixed MIME message. */
-export function buildMimeMessage(env: Env, message: Message): string {
-  const boundary = `----jwbs${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
-  const date = new Date().toUTCString();
-  const messageId = `<${crypto.randomUUID()}@${env.MAIL_FROM.split('@')[1] ?? 'localhost'}>`;
-
-  // Anything beyond ASCII in a header must be encoded-word wrapped.
-  const header = (value: string) =>
-    /^[\x20-\x7E]*$/.test(value)
-      ? value
-      : `=?UTF-8?B?${btoa(String.fromCharCode(...new TextEncoder().encode(value)))}?=`;
-
-  const lines: string[] = [
-    `From: ${header(env.MAIL_FROM_NAME)} <${env.MAIL_FROM}>`,
-    `To: ${message.toName ? `${header(message.toName)} <${message.to}>` : message.to},`.replace(/,$/, ''),
-    `Subject: ${header(message.subject)}`,
-    `Date: ${date}`,
-    `Message-ID: ${messageId}`,
-    'MIME-Version: 1.0',
-  ];
-  if (message.replyTo) lines.push(`Reply-To: ${message.replyTo}`);
-  lines.push(`Content-Type: multipart/mixed; boundary="${boundary}"`, '');
-
-  const encodeBody = (value: string) =>
-    btoa(String.fromCharCode(...new TextEncoder().encode(value))).replace(/(.{76})/g, '$1\r\n');
-
-  lines.push(
-    `--${boundary}`,
-    'Content-Type: text/plain; charset=UTF-8',
-    'Content-Transfer-Encoding: base64',
-    '',
-    encodeBody(message.text),
-    '',
-  );
-
-  if (message.html) {
-    lines.push(
-      `--${boundary}`,
-      'Content-Type: text/html; charset=UTF-8',
-      'Content-Transfer-Encoding: base64',
-      '',
-      encodeBody(message.html),
-      '',
-    );
-  }
-
-  for (const attachment of message.attachments ?? []) {
-    lines.push(
-      `--${boundary}`,
-      `Content-Type: ${attachment.contentType}; name="${attachment.filename}"`,
-      'Content-Transfer-Encoding: base64',
-      `Content-Disposition: attachment; filename="${attachment.filename}"`,
-      '',
-      toBase64(attachment.content).replace(/(.{76})/g, '$1\r\n'),
-      '',
-    );
-  }
-
-  lines.push(`--${boundary}--`, '');
-  return lines.join('\r\n');
-}
+export { toBase64, MAX_MESSAGE_BYTES };
