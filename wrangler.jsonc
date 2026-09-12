@@ -42,6 +42,19 @@
         "MAIL_FROM": "invoices@jwbsstudio.com",
         "MAIL_FROM_NAME": "JWBS Studio"
     }
+    // Cloudflare Email Service. The sending domain must use Cloudflare DNS and
+    // be onboarded to Email Service before this can reach arbitrary recipients
+    // — until then it delivers only to destination addresses verified in your
+    // account. See README.
+    //
+    // `remote: true` lets `wrangler dev` send through the real service while the
+    // Worker runs locally; there is no local emulation of email delivery.
+    "send_email": [
+      {
+        "name": "EMAIL",
+        "remote": true
+      }
+    ]
     // To send through Cloudflare Email Service instead of Resend, set
     // MAIL_PROVIDER to "cloudflare" and uncomment:
     //

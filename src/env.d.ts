@@ -9,14 +9,44 @@
  * Use the helpers in `src/lib/env.ts` rather than importing that module
  * directly, so the one place that touches the runtime is easy to find.
  */
+interface EmailAddress {
+  email: string;
+  name?: string;
+}
+
 interface Env {
   DB: D1Database;
   FILES: R2Bucket;
   SESSION: KVNamespace;
   AI: Ai;
   ASSETS: Fetcher;
-  /** Only present when MAIL_PROVIDER is "cloudflare". */
-  EMAIL?: { send(message: unknown): Promise<void> };
+  /**
+   * Cloudflare Email Service `send_email` binding. Only present when the
+   * binding is declared in wrangler.jsonc.
+   *
+   * Typed against the structured send() API. `content` on an attachment also
+   * accepts an ArrayBuffer, but we always send base64 — see src/lib/mail.
+   */
+  EMAIL?: {
+    send(message: {
+      from: string | EmailAddress;
+      to: string | EmailAddress | (string | EmailAddress)[];
+      subject: string;
+      text?: string;
+      html?: string;
+      cc?: string | EmailAddress | (string | EmailAddress)[];
+      bcc?: string | EmailAddress | (string | EmailAddress)[];
+      replyTo?: string | EmailAddress;
+      headers?: Record<string, string>;
+      attachments?: Array<{
+        content: string | ArrayBuffer | ArrayBufferView;
+        filename: string;
+        type: string;
+        disposition: 'attachment' | 'inline';
+        contentId?: string;
+      }>;
+    }): Promise<{ messageId: string }>;
+  };
 
   APP_NAME: string;
   APP_URL: string;

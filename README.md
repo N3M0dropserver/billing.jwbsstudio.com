@@ -38,7 +38,7 @@ and projects, with the quick actions exposed as commands.
 ## The tax engine
 
 This is the part that has to be right, so it is a pure, dependency-free module
-with **165 tests** covering both jurisdictions.
+with **185 tests** covering both jurisdictions.
 
 - `src/lib/tax/rates.ts` — versioned rate tables. Every figure carries a source
   URL and a confidence marker. Figures marked `verify` are surfaced in the UI
@@ -127,10 +127,13 @@ npm run preview   # astro build && wrangler dev
 ```
 
 `astro dev` alone has no Cloudflare bindings, so it will not work — you need
-`wrangler dev`. Note that `wrangler dev` without `--local` tries to start a
-remote proxy session for the Workers AI binding and needs a
-`CLOUDFLARE_API_TOKEN`; use `npx wrangler dev --local` if you do not want that
-(AI features will be unavailable locally).
+`wrangler dev`.
+
+Two bindings have no local emulation and are marked to run against the real
+service: **Workers AI** and **Email**. `wrangler dev` will therefore start a
+remote proxy session and needs a `CLOUDFLARE_API_TOKEN`. To work fully offline,
+run `npx wrangler dev --local` and set `MAIL_PROVIDER` to `none` — everything
+except AI and email sending works locally, against a local D1.
 
 ### 5. Deploy
 
@@ -147,17 +150,52 @@ in **Settings** — the invoices depend on them.
 
 ## Email
 
-`MAIL_PROVIDER` in `wrangler.jsonc` selects the sender:
+Sending uses **Cloudflare Email Service** by default, via the `send_email`
+binding already declared in `wrangler.jsonc`. No API key, nothing to leak.
 
-- **`resend`** (default) — set `RESEND_API_KEY`. Mature and reliable.
-- **`cloudflare`** — Cloudflare Email Service, a native Workers binding with no
-  API key. In public beta. Uncomment the `send_email` binding in
-  `wrangler.jsonc` to use it.
-- **`none`** — disables sending.
+### Setting it up
 
-Cloudflare Email *Routing* is inbound only and cannot send. The MailChannels
-integration Workers used for years was withdrawn in August 2024 — do not
-reintroduce it.
+1. **The sending domain must use Cloudflare DNS.** This is a hard prerequisite.
+2. **Onboard the domain to Email Service** in the dashboard, which adds the
+   SPF/DKIM/DMARC records that let your mail actually arrive.
+3. Set `MAIL_FROM` in `wrangler.jsonc` to an address on that domain.
+4. Deploy.
+
+**Until the domain is onboarded, Email Service will only deliver to destination
+addresses you have verified in your account.** That is fine for testing against
+your own inbox, but it will not reach clients — so finish step 2 before sending
+a real invoice. Sending to arbitrary recipients also requires the Workers Paid
+plan; mail to verified destination addresses is free on any plan and does not
+count towards the sending quota.
+
+The binding is declared unrestricted so it can invoice any client. To lock it
+down, `send_email` also accepts `destination_address`,
+`allowed_destination_addresses` and `allowed_sender_addresses`.
+
+Limits worth knowing: **5 MiB per message** including attachments (the app
+checks before sending and fails with a clear message), and 50 recipients across
+to/cc/bcc. A generated invoice PDF is around 6 KB, so neither will bite.
+
+### Local development
+
+There is no local emulation of email delivery. The binding is marked
+`remote: true`, so `wrangler dev` runs the Worker locally but sends through the
+real service — which means real email and a real API token
+(`CLOUDFLARE_API_TOKEN`). If you would rather not, run `wrangler dev --local`
+and set `MAIL_PROVIDER` to `none`; everything except sending still works.
+
+### Switching to Resend
+
+Set `MAIL_PROVIDER` to `resend` in `wrangler.jsonc` and
+`wrangler secret put RESEND_API_KEY`. Nothing else changes — both providers sit
+behind one interface in `src/lib/mail/`. Set it to `none` to disable sending
+entirely.
+
+### A note on what not to use
+
+Cloudflare Email **Routing** is a different product: inbound only, it cannot
+send. The MailChannels integration Workers relied on for years was withdrawn in
+August 2024 — do not reintroduce it.
 
 ## Commands
 
@@ -232,6 +270,6 @@ src/
   pages/          Astro routes and API endpoints
   components/     Astro components and React islands
 migrations/       D1 migrations
-tests/            165 tests, mostly the tax engine
+tests/            185 tests, mostly the tax engine
 docs/             the tax research
 ```
