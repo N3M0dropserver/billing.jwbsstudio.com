@@ -35,22 +35,22 @@ const SIGNAL_LABELS: Record<string, string> = {
         <form method="post" action="/api/prospects/search" class="space-y-3.5">
           <div class="grid gap-3.5 sm:grid-cols-2">
             <div>
-              <label for="niche" class="mb-1.5 block text-sm font-medium">Niche</label>
+              <label for="niche" class="label muted mb-1.5 block">Niche</label>
               <input id="niche" name="niche" required placeholder="Coffee roasters" class="field" />
             </div>
             <div>
-              <label for="region" class="mb-1.5 block text-sm font-medium">Region</label>
+              <label for="region" class="label muted mb-1.5 block">Region</label>
               <input id="region" name="region" required placeholder="Wellington" class="field" />
             </div>
             <div>
-              <label for="country" class="mb-1.5 block text-sm font-medium">Country</label>
+              <label for="country" class="label muted mb-1.5 block">Country</label>
               <select id="country" name="country" class="field">
                 <option value="NZ">New Zealand</option>
                 <option value="AU">Australia</option>
               </select>
             </div>
             <div>
-              <label for="styleRepertoireId" class="mb-1.5 block text-sm font-medium">Style direction</label>
+              <label for="styleRepertoireId" class="label muted mb-1.5 block">Style direction</label>
               <select id="styleRepertoireId" name="styleRepertoireId" class="field">
                 <option value="">Default</option>
                 {styles.map((style) => (
@@ -59,15 +59,13 @@ const SIGNAL_LABELS: Record<string, string> = {
               </select>
             </div>
           </div>
-          <button class="rounded-lg px-4 py-2.5 text-sm font-medium text-white" style="background: var(--color-brand-600)">
-            Search
-          </button>
+          <button class="btn btn-primary w-full sm:w-auto">Search</button>
         </form>
 
         {error && (
           <div
-            class="mt-4 rounded-lg px-4 py-3 text-sm leading-relaxed"
-            style="background: color-mix(in oklch, var(--color-owing) 10%, transparent)"
+            class="mt-4 border px-4 py-3 text-sm leading-relaxed"
+            style="background: color-mix(in oklch, var(--color-owing) 10%, transparent); border-color: color-mix(in oklch, var(--color-owing) 35%, transparent); border-radius: var(--radius-ctl)"
           >
             <p class="font-medium" style="color: var(--color-owing)">Discovery is not wired up yet</p>
             <p class="muted mt-1">{error}</p>
@@ -106,8 +104,8 @@ const SIGNAL_LABELS: Record<string, string> = {
                     </p>
                   </div>
                   <span
-                    class="tabular shrink-0 rounded-full px-2 py-0.5 text-xs font-medium"
-                    style={`background: color-mix(in oklch, var(--color-brand-500) ${Math.round(prospect.score / 5)}%, transparent); color: var(--color-brand-600)`}
+                    class="tabular label-xs shrink-0 border px-1.5 py-1"
+                    style={`background: color-mix(in oklch, var(--accent) ${Math.round(prospect.score / 5)}%, transparent); border-color: color-mix(in oklch, var(--accent) 45%, transparent); color: var(--accent-text); border-radius: 2px`}
                   >{prospect.score}</span>
                 </div>
                 {prospect.notes && <p class="muted mt-1.5 text-sm leading-relaxed">{prospect.notes}</p>}

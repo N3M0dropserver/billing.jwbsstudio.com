@@ -1,0 +1,104 @@
+---
+import AppLayout from '~/layouts/AppLayout.astro';
+import EmptyState from '~/components/ui/EmptyState.astro';
+import { db } from '~/lib/env';
+import { listTemplates } from '~/lib/queries/templates';
+import { KIND_LABELS, TEMPLATE_KINDS, type TemplateKind } from '~/lib/mail/variables';
+
+const user = Astro.locals.user!;
+const rows = await listTemplates(db(), user.id);
+
+const byKind = TEMPLATE_KINDS.map((kind) => ({
+  kind,
+  label: KIND_LABELS[kind],
+  templates: rows.filter((row) => row.kind === kind),
+})).filter((group) => group.templates.length > 0);
+
+const formatDate = (iso: string) =>
+  new Date(iso).toLocaleDateString('en-NZ', { day: 'numeric', month: 'short', year: '2-digit' });
+---
+
+<AppLayout
+  title="Email templates"
+  subtitle={rows.length === 1 ? '1 template' : `${rows.length} templates`}
+>
+  <form slot="actions" method="post" action="/api/templates" class="flex flex-wrap items-center gap-2">
+    <label for="new-kind" class="sr-only">Template type</label>
+    <select id="new-kind" name="kind" class="field w-auto">
+      {TEMPLATE_KINDS.map((kind) => <option value={kind}>{KIND_LABELS[kind as TemplateKind]}</option>)}
+    </select>
+    <button class="btn btn-primary">New template</button>
+  </form>
+
+  {
+    rows.length === 0 ? (
+      <EmptyState
+        title="No templates yet"
+        description="Write the wording once and reuse it. Until you make one, invoices send with the standard built-in wording — nothing is broken by having none."
+      />
+    ) : (
+      <div class="space-y-6">
+        {byKind.map((group) => (
+          <section>
+            <h2 class="label-xs muted mb-2">{group.label}</h2>
+            <div class="card divide-y overflow-hidden" style="border-color: var(--border)">
+              {group.templates.map((template) => (
+                <div
+                  class="flex flex-wrap items-center justify-between gap-3 px-4 py-3.5"
+                  style="border-color: var(--border)"
+                >
+                  <div class="min-w-0 flex-1">
+                    <a href={`/templates/${template.id}`} class="text-sm font-medium hover:underline">
+                      {template.name}
+                    </a>
+                    {template.isDefault && <span class="seg seg-on btn-sm ml-2">Default</span>}
+                    <p class="muted mt-0.5 truncate text-xs">
+                      {template.subject || 'No subject yet'} · edited {formatDate(template.updatedAt)}
+                    </p>
+                  </div>
+
+                  <div class="flex shrink-0 gap-1.5">
+                    {!template.isDefault && (
+                      <form method="post" action={`/api/templates/${template.id}`}>
+                        <input type="hidden" name="action" value="default" />
+                        <button class="btn btn-ghost btn-sm">Make default</button>
+                      </form>
+                    )}
+                    <form method="post" action={`/api/templates/${template.id}`}>
+                      <input type="hidden" name="action" value="duplicate" />
+                      <button class="btn btn-ghost btn-sm">Duplicate</button>
+                    </form>
+                    <form
+                      method="post"
+                      action={`/api/templates/${template.id}`}
+                      data-confirm={`Delete "${template.name}"?`}
+                    >
+                      <input type="hidden" name="action" value="archive" />
+                      <button class="btn btn-ghost btn-sm">Delete</button>
+                    </form>
+                    <a href={`/templates/${template.id}`} class="btn btn-secondary btn-sm">Edit</a>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        ))}
+      </div>
+    )
+  }
+
+  <p class="muted mt-6 max-w-prose text-xs leading-relaxed">
+    The template marked default for a kind is pre-selected when you send. Choosing no template
+    falls back to the built-in wording, so sending always works. The sign-in email is deliberately
+    not templatable — a broken template there would lock you out.
+  </p>
+</AppLayout>
+
+<script>
+  // A delete has no undo beyond the archive flag, so ask first.
+  document.querySelectorAll<HTMLFormElement>('form[data-confirm]').forEach((form) => {
+    form.addEventListener('submit', (event) => {
+      if (!confirm(form.dataset.confirm ?? 'Are you sure?')) event.preventDefault();
+    });
+  });
+</script>

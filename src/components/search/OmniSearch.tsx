@@ -128,8 +128,8 @@ export default function OmniSearch() {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center px-4 pt-[12vh]"
-      style={{ background: 'color-mix(in oklch, black 45%, transparent)' }}
+      className="fixed inset-0 z-50 flex items-start justify-center px-3 pt-[8vh] sm:px-4 sm:pt-[12vh]"
+      style={{ background: 'color-mix(in oklch, black 55%, transparent)' }}
       onClick={(e) => {
         if (e.target === e.currentTarget) close();
       }}
@@ -141,7 +141,8 @@ export default function OmniSearch() {
         className="card animate-fade-up w-full max-w-lg overflow-hidden p-0 shadow-2xl"
         style={{ background: 'var(--surface-raised)' }}
       >
-        <div className="flex items-center gap-3 border-b px-4 py-3" style={{ borderColor: 'var(--border)' }}>
+        {/* The input is 16px on phones: anything smaller makes iOS Safari zoom. */}
+        <div className="flex items-center gap-3 border-b px-3.5 py-3" style={{ borderColor: 'var(--border)' }}>
           <svg className="size-4 shrink-0" style={{ color: 'var(--text-muted)' }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <circle cx="11" cy="11" r="8" />
             <path d="m21 21-4.35-4.35" />
@@ -163,22 +164,28 @@ export default function OmniSearch() {
               }
             }}
             placeholder="Search invoices, clients, expenses, time…"
-            className="flex-1 bg-transparent text-sm outline-none"
+            className="min-w-0 flex-1 bg-transparent text-base outline-none sm:text-sm"
             style={{ color: 'var(--text)' }}
             aria-label="Search query"
             aria-autocomplete="list"
           />
           {loading && (
-            <span className="muted text-xs" role="status">searching…</span>
+            <span className="label-xs muted shrink-0" role="status">…</span>
           )}
-          <kbd className="muted rounded border px-1.5 py-0.5 text-[10px]" style={{ borderColor: 'var(--border)' }}>
-            esc
-          </kbd>
+          <button
+            type="button"
+            onClick={close}
+            className="label-xs muted shrink-0 border px-1.5 py-1"
+            style={{ borderColor: 'var(--border)', borderRadius: '2px' }}
+            aria-label="Close search"
+          >
+            Esc
+          </button>
         </div>
 
-        <ul className="max-h-[50vh] overflow-y-auto py-1.5" role="listbox">
+        <ul className="max-h-[60vh] overflow-y-auto" role="listbox">
           {hits.length === 0 && !loading && (
-            <li className="muted px-4 py-6 text-center text-sm">
+            <li className="muted px-4 py-8 text-center text-sm">
               Nothing matched “{query}”.
             </li>
           )}
@@ -188,18 +195,21 @@ export default function OmniSearch() {
                 type="button"
                 onMouseEnter={() => setSelected(i)}
                 onClick={() => go(hit)}
-                className="flex w-full items-center gap-3 px-4 py-2 text-left"
-                style={{ background: i === selected ? 'var(--surface-sunken)' : 'transparent' }}
+                className="flex w-full items-center gap-3 border-b px-3.5 py-2.5 text-left last:border-b-0"
+                style={{
+                  background: i === selected ? 'var(--surface-sunken)' : 'transparent',
+                  borderColor: 'var(--border)',
+                }}
               >
-                <span
-                  className="w-14 shrink-0 text-[10px] font-medium uppercase tracking-wide"
-                  style={{ color: 'var(--text-muted)' }}
-                >
+                <span className="label-xs muted hidden w-14 shrink-0 sm:block">
                   {TYPE_LABELS[hit.type]}
                 </span>
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-sm font-medium">{hit.title}</span>
-                  <span className="muted block truncate text-xs">{hit.subtitle}</span>
+                  <span className="muted block truncate text-xs">
+                    <span className="sm:hidden">{TYPE_LABELS[hit.type]} · </span>
+                    {hit.subtitle}
+                  </span>
                 </span>
                 {hit.meta && (
                   <span className="tabular muted shrink-0 text-xs">{hit.meta}</span>
@@ -210,7 +220,7 @@ export default function OmniSearch() {
         </ul>
 
         <div
-          className="muted flex items-center gap-3 border-t px-4 py-2 text-[11px]"
+          className="label-xs muted hidden items-center gap-3 border-t px-3.5 py-2 sm:flex"
           style={{ borderColor: 'var(--border)' }}
         >
           <span>↑↓ navigate</span>

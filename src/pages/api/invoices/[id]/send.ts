@@ -7,6 +7,11 @@ import { toPdfData } from '~/lib/invoices/pdf-data';
 import { renderInvoicePdf } from '~/lib/pdf/invoice';
 import { sendMail } from '~/lib/mail';
 import { invoiceEmail, reminderEmail } from '~/lib/mail/templates';
+import { renderTemplate } from '~/lib/mail/render';
+import { invoiceValues } from '~/lib/mail/variables';
+import { pixelUrl, withTrackingPixel } from '~/lib/mail/tracking';
+import { getTemplate, defaultTemplate } from '~/lib/queries/templates';
+import { startSend, completeSend, recordFailure } from '~/lib/queries/sends';
 import { invoices, communications, activityLog } from '~/lib/db/schema';
 import { newId } from '~/lib/id';
 
@@ -49,16 +54,90 @@ export const POST: APIRoute = async ({ params, request, locals, redirect }) => {
     customMessage: customMessage || undefined,
   };
 
-  const content = isReminder
-    ? reminderEmail({ ...emailData, daysOverdue: Math.max(daysOverdue, 0) })
-    : invoiceEmail(emailData);
+  /**
+   * Which wording to use.
+   *
+   * An explicit `templateId` wins; otherwise the default template for this
+   * kind, if one is set; otherwise the built-in wording. That last branch is
+   * what runs for an account with no templates at all, so sending keeps
+   * working exactly as it did before templates existed.
+   */
+  const kind = isReminder ? 'reminder' : 'invoice';
+  const requestedTemplateId = String(form.get('templateId') ?? '').trim();
+
+  let template = null;
+  if (requestedTemplateId === 'none') {
+    template = null;
+  } else if (requestedTemplateId) {
+    template = await getTemplate(database, user.id, requestedTemplateId);
+  } else {
+    template = await defaultTemplate(database, user.id, kind);
+  }
+
+  // An empty template would send a blank email. Fall back rather than do that.
+  if (template && !template.html.trim()) template = null;
+
+  let content: { subject: string; text: string; html: string };
+
+  if (template) {
+    const values = {
+      ...invoiceValues({
+        invoiceNumber: invoice.number,
+        clientName: invoice.client?.name ?? 'there',
+        clientEmail: invoice.client?.email ?? recipient,
+        total: invoice.total,
+        amountPaid: invoice.amountPaid,
+        currency: invoice.currency,
+        issuedOn: invoice.issuedOn,
+        dueOn: invoice.dueOn,
+        reference: invoice.reference,
+        daysOverdue,
+        viewUrl: payUrl ?? appUrl(),
+        payUrl: settings.stripeEnabled ? payUrl : undefined,
+        businessName: settings.businessName || 'Your business',
+        businessEmail: settings.email,
+        businessPhone: settings.phone,
+        businessWebsite: settings.website,
+        senderName: user.name,
+      }),
+      // The per-send note from the send form, available to templates that
+      // want to place it rather than having it forced into a fixed slot.
+      'message': customMessage,
+    };
+
+    content = {
+      // Subject and text are not HTML; escaping them would show `&amp;`.
+      subject: renderTemplate(template.subject, values, { escape: false }),
+      text: renderTemplate(template.text, values, { escape: false }),
+      html: renderTemplate(template.html, values),
+    };
+  } else {
+    content = isReminder
+      ? reminderEmail({ ...emailData, daysOverdue: Math.max(daysOverdue, 0) })
+      : invoiceEmail(emailData);
+  }
+
+  /**
+   * Recorded before sending, because the tracking token has to exist in order
+   * to be embedded in the body. A row whose `provider` stays empty is a send
+   * that was attempted and failed — worth keeping when a client says the email
+   * never arrived.
+   */
+  const send = await startSend(database, {
+    userId: user.id,
+    entityType: 'invoice',
+    entityId: invoice.id,
+    templateId: template?.id ?? null,
+    toAddress: recipient,
+    subject: content.subject,
+  });
 
   const result = await sendMail(env, {
     to: recipient,
     toName: invoice.client?.name,
     subject: content.subject,
     text: content.text,
-    html: content.html,
+    html: withTrackingPixel(content.html, pixelUrl(appUrl(), send.token)),
     replyTo: settings.email || undefined,
     attachments: [
       { filename: `${invoice.number}.pdf`, content: pdf, contentType: 'application/pdf' },
@@ -66,11 +145,14 @@ export const POST: APIRoute = async ({ params, request, locals, redirect }) => {
   });
 
   if (!result.ok) {
+    await recordFailure(database, send.id, result.error ?? 'unknown');
     return redirect(
       `/invoices/${invoice.id}?sent=failed&reason=${encodeURIComponent(result.error ?? 'unknown')}`,
       302,
     );
   }
+
+  await completeSend(database, send.id, result.provider, result.id);
 
   const now = new Date().toISOString();
 

@@ -100,30 +100,36 @@ export default function Timer({ clients }: Props) {
   const elapsed = running ? now - running.startedAt : 0;
 
   return (
-    <div className="card p-5">
+    <div className="card p-4 sm:p-5">
       <form ref={formRef} method="post" action="/api/time" className="space-y-3.5">
         <input type="hidden" name="minutes" defaultValue="" />
         <input type="hidden" name="startedAt" defaultValue="" />
 
         {running ? (
           <div className="text-center">
-            <p className="tabular text-4xl font-semibold" style={{ color: 'var(--color-brand-600)' }}>
+            <p
+              className="tabular font-semibold tracking-tight"
+              style={{
+                color: 'var(--accent-text)',
+                fontFamily: 'var(--font-mono)',
+                fontSize: 'clamp(2.25rem, 13vw, 3rem)',
+                lineHeight: 1,
+              }}
+            >
               {formatElapsed(elapsed)}
             </p>
             <p className="muted mt-1 text-sm">
               {running.description || 'Untitled'}
               {running.clientId && ` · ${clients.find((c) => c.id === running.clientId)?.name ?? ''}`}
             </p>
-            <div className="mt-4 flex justify-center gap-2">
+            <div className="mt-5 flex flex-wrap justify-center gap-2">
               <button
                 type="button" onClick={stop}
-                className="rounded-lg px-5 py-2.5 text-sm font-medium text-white"
-                style={{ background: 'var(--color-brand-600)' }}
+                className="btn btn-primary"
               >Stop and save</button>
               <button
                 type="button" onClick={discard}
-                className="muted rounded-lg border px-4 py-2.5 text-sm font-medium"
-                style={{ borderColor: 'var(--border)' }}
+                className="btn btn-secondary"
               >Discard</button>
             </div>
           </div>
@@ -131,7 +137,7 @@ export default function Timer({ clients }: Props) {
           <>
             <div className="grid gap-3.5 sm:grid-cols-2">
               <div className="sm:col-span-2">
-                <label htmlFor="description" className="mb-1.5 block text-sm font-medium">
+                <label htmlFor="description" className="label muted mb-1.5 block">
                   What are you working on
                 </label>
                 <input
@@ -141,7 +147,7 @@ export default function Timer({ clients }: Props) {
                 />
               </div>
               <div>
-                <label htmlFor="clientId" className="mb-1.5 block text-sm font-medium">Client</label>
+                <label htmlFor="clientId" className="label muted mb-1.5 block">Client</label>
                 <select
                   id="clientId" name="clientId" value={clientId}
                   onChange={(e) => setClientId(e.target.value)} className="field"
@@ -151,7 +157,7 @@ export default function Timer({ clients }: Props) {
                 </select>
               </div>
               <div>
-                <label htmlFor="manualMinutes" className="mb-1.5 block text-sm font-medium">
+                <label htmlFor="manualMinutes" className="label muted mb-1.5 block">
                   Or log minutes directly
                 </label>
                 <input
@@ -164,13 +170,11 @@ export default function Timer({ clients }: Props) {
             <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button" onClick={start}
-                className="rounded-lg px-5 py-2.5 text-sm font-medium text-white"
-                style={{ background: 'var(--color-brand-600)' }}
+                className="btn btn-primary"
               >Start timer</button>
               <button
                 type="submit"
-                className="muted rounded-lg border px-4 py-2.5 text-sm font-medium"
-                style={{ borderColor: 'var(--border)' }}
+                className="btn btn-secondary"
               >Save manual entry</button>
               <label className="muted ml-auto flex items-center gap-2 text-sm">
                 <input type="checkbox" name="billable" value="yes" defaultChecked />

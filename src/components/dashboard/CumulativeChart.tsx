@@ -114,30 +114,20 @@ export default function CumulativeChart({ points, currency, reserveAmount }: Pro
     <div className="viz-root">
       <style>{`
         .viz-root {
-          --series-invoiced: #eb6834;
-          --series-paid: #1baf7a;
+          --series-invoiced: var(--accent);
+          --series-paid: var(--color-paid);
           --viz-grid: color-mix(in oklch, var(--text-muted) 18%, transparent);
-        }
-        @media (prefers-color-scheme: dark) {
-          :root:where(:not([data-theme="light"])) .viz-root {
-            --series-invoiced: #d95926;
-            --series-paid: #199e70;
-          }
-        }
-        :root[data-theme="dark"] .viz-root {
-          --series-invoiced: #d95926;
-          --series-paid: #199e70;
         }
       `}</style>
 
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-4 text-xs">
-          <span className="flex items-center gap-1.5">
-            <span className="size-2.5 rounded-[2px]" style={{ background: 'var(--series-invoiced)' }} />
+        <div className="label muted flex flex-wrap items-center gap-x-4 gap-y-2">
+          <span className="flex items-center gap-1.5" style={{ color: 'var(--text)' }}>
+            <span className="size-2.5" style={{ background: 'var(--series-invoiced)' }} />
             Invoiced
           </span>
-          <span className="flex items-center gap-1.5">
-            <span className="size-2.5 rounded-[2px]" style={{ background: 'var(--series-paid)' }} />
+          <span className="flex items-center gap-1.5" style={{ color: 'var(--text)' }}>
+            <span className="size-2.5" style={{ background: 'var(--series-paid)' }} />
             Received
           </span>
           <span className="muted">
@@ -147,7 +137,7 @@ export default function CumulativeChart({ points, currency, reserveAmount }: Pro
         <button
           type="button"
           onClick={() => setShowTable((v) => !v)}
-          className="muted rounded-md border px-2 py-1 text-xs hover:opacity-80"
+          className="btn btn-secondary btn-sm"
           style={{ borderColor: 'var(--border)' }}
           aria-expanded={showTable}
         >
@@ -277,10 +267,11 @@ export default function CumulativeChart({ points, currency, reserveAmount }: Pro
 
           {active && (
             <div
-              className="pointer-events-none absolute top-2 rounded-lg border px-3 py-2 text-xs shadow-sm"
+              className="pointer-events-none absolute top-2 border px-3 py-2 text-xs shadow-sm"
               style={{
                 background: 'var(--surface-raised)',
-                borderColor: 'var(--border)',
+                borderColor: 'var(--border-strong)',
+                borderRadius: 'var(--radius-ctl)',
                 left: `${(geometry.x(hover!) / VIEW_WIDTH) * 100}%`,
                 transform: 'translateX(-50%)',
                 minWidth: '9rem',
@@ -291,14 +282,14 @@ export default function CumulativeChart({ points, currency, reserveAmount }: Pro
               <dl className="space-y-0.5">
                 <div className="flex items-center justify-between gap-3">
                   <dt className="flex items-center gap-1.5">
-                    <span className="size-2 rounded-[2px]" style={{ background: 'var(--series-invoiced)' }} />
+                    <span className="size-2" style={{ background: 'var(--series-invoiced)' }} />
                     Invoiced
                   </dt>
                   <dd className="tabular font-medium">{money(active.invoiced, currency, true)}</dd>
                 </div>
                 <div className="flex items-center justify-between gap-3">
                   <dt className="flex items-center gap-1.5">
-                    <span className="size-2 rounded-[2px]" style={{ background: 'var(--series-paid)' }} />
+                    <span className="size-2" style={{ background: 'var(--series-paid)' }} />
                     Received
                   </dt>
                   <dd className="tabular font-medium">{money(active.paid, currency, true)}</dd>

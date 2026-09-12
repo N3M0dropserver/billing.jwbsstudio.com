@@ -17,8 +17,14 @@ const tones: Record<string, string> = {
 };
 const Tag = href ? 'a' : 'div';
 ---
-<Tag href={href} class:list={['card block p-4', href && 'transition-opacity hover:opacity-80']}>
-  <p class="muted text-xs font-medium uppercase tracking-wide">{label}</p>
-  <p class="tabular mt-1.5 text-2xl font-semibold" style={`color: ${tones[tone]}`}>{value}</p>
-  {hint && <p class="muted mt-1 text-xs">{hint}</p>}
+<Tag
+  href={href}
+  class:list={['card block px-3.5 py-3 sm:px-4', href && 'transition-colors hover:border-[var(--border-strong)]']}
+>
+  <p class="label muted">{label}</p>
+  <p
+    class="tabular mt-2 text-xl leading-tight font-semibold tracking-tight sm:text-2xl"
+    style={`color: ${tones[tone]}`}
+  >{value}</p>
+  {hint && <p class="muted mt-1 text-xs leading-snug">{hint}</p>}
 </Tag>

@@ -3,6 +3,11 @@
  * Public invoice view. No session required — the token IS the credential,
  * so it must be long, random, and never guessable. Nothing on this page
  * exposes anything beyond the single invoice it belongs to.
+ *
+ * This is the only page a client ever sees, and most of them open it on a
+ * phone, so it is built narrow-first: the line items collapse to one row per
+ * item with the quantity tucked under the description, and the table layout
+ * only appears once there is width for it.
  */
 import '~/styles/app.css';
 import { eq } from 'drizzle-orm';
@@ -49,6 +54,9 @@ const gstLabel =
       ? invoice.jurisdiction === 'NZ' ? 'Zero-rated export' : 'GST-free export'
       : 'No GST';
 
+const quantity = (thousandths: number) =>
+  (thousandths / 1000).toFixed(2).replace(/\.00$/, '');
+
 const bankRows = [
   ['Account name', settings.bankAccountName],
   ['Account number', settings.bankAccountNumber],
@@ -63,136 +71,191 @@ const bankRows = [
 <html lang="en-NZ" class="h-full">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="robots" content="noindex, nofollow" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0f0f0f" media="(prefers-color-scheme: dark)" />
     <title>Invoice {invoice.number} · {settings.businessName}</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   </head>
-  <body class="px-4 py-10">
-    <main class="mx-auto w-full max-w-2xl">
-      <div class="card p-6 sm:p-8">
-        <header class="mb-8 flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <p class="text-lg font-semibold" style="color: var(--color-brand-600)">
-              {settings.businessName}
-            </p>
-            <p class="muted mt-0.5 text-sm">{settings.email}</p>
+  <body>
+    <main
+      class="mx-auto w-full max-w-2xl px-3 py-5 sm:px-6 sm:py-10"
+      style="padding-bottom: calc(2.5rem + env(safe-area-inset-bottom, 0px))"
+    >
+      <article class="card overflow-hidden">
+        <!-- Masthead -->
+        <header
+          class="flex flex-wrap items-start justify-between gap-x-4 gap-y-2 border-b px-4 py-4 sm:px-7 sm:py-6"
+          style="border-color: var(--border)"
+        >
+          <div class="min-w-0">
+            <p class="text-base font-semibold tracking-tight sm:text-lg">{settings.businessName}</p>
+            {settings.email && <p class="muted mt-0.5 truncate text-sm">{settings.email}</p>}
           </div>
-          <div class="text-right">
-            <p class="text-sm font-semibold tracking-wide">
-              {invoice.gstTreatment === 'not-registered' ? 'INVOICE' : 'TAX INVOICE'}
+          <div class="shrink-0 text-right">
+            <p class="label">
+              {invoice.gstTreatment === 'not-registered' ? 'Invoice' : 'Tax invoice'}
             </p>
-            <p class="muted text-sm">{invoice.number}</p>
+            <p class="label muted mt-1">{invoice.number}</p>
           </div>
         </header>
 
-        <div class="mb-8 grid gap-6 sm:grid-cols-2">
-          <div>
-            <p class="muted mb-1.5 text-xs font-medium uppercase tracking-wide">Bill to</p>
-            <p class="font-medium">{invoice.client?.name}</p>
-            {invoice.client?.addressLine1 && <p class="muted text-sm">{invoice.client.addressLine1}</p>}
-            {invoice.client?.city && <p class="muted text-sm">{invoice.client.city}</p>}
+        <div class="px-4 py-5 sm:px-7 sm:py-7">
+          <!-- Who and when -->
+          <div class="grid gap-5 sm:grid-cols-2 sm:gap-6">
+            <div>
+              <p class="label muted mb-2">Bill to</p>
+              <p class="font-medium">{invoice.client?.name}</p>
+              {invoice.client?.addressLine1 && <p class="muted text-sm">{invoice.client.addressLine1}</p>}
+              {invoice.client?.city && <p class="muted text-sm">{invoice.client.city}</p>}
+            </div>
+            <div>
+              <p class="label muted mb-2">Details</p>
+              <dl class="grid grid-cols-[4.5rem_1fr] gap-x-3 gap-y-1 text-sm">
+                <dt class="muted">Issued</dt>
+                <dd class="tabular">{formatDate(invoice.issuedOn)}</dd>
+                <dt class="muted">Due</dt>
+                <dd class="tabular">{formatDate(invoice.dueOn)}</dd>
+                {invoice.reference && (
+                  <>
+                    <dt class="muted">Ref</dt>
+                    <dd class="truncate">{invoice.reference}</dd>
+                  </>
+                )}
+              </dl>
+            </div>
           </div>
-          <div>
-            <p class="muted mb-1.5 text-xs font-medium uppercase tracking-wide">Details</p>
-            <p class="text-sm"><span class="muted">Issued</span> {formatDate(invoice.issuedOn)}</p>
-            <p class="text-sm"><span class="muted">Due</span> {formatDate(invoice.dueOn)}</p>
-            {invoice.reference && <p class="text-sm"><span class="muted">Ref</span> {invoice.reference}</p>}
-          </div>
-        </div>
 
-        {status === 'paid' ? (
-          <div
-            class="mb-8 rounded-lg px-4 py-3 text-center text-sm font-medium"
-            style="background: color-mix(in oklch, var(--color-paid) 14%, transparent); color: var(--color-paid)"
-          >
-            Paid in full — thank you.
-          </div>
-        ) : (
-          <div class="mb-8 rounded-lg px-4 py-5 text-center" style="background: var(--surface-sunken)">
-            <p class="muted text-xs font-medium uppercase tracking-wide">Amount due</p>
-            <p class="tabular mt-1 text-3xl font-semibold">
-              {formatMoneyWithCode(outstanding, invoice.currency)}
-            </p>
-            <p class="muted mt-1 text-sm">by {formatDate(invoice.dueOn)}</p>
-          </div>
-        )}
+          <!-- The readout. The one number the client came here for. -->
+          {status === 'paid' ? (
+            <div
+              class="mt-6 border px-4 py-4 text-center"
+              style="border-color: color-mix(in oklch, var(--color-paid) 45%, transparent); background: color-mix(in oklch, var(--color-paid) 10%, transparent); border-radius: var(--radius-card)"
+            >
+              <p class="label" style="color: var(--color-paid)">Paid in full — thank you</p>
+            </div>
+          ) : (
+            <div
+              class="mt-6 border px-4 py-5 sm:px-6"
+              style="border-color: var(--border-strong); background: var(--surface-sunken); border-radius: var(--radius-card)"
+            >
+              <div class="flex items-baseline justify-between gap-3">
+                <p class="label muted">Amount due</p>
+                <p class="label muted">{invoice.currency}</p>
+              </div>
+              <p
+                class="tabular mt-2 leading-none font-semibold tracking-tight"
+                style="font-size: clamp(1.875rem, 9vw, 2.75rem)"
+              >
+                {formatMoneyWithCode(outstanding, invoice.currency)}
+              </p>
+              <p class="muted mt-2.5 text-sm">Due by {formatDate(invoice.dueOn)}</p>
+            </div>
+          )}
 
-        <table class="w-full text-sm">
-          <thead>
-            <tr class="muted border-b text-left text-xs" style="border-color: var(--border)">
-              <th scope="col" class="py-2 font-medium">Description</th>
-              <th scope="col" class="py-2 text-right font-medium">Qty</th>
-              <th scope="col" class="py-2 text-right font-medium">Amount</th>
-            </tr>
-          </thead>
-          <tbody>
-            {invoice.lines.map((line) => (
-              <tr class="border-b last:border-0" style="border-color: var(--border)">
-                <td class="py-2.5 pr-3">{line.description}</td>
-                <td class="tabular muted py-2.5 text-right whitespace-nowrap">
-                  {(line.quantity / 1000).toFixed(2).replace(/\.00$/, '')} {line.unit}
-                </td>
-                <td class="tabular py-2.5 text-right">{formatMoneyWithCode(line.lineTotal, invoice.currency)}</td>
+          <!-- Line items.
+               Below 640px this is one block per item: description on its own
+               line, quantity underneath it, amount hard right. Above that it
+               becomes a real three-column table. -->
+          <table class="mt-7 w-full text-sm">
+            <thead>
+              <tr class="border-b text-left" style="border-color: var(--border-strong)">
+                <th scope="col" class="label muted pb-2 font-medium">Description</th>
+                <th scope="col" class="label muted hidden pb-2 pl-4 text-right font-medium sm:table-cell">Qty</th>
+                <th scope="col" class="label muted pb-2 pl-4 text-right font-medium">Amount</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-
-        <dl class="mt-4 ml-auto max-w-xs space-y-1.5 text-sm">
-          <div class="flex justify-between gap-3">
-            <dt class="muted">Subtotal</dt>
-            <dd class="tabular">{formatMoneyWithCode(invoice.subtotal, invoice.currency)}</dd>
-          </div>
-          <div class="flex justify-between gap-3">
-            <dt class="muted">{gstLabel}</dt>
-            <dd class="tabular">{formatMoneyWithCode(invoice.gstAmount, invoice.currency)}</dd>
-          </div>
-          <div class="flex justify-between gap-3 border-t pt-1.5 text-base font-semibold" style="border-color: var(--border)">
-            <dt>Total</dt>
-            <dd class="tabular">{formatMoneyWithCode(invoice.total, invoice.currency)}</dd>
-          </div>
-        </dl>
-
-        {outstanding > 0 && (
-          <div class="mt-8 border-t pt-6" style="border-color: var(--border)">
-            <p class="muted mb-3 text-xs font-medium uppercase tracking-wide">How to pay</p>
-
-            {canPayByCard && (
-              <form method="post" action={`/api/stripe/checkout`} class="mb-5">
-                <input type="hidden" name="token" value={token} />
-                <button
-                  class="w-full rounded-lg px-4 py-3 text-sm font-medium text-white"
-                  style="background: var(--color-brand-600)"
-                >
-                  Pay {formatMoneyWithCode(outstanding, invoice.currency)} by card
-                </button>
-              </form>
-            )}
-
-            <dl class="grid gap-1.5 text-sm sm:grid-cols-[10rem_1fr]">
-              {bankRows.map(([label, value]) => (
-                <>
-                  <dt class="muted">{label}</dt>
-                  <dd class="tabular">{value}</dd>
-                </>
+            </thead>
+            <tbody>
+              {invoice.lines.map((line) => (
+                <tr class="border-b last:border-0" style="border-color: var(--border)">
+                  <td class="py-3 pr-3 align-top">
+                    <span class="block">{line.description}</span>
+                    {/* Same figure the Qty column shows, folded in on narrow screens. */}
+                    <span class="tabular muted mt-0.5 block text-xs sm:hidden">
+                      {quantity(line.quantity)} {line.unit}
+                    </span>
+                  </td>
+                  <td class="tabular muted hidden py-3 pl-4 text-right align-top whitespace-nowrap sm:table-cell">
+                    {quantity(line.quantity)} {line.unit}
+                  </td>
+                  <td class="tabular py-3 pl-4 text-right align-top whitespace-nowrap">
+                    {formatMoneyWithCode(line.lineTotal, invoice.currency)}
+                  </td>
+                </tr>
               ))}
-            </dl>
-          </div>
-        )}
+            </tbody>
+          </table>
 
-        {invoice.notes && (
-          <p class="muted mt-6 border-t pt-5 text-sm" style="border-color: var(--border)">{invoice.notes}</p>
-        )}
+          <!-- Totals -->
+          <dl class="mt-4 ml-auto w-full space-y-1.5 text-sm sm:max-w-xs">
+            <div class="flex justify-between gap-4">
+              <dt class="muted">Subtotal</dt>
+              <dd class="tabular whitespace-nowrap">{formatMoneyWithCode(invoice.subtotal, invoice.currency)}</dd>
+            </div>
+            <div class="flex justify-between gap-4">
+              <dt class="muted">{gstLabel}</dt>
+              <dd class="tabular whitespace-nowrap">{formatMoneyWithCode(invoice.gstAmount, invoice.currency)}</dd>
+            </div>
+            <div
+              class="flex justify-between gap-4 border-t pt-2 text-base font-semibold"
+              style="border-color: var(--border-strong)"
+            >
+              <dt>Total</dt>
+              <dd class="tabular whitespace-nowrap">{formatMoneyWithCode(invoice.total, invoice.currency)}</dd>
+            </div>
+            {invoice.amountPaid > 0 && (
+              <div class="flex justify-between gap-4">
+                <dt class="muted">Paid</dt>
+                <dd class="tabular whitespace-nowrap" style="color: var(--color-paid)">
+                  −{formatMoneyWithCode(invoice.amountPaid, invoice.currency)}
+                </dd>
+              </div>
+            )}
+          </dl>
 
-        <div class="mt-8 flex flex-wrap items-center justify-between gap-3 border-t pt-5" style="border-color: var(--border)">
-          <p class="muted text-xs">{settings.invoiceFooter || settings.businessName}</p>
-          <a
-            href={`${appUrl()}/pay/${token}/pdf`}
-            class="muted rounded-md border px-3 py-1.5 text-xs hover:opacity-80"
-            style="border-color: var(--border)"
-          >Download PDF</a>
+          {outstanding > 0 && (
+            <div class="mt-7 border-t pt-6" style="border-color: var(--border)">
+              <p class="label muted mb-3">How to pay</p>
+
+              {canPayByCard && (
+                <form method="post" action="/api/stripe/checkout" class="mb-5">
+                  <input type="hidden" name="token" value={token} />
+                  <button class="btn btn-primary w-full">
+                    Pay {formatMoneyWithCode(outstanding, invoice.currency)} by card
+                  </button>
+                </form>
+              )}
+
+              <dl class="grid grid-cols-[7.5rem_1fr] gap-x-4 gap-y-2 text-sm sm:grid-cols-[10rem_1fr]">
+                {bankRows.map(([label, value]) => (
+                  <>
+                    <dt class="label muted pt-0.5">{label}</dt>
+                    <dd class="tabular break-words">{value}</dd>
+                  </>
+                ))}
+              </dl>
+            </div>
+          )}
+
+          {invoice.notes && (
+            <p class="muted mt-6 border-t pt-5 text-sm" style="border-color: var(--border)">{invoice.notes}</p>
+          )}
         </div>
-      </div>
+
+        <footer
+          class="flex flex-wrap items-center justify-between gap-3 border-t px-4 py-4 sm:px-7"
+          style="border-color: var(--border); background: var(--surface-sunken)"
+        >
+          <p class="label muted min-w-0 flex-1 truncate">
+            {settings.invoiceFooter || settings.businessName}
+          </p>
+          <a href={`${appUrl()}/pay/${token}/pdf`} class="btn btn-secondary btn-sm shrink-0">
+            Download PDF
+          </a>
+        </footer>
+      </article>
     </main>
   </body>
 </html>

@@ -4,23 +4,31 @@ interface Props {
 }
 const { status } = Astro.props;
 
-const styles: Record<string, { bg: string; fg: string; label: string }> = {
-  draft:         { bg: 'var(--surface-sunken)', fg: 'var(--text-muted)', label: 'Draft' },
-  sent:          { bg: 'color-mix(in oklch, var(--color-reserved) 15%, transparent)', fg: 'var(--color-reserved)', label: 'Sent' },
-  viewed:        { bg: 'color-mix(in oklch, var(--color-reserved) 15%, transparent)', fg: 'var(--color-reserved)', label: 'Viewed' },
-  partial:       { bg: 'color-mix(in oklch, var(--color-owing) 18%, transparent)', fg: 'var(--color-owing)', label: 'Part paid' },
-  paid:          { bg: 'color-mix(in oklch, var(--color-paid) 15%, transparent)', fg: 'var(--color-paid)', label: 'Paid' },
-  overdue:       { bg: 'color-mix(in oklch, var(--color-overdue) 15%, transparent)', fg: 'var(--color-overdue)', label: 'Overdue' },
-  void:          { bg: 'var(--surface-sunken)', fg: 'var(--text-muted)', label: 'Void' },
-  'written-off': { bg: 'var(--surface-sunken)', fg: 'var(--text-muted)', label: 'Written off' },
-  active:        { bg: 'color-mix(in oklch, var(--color-paid) 15%, transparent)', fg: 'var(--color-paid)', label: 'Active' },
-  lead:          { bg: 'color-mix(in oklch, var(--color-owing) 18%, transparent)', fg: 'var(--color-owing)', label: 'Lead' },
-  dormant:       { bg: 'var(--surface-sunken)', fg: 'var(--text-muted)', label: 'Dormant' },
-  archived:      { bg: 'var(--surface-sunken)', fg: 'var(--text-muted)', label: 'Archived' },
+/**
+ * Status reads as a stamped label rather than a pill — square corners, a
+ * hairline in the state's own colour, and the word in monospaced caps.
+ */
+const styles: Record<string, { tone: string | null; label: string }> = {
+  draft:         { tone: null, label: 'Draft' },
+  sent:          { tone: 'var(--color-reserved)', label: 'Sent' },
+  viewed:        { tone: 'var(--color-reserved)', label: 'Viewed' },
+  partial:       { tone: 'var(--color-owing)', label: 'Part paid' },
+  paid:          { tone: 'var(--color-paid)', label: 'Paid' },
+  overdue:       { tone: 'var(--color-overdue)', label: 'Overdue' },
+  void:          { tone: null, label: 'Void' },
+  'written-off': { tone: null, label: 'Written off' },
+  active:        { tone: 'var(--color-paid)', label: 'Active' },
+  lead:          { tone: 'var(--color-owing)', label: 'Lead' },
+  dormant:       { tone: null, label: 'Dormant' },
+  archived:      { tone: null, label: 'Archived' },
 };
-const s = styles[status] ?? { bg: 'var(--surface-sunken)', fg: 'var(--text-muted)', label: status };
+const s = styles[status] ?? { tone: null, label: status };
+
+const style = s.tone
+  ? `border-color: color-mix(in oklch, ${s.tone} 50%, transparent); background: color-mix(in oklch, ${s.tone} 12%, transparent); color: ${s.tone}`
+  : 'border-color: var(--border); background: var(--surface-sunken); color: var(--text-muted)';
 ---
 <span
-  class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium"
-  style={`background: ${s.bg}; color: ${s.fg}`}
+  class="label-xs inline-flex items-center border px-1.5 py-1 whitespace-nowrap"
+  style={`${style}; border-radius: 2px`}
 >{s.label}</span>

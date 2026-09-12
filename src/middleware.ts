@@ -16,6 +16,8 @@ const PUBLIC_PREFIXES = [
   '/api/stripe/webhook',
   '/pay/', // public invoice view + payment page
   '/proposal/', // public proposal view
+  '/e/', // email open-tracking pixel — fetched by mail clients, never a session
+  '/email-assets/', // images embedded in sent email, likewise cookie-less
   '/_astro/',
   '/favicon',
   '/robots.txt',

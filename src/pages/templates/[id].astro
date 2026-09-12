@@ -1,0 +1,36 @@
+---
+import AppLayout from '~/layouts/AppLayout.astro';
+import TemplateEditor from '~/components/email/TemplateEditor.tsx';
+import { db } from '~/lib/env';
+import { getTemplate } from '~/lib/queries/templates';
+import { KIND_LABELS, type TemplateKind } from '~/lib/mail/variables';
+
+const user = Astro.locals.user!;
+const template = await getTemplate(db(), user.id, Astro.params.id!);
+
+if (!template) return Astro.redirect('/templates', 302);
+
+const kind = template.kind as TemplateKind;
+---
+
+<AppLayout title={template.name} subtitle={`${KIND_LABELS[kind]} email`} width="wide">
+  <a slot="actions" href="/templates" class="btn btn-secondary">All templates</a>
+
+  {/*
+    `client:only` is load-bearing, not a preference. The editor pulls in Tiptap
+    and React Email, and this app deploys to a Worker with a hard bundle limit —
+    server-rendering it would put all of that in the Worker for no benefit,
+    since the editor is useless without a browser anyway.
+  */}
+  <TemplateEditor
+    client:only="react"
+    template={{
+      id: template.id,
+      name: template.name,
+      kind,
+      subject: template.subject,
+      doc: template.doc,
+      isDefault: template.isDefault,
+    }}
+  />
+</AppLayout>

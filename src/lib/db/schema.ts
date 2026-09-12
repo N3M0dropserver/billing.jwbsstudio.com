@@ -769,6 +769,119 @@ export const activityLog = sqliteTable(
   (t) => [index('activity_user_idx').on(t.userId, t.createdAt)],
 );
 
+/* ------------------------------------------------------------------ */
+/* Email templates and send tracking                                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A reusable outbound email, authored in the editor at /templates.
+ *
+ * Three representations of the same document are stored together because each
+ * is needed at a different moment and none can be cheaply derived from the
+ * others inside a Worker:
+ *
+ *   doc   Tiptap JSON. The source of truth, and the only thing the editor can
+ *         reload without losing structure.
+ *   html  Rendered by the editor in the browser at save time. What is mailed.
+ *   text  The plain-text alternative, for clients that refuse HTML.
+ *
+ * The Worker never runs React Email — rendering happens client-side, so the
+ * editor and its Tiptap dependencies stay out of the Worker bundle entirely.
+ *
+ * Bodies here contain {{variable}} tokens, substituted at send time by
+ * ~/lib/mail/render. The sign-in email is deliberately NOT templatable: a
+ * malformed template there would lock you out of the app.
+ */
+export const emailTemplates = sqliteTable(
+  'email_templates',
+  {
+    id: id(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+
+    name: text('name').notNull(),
+    kind: text('kind', { enum: ['invoice', 'reminder', 'proposal', 'general'] })
+      .notNull()
+      .default('general'),
+
+    subject: text('subject').notNull().default(''),
+    doc: text('doc').notNull().default('{}'),
+    html: text('html').notNull().default(''),
+    text: text('text').notNull().default(''),
+
+    /** Pre-selected for its kind on the send form. At most one per kind. */
+    isDefault: integer('is_default', { mode: 'boolean' }).notNull().default(false),
+    /** Soft delete, so templates referenced by past sends stay resolvable. */
+    archivedAt: text('archived_at'),
+
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    index('email_templates_user_kind_idx').on(t.userId, t.kind),
+    index('email_templates_default_idx').on(t.userId, t.kind, t.isDefault),
+  ],
+);
+
+/**
+ * One row per message that left the building.
+ *
+ * Carries the open-tracking state. Read the counts with suspicion: Apple Mail
+ * Privacy Protection prefetches every image whether or not the message was
+ * read, and Gmail proxies and caches images so repeat opens often go
+ * unrecorded and the IP belongs to Google rather than the recipient. Blocked
+ * images mean a genuine open records nothing at all.
+ *
+ * Which is why this NEVER drives invoice status. The hard signal is the client
+ * loading /pay/<token>, which stamps invoices.viewed_at — see
+ * src/pages/pay/[token].astro. Pixel opens are supporting colour beside it.
+ */
+export const emailSends = sqliteTable(
+  'email_sends',
+  {
+    id: id(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+
+    entityType: text('entity_type', { enum: ['invoice', 'proposal', 'client', 'test'] })
+      .notNull()
+      .default('invoice'),
+    entityId: text('entity_id').notNull().default(''),
+    /** Null once the template is deleted; the send still stands on its own. */
+    templateId: text('template_id').references(() => emailTemplates.id, { onDelete: 'set null' }),
+
+    toAddress: text('to_address').notNull(),
+    subject: text('subject').notNull().default(''),
+
+    /** Random, unguessable. Addresses the tracking pixel at /e/<token>.gif. */
+    token: text('token').notNull(),
+
+    provider: text('provider').notNull().default(''),
+    providerMessageId: text('provider_message_id'),
+
+    sentAt: text('sent_at').notNull(),
+    firstOpenedAt: text('first_opened_at'),
+    lastOpenedAt: text('last_opened_at'),
+    openCount: integer('open_count').notNull().default(0),
+    openUserAgent: text('open_user_agent'),
+    openIp: text('open_ip'),
+    /**
+     * The first hit looked like a scanner rather than a person — it arrived
+     * within seconds of sending, or the user agent is a known prefetcher.
+     */
+    likelyPrefetch: integer('likely_prefetch', { mode: 'boolean' }).notNull().default(false),
+
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex('email_sends_token_idx').on(t.token),
+    index('email_sends_entity_idx').on(t.entityType, t.entityId),
+    index('email_sends_user_idx').on(t.userId, t.sentAt),
+  ],
+);
+
 export type User = typeof users.$inferSelect;
 export type Session = typeof sessions.$inferSelect;
 export type LoginToken = typeof loginTokens.$inferSelect;
@@ -789,3 +902,5 @@ export type Proposal = typeof proposals.$inferSelect;
 export type Prospect = typeof prospects.$inferSelect;
 export type ProspectSearch = typeof prospectSearches.$inferSelect;
 export type StyleRepertoire = typeof styleRepertoire.$inferSelect;
+export type EmailTemplate = typeof emailTemplates.$inferSelect;
+export type EmailSend = typeof emailSends.$inferSelect;

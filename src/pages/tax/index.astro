@@ -43,7 +43,7 @@ const formatDate = (iso: string) =>
         ))}
       </select>
     </form>
-    <a href="/tax/expenses/new" class="rounded-lg px-3.5 py-2 text-sm font-medium text-white" style="background: var(--color-brand-600)">
+    <a href="/tax/expenses/new" class="btn btn-primary">
       Log expense
     </a>
   </div>
@@ -91,8 +91,9 @@ const formatDate = (iso: string) =>
 
         <!-- Bracket breakdown -->
         <div class="mt-5">
-          <p class="muted mb-2 text-xs font-medium uppercase tracking-wide">Income tax by bracket</p>
-          <table class="w-full text-sm">
+          <p class="label muted mb-2">Income tax by bracket</p>
+          <div class="-mx-4 overflow-x-auto px-4 sm:mx-0 sm:px-0">
+          <table class="w-full min-w-[22rem] text-sm">
             <thead>
               <tr class="muted text-left text-xs">
                 <th scope="col" class="py-1 font-medium">Band</th>
@@ -118,6 +119,7 @@ const formatDate = (iso: string) =>
               </tr>
             </tbody>
           </table>
+          </div>
         </div>
 
         <!-- Levies -->
@@ -188,8 +190,8 @@ const formatDate = (iso: string) =>
                     <span>{info?.label ?? row.category}</span>
                     <span class="tabular font-medium">{formatMoney(row.claimable, currency)}</span>
                   </div>
-                  <div class="mt-1 h-1 overflow-hidden rounded-full" style="background: var(--surface-sunken)">
-                    <div class="h-full rounded-full" style={`width: ${Math.round((row.claimable / top) * 100)}%; background: var(--color-brand-500)`} />
+                  <div class="mt-1.5 h-1 overflow-hidden" style="background: var(--surface-sunken)">
+                    <div class="h-full" style={`width: ${Math.round((row.claimable / top) * 100)}%; background: var(--accent)`} />
                   </div>
                 </li>
               );
@@ -209,13 +211,13 @@ const formatDate = (iso: string) =>
               <summary class="flex cursor-pointer items-center justify-between gap-3 text-sm font-medium">
                 <span>{item.label}</span>
                 <span
-                  class="rounded-full px-2 py-0.5 text-xs font-normal"
+                  class="label-xs shrink-0 border px-1.5 py-1"
                   style={
                     item.deductible === 'yes'
-                      ? 'background: color-mix(in oklch, var(--color-paid) 14%, transparent); color: var(--color-paid)'
+                      ? 'background: color-mix(in oklch, var(--color-paid) 12%, transparent); border-color: color-mix(in oklch, var(--color-paid) 45%, transparent); color: var(--color-paid); border-radius: 2px'
                       : item.deductible === 'usually-no'
-                        ? 'background: color-mix(in oklch, var(--color-overdue) 12%, transparent); color: var(--color-overdue)'
-                        : 'background: var(--surface-sunken); color: var(--text-muted)'
+                        ? 'background: color-mix(in oklch, var(--color-overdue) 12%, transparent); border-color: color-mix(in oklch, var(--color-overdue) 45%, transparent); color: var(--color-overdue); border-radius: 2px'
+                        : 'background: var(--surface-sunken); border-color: var(--border); color: var(--text-muted); border-radius: 2px'
                   }
                 >
                   {item.deductible === 'yes' ? 'Deductible'
@@ -229,8 +231,8 @@ const formatDate = (iso: string) =>
                 <p><strong style="color: var(--text)">AU:</strong> {item.au}</p>
                 {item.watchOut && (
                   <p
-                    class="rounded-md px-3 py-2"
-                    style="background: color-mix(in oklch, var(--color-owing) 10%, transparent)"
+                    class="px-3 py-2"
+                    style="background: color-mix(in oklch, var(--color-owing) 10%, transparent); border-radius: var(--radius-ctl)"
                   >
                     <strong style="color: var(--color-owing)">Watch out.</strong> {item.watchOut}
                   </p>
@@ -248,8 +250,12 @@ const formatDate = (iso: string) =>
         <div class="space-y-3">
           {[position.result.reserve.best, position.result.reserve.likely, position.result.reserve.worst].map((band, i) => (
             <div
-              class="rounded-lg p-3"
-              style={i === 1 ? 'background: color-mix(in oklch, var(--color-reserved) 10%, transparent)' : 'background: var(--surface-sunken)'}
+              class="border p-3"
+              style={
+                i === 1
+                  ? 'background: color-mix(in oklch, var(--color-reserved) 10%, transparent); border-color: color-mix(in oklch, var(--color-reserved) 35%, transparent); border-radius: var(--radius-ctl)'
+                  : 'background: var(--surface-sunken); border-color: var(--border); border-radius: var(--radius-ctl)'
+              }
             >
               <div class="flex items-baseline justify-between gap-3">
                 <span class="text-sm font-medium">{band.label}</span>

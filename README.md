@@ -20,6 +20,13 @@ emails it with the PDF attached, and gives the client a public link to view and
 pay. Bank transfer always; Stripe card payment optionally, with a webhook that
 marks the invoice paid.
 
+**Email templates** — a block editor at `/templates` (built on
+`@react-email/editor`) for writing the wording once and reusing it, with merge
+variables like `{{invoice.number}}` and `{{client.firstName}}`. Templates are
+optional: choosing none falls back to the built-in wording, so sending works on
+a fresh account with no templates at all. Sends are recorded, with approximate
+open tracking — read the caveats in *Email* before trusting the numbers.
+
 **Tax & accounting** — a proper tax engine for both countries. Progressive
 brackets, ACC levies, student loan, Medicare levy, HELP, GST/BAS, provisional
 tax and PAYG instalments. Expense tracking with business-use apportionment,
@@ -315,6 +322,56 @@ Set `MAIL_PROVIDER` to `resend` in `wrangler.jsonc` and
 behind one interface in `src/lib/mail/`. Set it to `none` to disable sending
 entirely.
 
+### Templates
+
+`/templates` is a block editor for the outbound wording. It saves three things
+per template: the Tiptap JSON it reloads from, the rendered HTML that gets
+mailed, and a plain-text alternative. Rendering happens **in the browser** —
+the Worker never runs React Email, which keeps Tiptap out of the Worker bundle
+entirely (it is a ~2.5 MB client chunk, loaded only on the editor page).
+
+Bodies use `{{variable}}` tokens, substituted at send time. The catalogue lives
+in `src/lib/mail/variables.ts` and is shared by the editor palette and the send
+path, so a variable cannot exist in one and not the other. Substituted values
+are HTML-escaped; an unrecognised token renders as nothing rather than leaking
+`{{like.this}}` into a client's inbox.
+
+Three things are deliberately true:
+
+- **Templates are optional.** No template, or a template with an empty body,
+  falls back to the built-in wording in `src/lib/mail/templates.ts`. Sending
+  cannot be broken by the template system.
+- **The sign-in email is not templatable.** A malformed template there would
+  lock you out of the app.
+- **Deleting a template archives it** rather than removing the row, so past
+  sends keep resolving.
+
+### Open tracking, and why the numbers lie
+
+Every send embeds a 1×1 pixel at `/e/<token>.gif` and gets a row in
+`email_sends`. When a mail client loads that image, the open is recorded.
+
+Treat the counts as a hint, never as fact:
+
+- **Apple Mail Privacy Protection fetches every image on arrival**, read or
+  not. That is an open that never happened, and it is a large share of consumer
+  mail. Hits that arrive within ten seconds of sending, or from a recognised
+  scanner, are flagged `likely_prefetch` so they can be discounted.
+- **Gmail proxies images** through `googleusercontent.com` and caches them. The
+  first load registers; re-opens usually do not, and the IP and user agent
+  belong to Google.
+- **Blocked images** (Outlook's default) mean a real, careful read records
+  nothing.
+
+Which is why open tracking **never drives invoice status**. The signal that
+means something is the client following the link: `/pay/<token>` stamps
+`invoices.viewed_at`, and that is what moves an invoice to *viewed*.
+
+Images dropped into the editor go to R2 under `email-assets/` and are served
+publicly from `/email-assets/…` — they have to be, since a mail client sends no
+cookies. Keys are random and unguessable, but treat anything uploaded there as
+published.
+
 ### A note on what not to use
 
 Cloudflare Email **Routing** is a different product: inbound only, it cannot
@@ -386,7 +443,7 @@ src/
     tax/          the tax engine — pure, tested, no I/O
     invoices/     invoice arithmetic and multi-table operations
     pdf/          the PDF writer and the invoice template
-    mail/         provider abstraction and email templates
+    mail/         providers, built-in templates, variables, open tracking
     stripe/       checkout sessions and webhook verification
     ai/           Workers AI helpers and prospecting
     auth/         password hashing and sessions
@@ -395,6 +452,6 @@ src/
   pages/          Astro routes and API endpoints
   components/     Astro components and React islands
 migrations/       D1 migrations
-tests/            185 tests, mostly the tax engine
+tests/            247 tests, mostly the tax engine
 docs/             the tax research
 ```
