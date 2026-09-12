@@ -1,0 +1,140 @@
+---
+import AppLayout from '~/layouts/AppLayout.astro';
+import Card from '~/components/ui/Card.astro';
+import { and, eq } from 'drizzle-orm';
+import { appUrl, db } from '~/lib/env';
+import { demoSites, proposals, prospects } from '~/lib/db/schema';
+import { getSettings } from '~/lib/queries/settings';
+import { countSentToday } from '~/lib/growth/engine';
+import { renderOutreachText } from '~/lib/growth/proposal';
+
+const user = Astro.locals.user!;
+const id = Astro.params.id!;
+const database = db();
+
+const rows = await database
+  .select()
+  .from(proposals)
+  .where(and(eq(proposals.id, id), eq(proposals.userId, user.id)))
+  .limit(1);
+
+const proposal = rows[0];
+if (!proposal) return new Response('Not found', { status: 404 });
+
+const [prospect, demo, settings, sentToday] = await Promise.all([
+  proposal.prospectId
+    ? database.select().from(prospects).where(eq(prospects.id, proposal.prospectId)).limit(1).then((r) => r[0])
+    : Promise.resolve(undefined),
+  proposal.demoSiteId
+    ? database.select().from(demoSites).where(eq(demoSites.id, proposal.demoSiteId)).limit(1).then((r) => r[0])
+    : Promise.resolve(undefined),
+  getSettings(database, user.id),
+  countSentToday(database, user.id),
+]);
+
+const demoUrl = demo ? `https://${demo.host}` : '';
+const proposalUrl = `${appUrl()}/proposal/${proposal.publicToken}`;
+
+const preview = renderOutreachText({
+  to: proposal.sentTo,
+  toName: prospect?.contactName ?? '',
+  subject: proposal.emailSubject,
+  body: proposal.emailBody,
+  demoUrl,
+  proposalUrl,
+  senderName: settings.outreachSenderName || settings.businessName || 'JWBS Studio',
+  signature: settings.outreachSignature,
+  replyTo: settings.outreachReplyTo || settings.email,
+});
+
+const error = Astro.url.searchParams.get('error');
+const sent = Astro.url.searchParams.get('sent');
+const saved = Astro.url.searchParams.get('saved');
+const alreadySent = proposal.status !== 'draft';
+---
+
+<AppLayout title="Outreach email" subtitle={prospect?.businessName ?? proposal.title}>
+  <div class="space-y-4">
+    {error && (
+      <p class="rounded-lg px-4 py-3 text-sm" style="background: color-mix(in oklch, var(--color-overdue) 12%, transparent); color: var(--color-overdue)" role="alert">{error}</p>
+    )}
+    {sent && (
+      <p class="rounded-lg px-4 py-3 text-sm" style="background: color-mix(in oklch, var(--color-paid) 12%, transparent); color: var(--color-paid)" role="status">
+        Sent to {proposal.sentTo}.
+      </p>
+    )}
+    {saved && <p class="muted rounded-lg px-4 py-3 text-sm" style="background: var(--surface-sunken)" role="status">Saved.</p>}
+
+    <Card title="The email" subtitle={alreadySent ? `Sent ${proposal.sentAt?.slice(0, 16).replace('T', ' ')}` : 'Not sent yet'}>
+      <form method="post" action={`/api/proposals/${id}/send`} class="space-y-3.5">
+        <div>
+          <label for="to" class="mb-1.5 block text-sm font-medium">To</label>
+          <input id="to" name="to" type="email" value={proposal.sentTo} class="field" required />
+          {!proposal.sentTo && (
+            <p class="mt-1 text-xs" style="color: var(--color-owing)">
+              No address was found on their site. Find one before sending, or leave this one alone.
+            </p>
+          )}
+        </div>
+
+        <div>
+          <label for="subject" class="mb-1.5 block text-sm font-medium">Subject</label>
+          <input id="subject" name="subject" value={proposal.emailSubject} class="field" required />
+        </div>
+
+        <div>
+          <label for="body" class="mb-1.5 block text-sm font-medium">Body</label>
+          <textarea id="body" name="body" rows="12" class="field">{proposal.emailBody}</textarea>
+          <p class="muted mt-1 text-xs">
+            The links and the take-it-down line are appended when it sends — they are in the
+            preview below, not in this box.
+          </p>
+        </div>
+
+        {alreadySent && (
+          <label class="flex items-center gap-2 text-sm">
+            <input type="checkbox" name="confirmResend" value="yes" />
+            Send this again
+          </label>
+        )}
+
+        <div class="flex flex-wrap gap-2">
+          <button name="action" value="send" class="rounded-lg px-4 py-2.5 text-sm font-medium text-white" style="background: var(--color-brand-600)">
+            Send it
+          </button>
+          <button name="action" value="save" class="muted rounded-lg border px-4 py-2.5 text-sm" style="border-color: var(--border)">
+            Save without sending
+          </button>
+        </div>
+      </form>
+    </Card>
+
+    <Card title="What arrives" subtitle="Plain text — no template, no tracking pixel">
+      <pre class="overflow-x-auto whitespace-pre-wrap rounded-lg p-4 text-xs leading-relaxed" style="background: var(--surface-sunken)">{preview}</pre>
+    </Card>
+
+    <Card title="Links">
+      <dl class="space-y-2 text-sm">
+        {demoUrl && (
+          <div class="flex items-baseline justify-between gap-3">
+            <dt class="muted">The demo</dt>
+            <dd class="truncate"><a href={demoUrl} target="_blank" rel="noopener">{demo!.host} ↗</a></dd>
+          </div>
+        )}
+        <div class="flex items-baseline justify-between gap-3">
+          <dt class="muted">Proposal page</dt>
+          <dd class="truncate"><a href={proposalUrl} target="_blank" rel="noopener">{proposalUrl} ↗</a></dd>
+        </div>
+        <div class="flex items-baseline justify-between gap-3">
+          <dt class="muted">Views</dt>
+          <dd class="tabular">{proposal.viewCount}</dd>
+        </div>
+      </dl>
+      <p class="muted mt-3 border-t pt-3 text-xs leading-relaxed" style="border-color: var(--border)">
+        {sentToday} outreach email{sentToday === 1 ? '' : 's'} sent in the last 24 hours. Unattended
+        runs stop at {settings.outreachDailyCap}; sending from this page is not capped.
+      </p>
+      {proposal.sendResult && <p class="muted mt-2 text-xs">Last result: {proposal.sendResult}</p>}
+    </Card>
+  </div>
+</AppLayout>

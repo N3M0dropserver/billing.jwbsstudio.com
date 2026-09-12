@@ -176,6 +176,32 @@ export const settings = sqliteTable('settings', {
   /** Share of each payment to move into the tax account, as a decimal. */
   taxReserveRate: real('tax_reserve_rate').notNull().default(0.33),
 
+  /* -- Growth engine defaults ------------------------------------- */
+
+  /** JSON `{ [stage]: 'manual' | 'ai' | 'auto' }`. Blank means all manual. */
+  growthPolicy: text('growth_policy').notNull().default('{}'),
+  /** Brand kit new campaigns start from. */
+  growthBrandKitId: text('growth_brand_kit_id'),
+  growthDiscoveryProvider: text('growth_discovery_provider', {
+    enum: ['overpass', 'google-places', 'manual'],
+  })
+    .notNull()
+    .default('overpass'),
+  /** Apex the generated demos are published under. */
+  demoHost: text('demo_host').notNull().default('demo.jwbsstudio.com'),
+  /**
+   * Hard ceiling on outreach emails sent by unattended runs in any rolling
+   * 24 hours. An automated pipeline that can mail strangers needs a number
+   * it cannot talk itself past; zero blocks unattended sending entirely.
+   */
+  outreachDailyCap: integer('outreach_daily_cap').notNull().default(10),
+  /** How you sign the outreach, and the paragraph about what you do. */
+  outreachSenderName: text('outreach_sender_name').notNull().default(''),
+  outreachBio: text('outreach_bio').notNull().default(''),
+  outreachSignature: text('outreach_signature').notNull().default(''),
+  /** Reply-to for outreach, when it differs from the invoicing address. */
+  outreachReplyTo: text('outreach_reply_to').notNull().default(''),
+
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 });
@@ -604,8 +630,431 @@ export const projects = sqliteTable(
 );
 
 /* ------------------------------------------------------------------ */
-/* Proposals and prospecting                                           */
+/* Growth engine                                                       */
 /* ------------------------------------------------------------------ */
+
+/**
+ * A campaign moves through these stages in order. Each one can be set to
+ * run by itself, to be decided by the model, or to stop and wait for you —
+ * see `StageMode`.
+ */
+export const CAMPAIGN_STAGES = [
+  'brief',
+  'discover',
+  'shortlist',
+  'enrich',
+  'plan',
+  'build',
+  'propose',
+] as const;
+export type CampaignStage = (typeof CAMPAIGN_STAGES)[number];
+
+/**
+ * How much rope a stage is given.
+ *
+ *   manual — do the work, then stop and wait for a decision.
+ *   ai     — do the work, let the model decide, record the reasoning, carry on.
+ *   auto   — do the work and carry on with the obvious default, no model call.
+ *
+ * `auto` is not "more autonomous than ai" — it is *less* considered. On the
+ * shortlist stage `auto` means take everything above the score floor, while
+ * `ai` means the model picks and says why.
+ */
+export const STAGE_MODES = ['manual', 'ai', 'auto'] as const;
+export type StageMode = (typeof STAGE_MODES)[number];
+
+/**
+ * Reference material the generated sites are built from: the sites to
+ * channel, the type, the palette, the rules. Saved kits are the defaults; a
+ * campaign can override any field for a single run.
+ */
+export const brandKits = sqliteTable(
+  'brand_kits',
+  {
+    id: id(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    description: text('description').notNull().default(''),
+
+    /** JSON `[{ url, note }]` — sites whose feel we are after. */
+    referenceUrls: text('reference_urls').notNull().default('[]'),
+    /** JSON `[{ role, family, fallback, source, url, weights }]`. */
+    typography: text('typography').notNull().default('[]'),
+    /** JSON `[{ name, value, role }]` — CSS colour tokens. */
+    palette: text('palette').notNull().default('[]'),
+    /** JSON `string[]` — preferred section order for a generated page. */
+    sectionOrder: text('section_order').notNull().default('[]'),
+
+    /** The editable art-direction block handed to the model verbatim. */
+    prompt: text('prompt').notNull().default(''),
+    /** How the copy should sound. */
+    toneNotes: text('tone_notes').notNull().default(''),
+    /** Hard rules. Things that must never appear in the output. */
+    avoid: text('avoid').notNull().default(''),
+    /** What you can actually deliver, so proposals do not over-promise. */
+    capabilities: text('capabilities').notNull().default(''),
+    /** Which niches this kit suits. */
+    suitableFor: text('suitable_for').notNull().default(''),
+
+    isDefault: integer('is_default', { mode: 'boolean' }).notNull().default(false),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index('brand_kits_user_idx').on(t.userId, t.isDefault)],
+);
+
+/**
+ * Files backing a brand kit or a single campaign — screenshots, template
+ * exports, font files, logos. The bytes live in R2; this is the index.
+ */
+export const brandAssets = sqliteTable(
+  'brand_assets',
+  {
+    id: id(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    brandKitId: text('brand_kit_id').references(() => brandKits.id, { onDelete: 'cascade' }),
+    campaignId: text('campaign_id').references(() => campaigns.id, { onDelete: 'cascade' }),
+
+    kind: text('kind', {
+      enum: ['screenshot', 'template', 'font', 'logo', 'reference', 'other'],
+    })
+      .notNull()
+      .default('screenshot'),
+    label: text('label').notNull().default(''),
+    note: text('note').notNull().default(''),
+    r2Key: text('r2_key').notNull(),
+    contentType: text('content_type').notNull().default('application/octet-stream'),
+    bytes: integer('bytes').notNull().default(0),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index('brand_assets_kit_idx').on(t.brandKitId),
+    index('brand_assets_campaign_idx').on(t.campaignId),
+  ],
+);
+
+/**
+ * One run of the pipeline: a niche, a region, a brand kit, and a policy
+ * saying how much of it happens without you.
+ */
+export const campaigns = sqliteTable(
+  'campaigns',
+  {
+    id: id(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    name: text('name').notNull().default(''),
+
+    /** The trade. "Coffee roasters", "physiotherapists". */
+    niche: text('niche').notNull().default(''),
+    /** Free text describing the client you actually want. Steers scoring. */
+    idealClient: text('ideal_client').notNull().default(''),
+    region: text('region').notNull().default(''),
+    country: text('country').notNull().default('NZ'),
+
+    discoveryProvider: text('discovery_provider', {
+      enum: ['overpass', 'google-places', 'manual'],
+    })
+      .notNull()
+      .default('overpass'),
+    /** Pasted businesses, one per line, when the provider is `manual`. */
+    manualInput: text('manual_input').notNull().default(''),
+
+    brandKitId: text('brand_kit_id').references(() => brandKits.id, { onDelete: 'set null' }),
+    /** JSON — per-run overrides merged over the saved kit. */
+    briefOverrides: text('brief_overrides').notNull().default('{}'),
+    /** JSON `{ [stage]: StageMode }`. Missing stages fall back to settings. */
+    policy: text('policy').notNull().default('{}'),
+
+    stage: text('stage', { enum: CAMPAIGN_STAGES }).notNull().default('brief'),
+    status: text('status', {
+      enum: ['draft', 'running', 'waiting', 'paused', 'complete', 'failed', 'cancelled'],
+    })
+      .notNull()
+      .default('draft'),
+    /** Set while `status` is `waiting`: the stage that needs a decision. */
+    waitingOn: text('waiting_on'),
+
+    /** How many prospects to carry past the shortlist. */
+    targetCount: integer('target_count').notNull().default(10),
+    /** Prospects below this score are never carried forward, in any mode. */
+    scoreFloor: integer('score_floor').notNull().default(55),
+
+    discoveredCount: integer('discovered_count').notNull().default(0),
+    shortlistedCount: integer('shortlisted_count').notNull().default(0),
+    enrichedCount: integer('enriched_count').notNull().default(0),
+    plannedCount: integer('planned_count').notNull().default(0),
+    builtCount: integer('built_count').notNull().default(0),
+    proposedCount: integer('proposed_count').notNull().default(0),
+
+    error: text('error').notNull().default(''),
+    startedAt: text('started_at'),
+    completedAt: text('completed_at'),
+    lastActivityAt: text('last_activity_at'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    index('campaigns_user_idx').on(t.userId, t.createdAt),
+    index('campaigns_status_idx').on(t.userId, t.status),
+  ],
+);
+
+/**
+ * The run log. Every stage transition, every model decision and every
+ * failure lands here, which is what the live run view reads — and what
+ * makes an unattended run auditable after the fact.
+ */
+export const campaignEvents = sqliteTable(
+  'campaign_events',
+  {
+    id: id(),
+    campaignId: text('campaign_id')
+      .notNull()
+      .references(() => campaigns.id, { onDelete: 'cascade' }),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    prospectId: text('prospect_id'),
+    stage: text('stage').notNull().default(''),
+    level: text('level', { enum: ['info', 'decision', 'warn', 'error'] })
+      .notNull()
+      .default('info'),
+    message: text('message').notNull(),
+    detail: text('detail').notNull().default('{}'),
+    createdAt: createdAt(),
+  },
+  (t) => [index('campaign_events_idx').on(t.campaignId, t.createdAt)],
+);
+
+/**
+ * A business surfaced by a campaign, plus everything learned about it.
+ */
+export const prospects = sqliteTable(
+  'prospects',
+  {
+    id: id(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    campaignId: text('campaign_id').references(() => campaigns.id, { onDelete: 'cascade' }),
+
+    businessName: text('business_name').notNull(),
+    niche: text('niche').notNull().default(''),
+    region: text('region').notNull().default(''),
+    country: text('country').notNull().default('NZ'),
+
+    website: text('website').notNull().default(''),
+    /** Registrable host, lower-cased and without `www.`. Dedupe key. */
+    domain: text('domain').notNull().default(''),
+    email: text('email').notNull().default(''),
+    phone: text('phone').notNull().default(''),
+    address: text('address').notNull().default(''),
+    mapsUrl: text('maps_url').notNull().default(''),
+    /** JSON `[{ platform, url, handle }]`. */
+    socialLinks: text('social_links').notNull().default('[]'),
+    contactName: text('contact_name').notNull().default(''),
+    contactRole: text('contact_role').notNull().default(''),
+
+    /** Where the record came from. */
+    source: text('source').notNull().default(''),
+    sourceRef: text('source_ref').notNull().default(''),
+
+    /** Why this one is worth approaching. */
+    signal: text('signal', {
+      enum: [
+        'no-website',
+        'dated-website',
+        'no-google-presence',
+        'maps-only',
+        'poor-mobile',
+        'thin-content',
+        'broken-site',
+        'social-only',
+        'other',
+      ],
+    })
+      .notNull()
+      .default('other'),
+    /**
+     * 0..100, measured rather than guessed: what the crawler found about the
+     * state of their customer-facing content. Higher means *more* need.
+     */
+    presenceScore: integer('presence_score').notNull().default(0),
+    /** 0..100 from the model: how good a client they would actually be. */
+    fitScore: integer('fit_score').notNull().default(0),
+    /** The ranking number the UI sorts on. Weighted blend of the two above. */
+    score: integer('score').notNull().default(0),
+    /** JSON — the deterministic audit behind `presenceScore`. */
+    audit: text('audit').notNull().default('{}'),
+    /** JSON — the model's reasoning, angle, and anything enrichment found. */
+    findings: text('findings').notNull().default('{}'),
+
+    rating: real('rating'),
+    reviewCount: integer('review_count').notNull().default(0),
+    reviewSummary: text('review_summary').notNull().default(''),
+
+    /** Carried past the shortlist. */
+    selected: integer('selected', { mode: 'boolean' }).notNull().default(false),
+    selectedBy: text('selected_by', { enum: ['user', 'ai', 'auto'] }),
+    /** How far down the pipeline this one has actually got. */
+    stage: text('stage', { enum: CAMPAIGN_STAGES }).notNull().default('discover'),
+
+    status: text('status', {
+      enum: ['new', 'qualified', 'contacted', 'responded', 'converted', 'rejected'],
+    })
+      .notNull()
+      .default('new'),
+    convertedClientId: text('converted_client_id').references(() => clients.id, {
+      onDelete: 'set null',
+    }),
+    notes: text('notes').notNull().default(''),
+
+    enrichedAt: text('enriched_at'),
+    plannedAt: text('planned_at'),
+    builtAt: text('built_at'),
+    proposedAt: text('proposed_at'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    index('prospects_user_status_idx').on(t.userId, t.status),
+    index('prospects_score_idx').on(t.userId, t.score),
+    index('prospects_campaign_idx').on(t.campaignId, t.score),
+    index('prospects_domain_idx').on(t.userId, t.domain),
+  ],
+);
+
+/**
+ * Anything downloaded or generated for a prospect, stored in R2. Crawled
+ * pages, their images, the generated site's files. Kept out of D1 because
+ * a single crawled page can be larger than a sensible row.
+ */
+export const prospectArtifacts = sqliteTable(
+  'prospect_artifacts',
+  {
+    id: id(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    prospectId: text('prospect_id')
+      .notNull()
+      .references(() => prospects.id, { onDelete: 'cascade' }),
+    campaignId: text('campaign_id').references(() => campaigns.id, { onDelete: 'cascade' }),
+
+    kind: text('kind', {
+      enum: ['page', 'image', 'asset', 'feed', 'review', 'plan', 'site', 'source'],
+    })
+      .notNull()
+      .default('page'),
+    label: text('label').notNull().default(''),
+    /** Where it came from, when it came from somewhere. */
+    sourceUrl: text('source_url').notNull().default(''),
+    r2Key: text('r2_key').notNull().default(''),
+    contentType: text('content_type').notNull().default(''),
+    bytes: integer('bytes').notNull().default(0),
+    /** JSON — extracted title, headings, word count, colours, fonts. */
+    meta: text('meta').notNull().default('{}'),
+    createdAt: createdAt(),
+  },
+  (t) => [index('prospect_artifacts_idx').on(t.prospectId, t.kind)],
+);
+
+/**
+ * The design and page plan for one prospect: what we are proposing, why it
+ * serves them, and the section-by-section spec the generator builds from.
+ */
+export const designPlans = sqliteTable(
+  'design_plans',
+  {
+    id: id(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    prospectId: text('prospect_id')
+      .notNull()
+      .references(() => prospects.id, { onDelete: 'cascade' }),
+    campaignId: text('campaign_id').references(() => campaigns.id, { onDelete: 'cascade' }),
+    brandKitId: text('brand_kit_id').references(() => brandKits.id, { onDelete: 'set null' }),
+
+    /** One line: what this site is for. */
+    summary: text('summary').notNull().default(''),
+    /** Why this layout serves *their* goal — sales, bookings, or standing. */
+    strategy: text('strategy').notNull().default(''),
+    /** What we are optimising for: 'conversion' | 'awareness' | 'credibility'. */
+    objective: text('objective').notNull().default('conversion'),
+
+    /** JSON `[{ name, value, role }]` — resolved for this prospect. */
+    palette: text('palette').notNull().default('[]'),
+    /** JSON `[{ role, family, fallback, source, url, weights }]`. */
+    typography: text('typography').notNull().default('[]'),
+    /** JSON `[{ id, type, heading, subheading, body, items, cta, imageHint, notes }]`. */
+    sections: text('sections').notNull().default('[]'),
+    /** JSON `{ title, description, ogImageHint }`. */
+    meta: text('meta').notNull().default('{}'),
+
+    model: text('model').notNull().default(''),
+    status: text('status', { enum: ['draft', 'approved', 'rejected'] })
+      .notNull()
+      .default('draft'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index('design_plans_prospect_idx').on(t.prospectId)],
+);
+
+/**
+ * A generated demo published to a subdomain. The built files live in R2
+ * under `r2Prefix` and are served straight from there; `sourcePrefix` holds
+ * an Astro project you can hand over or deploy standalone.
+ */
+export const demoSites = sqliteTable(
+  'demo_sites',
+  {
+    id: id(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    prospectId: text('prospect_id')
+      .notNull()
+      .references(() => prospects.id, { onDelete: 'cascade' }),
+    campaignId: text('campaign_id').references(() => campaigns.id, { onDelete: 'cascade' }),
+    planId: text('plan_id').references(() => designPlans.id, { onDelete: 'set null' }),
+
+    /** The label only, e.g. `wells-coffee`. */
+    subdomain: text('subdomain').notNull(),
+    /** The full host it is served on. */
+    host: text('host').notNull(),
+
+    status: text('status', { enum: ['building', 'live', 'failed', 'archived'] })
+      .notNull()
+      .default('building'),
+    /** R2 prefix holding the served files. */
+    r2Prefix: text('r2_prefix').notNull().default(''),
+    /** R2 prefix holding the exported Astro project source. */
+    sourcePrefix: text('source_prefix').notNull().default(''),
+    fileCount: integer('file_count').notNull().default(0),
+    bytes: integer('bytes').notNull().default(0),
+    buildError: text('build_error').notNull().default(''),
+    /** Set when we created the DNS record through the Cloudflare API. */
+    dnsRecordId: text('dns_record_id'),
+
+    views: integer('views').notNull().default(0),
+    lastViewedAt: text('last_viewed_at'),
+    publishedAt: text('published_at'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex('demo_sites_host_idx').on(t.host),
+    index('demo_sites_prospect_idx').on(t.prospectId),
+  ],
+);
 
 export const proposals = sqliteTable(
   'proposals',
@@ -616,6 +1065,8 @@ export const proposals = sqliteTable(
       .references(() => users.id, { onDelete: 'cascade' }),
     clientId: text('client_id').references(() => clients.id, { onDelete: 'set null' }),
     prospectId: text('prospect_id').references(() => prospects.id, { onDelete: 'set null' }),
+    campaignId: text('campaign_id').references(() => campaigns.id, { onDelete: 'set null' }),
+    demoSiteId: text('demo_site_id').references(() => demoSites.id, { onDelete: 'set null' }),
 
     title: text('title').notNull(),
     status: text('status', {
@@ -624,15 +1075,19 @@ export const proposals = sqliteTable(
       .notNull()
       .default('draft'),
     body: text('body').notNull().default(''),
+    /** The outreach email itself, kept apart from the proposal page body. */
+    emailSubject: text('email_subject').notNull().default(''),
+    emailBody: text('email_body').notNull().default(''),
+    /** Where it was sent, and what the provider said. */
+    sentTo: text('sent_to').notNull().default(''),
+    sendResult: text('send_result').notNull().default(''),
+
     /** Quoted amount, excluding GST. */
     amount: integer('amount').notNull().default(0),
     currency: text('currency', { enum: ['NZD', 'AUD'] }).notNull().default('NZD'),
 
-    /** Subdomain the generated mockup was published to, if any. */
-    mockupSubdomain: text('mockup_subdomain'),
-    mockupKey: text('mockup_key'),
-
     publicToken: text('public_token'),
+    viewCount: integer('view_count').notNull().default(0),
     sentAt: text('sent_at'),
     viewedAt: text('viewed_at'),
     respondedAt: text('responded_at'),
@@ -645,110 +1100,11 @@ export const proposals = sqliteTable(
   },
   (t) => [
     index('proposals_user_status_idx').on(t.userId, t.status),
+    index('proposals_campaign_idx').on(t.campaignId),
     uniqueIndex('proposals_public_token_idx').on(t.publicToken),
   ],
 );
 
-/**
- * Businesses surfaced by the AI prospecting mode — a niche in a region with
- * a weak or absent web presence.
- */
-export const prospects = sqliteTable(
-  'prospects',
-  {
-    id: id(),
-    userId: text('user_id')
-      .notNull()
-      .references(() => users.id, { onDelete: 'cascade' }),
-    searchId: text('search_id').references(() => prospectSearches.id, { onDelete: 'set null' }),
-
-    businessName: text('business_name').notNull(),
-    niche: text('niche').notNull().default(''),
-    region: text('region').notNull().default(''),
-    country: text('country').notNull().default('NZ'),
-
-    website: text('website').notNull().default(''),
-    email: text('email').notNull().default(''),
-    phone: text('phone').notNull().default(''),
-    address: text('address').notNull().default(''),
-    mapsUrl: text('maps_url').notNull().default(''),
-    socialLinks: text('social_links').notNull().default('[]'),
-
-    /** Why this one is worth approaching. */
-    signal: text('signal', {
-      enum: ['no-website', 'dated-website', 'no-google-presence', 'maps-only', 'poor-mobile', 'other'],
-    })
-      .notNull()
-      .default('other'),
-    /** 0..100, how good a fit this looks. */
-    score: integer('score').notNull().default(0),
-    findings: text('findings').notNull().default('{}'),
-
-    status: text('status', {
-      enum: ['new', 'qualified', 'contacted', 'responded', 'converted', 'rejected'],
-    })
-      .notNull()
-      .default('new'),
-    convertedClientId: text('converted_client_id').references(() => clients.id, {
-      onDelete: 'set null',
-    }),
-    notes: text('notes').notNull().default(''),
-    createdAt: createdAt(),
-    updatedAt: updatedAt(),
-  },
-  (t) => [
-    index('prospects_user_status_idx').on(t.userId, t.status),
-    index('prospects_score_idx').on(t.userId, t.score),
-  ],
-);
-
-export const prospectSearches = sqliteTable(
-  'prospect_searches',
-  {
-    id: id(),
-    userId: text('user_id')
-      .notNull()
-      .references(() => users.id, { onDelete: 'cascade' }),
-    niche: text('niche').notNull(),
-    region: text('region').notNull(),
-    country: text('country').notNull().default('NZ'),
-    /** Which of the saved reference styles to base mockups on. */
-    styleRepertoireId: text('style_repertoire_id'),
-    status: text('status', { enum: ['queued', 'running', 'complete', 'failed'] })
-      .notNull()
-      .default('queued'),
-    resultCount: integer('result_count').notNull().default(0),
-    error: text('error').notNull().default(''),
-    startedAt: text('started_at'),
-    completedAt: text('completed_at'),
-    createdAt: createdAt(),
-  },
-  (t) => [index('prospect_searches_user_idx').on(t.userId, t.createdAt)],
-);
-
-/**
- * Reference sites and brand directions the AI uses as a basis for generated
- * mockups, plus the editable prompt that drives the generation.
- */
-export const styleRepertoire = sqliteTable(
-  'style_repertoire',
-  {
-    id: id(),
-    userId: text('user_id')
-      .notNull()
-      .references(() => users.id, { onDelete: 'cascade' }),
-    name: text('name').notNull(),
-    description: text('description').notNull().default(''),
-    referenceUrls: text('reference_urls').notNull().default('[]'),
-    /** The editable instruction block sent to the model. */
-    prompt: text('prompt').notNull().default(''),
-    suitableFor: text('suitable_for').notNull().default(''),
-    isDefault: integer('is_default', { mode: 'boolean' }).notNull().default(false),
-    createdAt: createdAt(),
-    updatedAt: updatedAt(),
-  },
-  (t) => [index('style_repertoire_user_idx').on(t.userId)],
-);
 
 /* ------------------------------------------------------------------ */
 /* Audit                                                               */
@@ -787,5 +1143,11 @@ export type TimeEntry = typeof timeEntries.$inferSelect;
 export type Project = typeof projects.$inferSelect;
 export type Proposal = typeof proposals.$inferSelect;
 export type Prospect = typeof prospects.$inferSelect;
-export type ProspectSearch = typeof prospectSearches.$inferSelect;
-export type StyleRepertoire = typeof styleRepertoire.$inferSelect;
+export type Campaign = typeof campaigns.$inferSelect;
+export type CampaignEvent = typeof campaignEvents.$inferSelect;
+export type BrandKit = typeof brandKits.$inferSelect;
+export type BrandAsset = typeof brandAssets.$inferSelect;
+export type ProspectArtifact = typeof prospectArtifacts.$inferSelect;
+export type DesignPlan = typeof designPlans.$inferSelect;
+export type DemoSite = typeof demoSites.$inferSelect;
+export type ActivityLogEntry = typeof activityLog.$inferSelect;

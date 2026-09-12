@@ -26,8 +26,14 @@ tax and PAYG instalments. Expense tracking with business-use apportionment,
 depreciation schedules, and guidance on what is actually claimable — including
 the rules that differ between NZ and AU.
 
-**Clients** — contacts, communications log, per-client revenue, proposals. Plus
-scaffolding for an AI prospecting mode (see *Known limitations*).
+**Clients** — contacts, communications log, per-client revenue, proposals.
+
+**Growth** — the lead-generation and proposal pipeline. Name a trade and a
+region; it finds the businesses, measures the state of their web presence,
+researches the ones worth pursuing, designs each of them a page, builds and
+publishes a demo site on its own subdomain, and drafts the outreach email.
+Every stage is independently set to run by itself, be decided by the model, or
+stop and wait for you. See *The growth pipeline* below.
 
 **Time** — a timer that survives closing the tab, manual entry, and one-click
 conversion of unbilled time into an invoice.
@@ -58,6 +64,142 @@ it, with sources — including a note on the three bugs in the original
 spreadsheet that this replaces.
 
 All money is integer cents. Never floats.
+
+## The growth pipeline
+
+Seven stages. Each one is set independently to **Ask me**, **AI decides** or
+**Just do it**, as saved defaults and again per run.
+
+```
+brief → discover → shortlist → enrich → plan → build → propose
+```
+
+| Stage | What it does | `AI decides` means | `Just do it` means |
+|---|---|---|---|
+| **brief** | Resolves the style direction this run builds against | Adds two sentences of guidance for the trade, without replacing your rules | Uses the saved direction as-is |
+| **discover** | Finds businesses in the niche and region | — | Runs the chosen provider |
+| **shortlist** | Audits each one's site and ranks them | The model picks, and records why | Takes the top of the ranking |
+| **enrich** | Crawls the site, finds contacts, socials, reviews, photography | — | Researches everyone selected |
+| **plan** | Writes the design and page spec | The model writes the plan | Lays out a scaffold, no model call |
+| **build** | Generates the demo and publishes it | Skips anyone with no honest angle | Builds for everyone planned |
+| **propose** | Drafts the outreach email and sends it | Holds back anyone with nothing verifiable to say | Sends to everyone, up to the cap |
+
+`Ask me` on any stage does the work and then stops, so you see the results
+before anything moves on. The defaults leave **build** and **propose** on
+`Ask me` — publishing a public page and emailing a stranger are the two things
+worth opting into on purpose.
+
+### Two scores, kept apart
+
+A prospect carries two numbers because they answer different questions and one
+is far more trustworthy than the other.
+
+**Need** is measured. The crawler fetches the site and an audit checks it: no
+mobile viewport, no HTTPS, a copyright line three years stale, markup nobody
+has written this century, no way to get in touch, a parked domain, a site that
+does not answer. Every check has a fixed weight, so the number is reproducible
+and you can see exactly what produced it.
+
+**Fit** is judged. The model is given the audit and asked one question: would
+this be a good client — can they plausibly pay, is there a business here worth
+representing. It is allowed to say no, and it is capped at 45% of the ranking
+weight, so an enthusiastic model cannot push a well-built site to the top of
+the list.
+
+The audit also produces a list of **verified observations** — the problems in
+words that can go into an email unchanged. This is what the outreach is written
+from. When that list is empty, there is genuinely nothing honest to lead with,
+and under `AI decides` the pipeline says so and moves on rather than inventing
+a flaw.
+
+### Where the businesses come from
+
+| Provider | Needs | Good for |
+|---|---|---|
+| **OpenStreetMap** (default) | Nothing | Anything with a shopfront. Free, ODbL — credit OSM if you republish. |
+| **Google Places** | `GOOGLE_PLACES_API_KEY` | Broadest coverage, carries ratings. Costs per request; its terms limit caching to 30 days. |
+| **Paste a list** | Nothing | A directory export, a conference list, three businesses down the road. |
+
+The crawler identifies itself honestly, reads `robots.txt` and obeys it, takes
+at most six pages per site, caps what it downloads and gives up quickly. Google
+Maps is never scraped — that breaches their terms and would get the Worker's
+egress range blocked.
+
+### The demos
+
+The model writes the *spec*; the generator writes the HTML. That split is
+deliberate: every string from the model is escaped before it reaches markup,
+and the layout, type scale and colour handling stay consistent across every
+demo because they are written once rather than re-improvised per prospect.
+
+Each demo is produced twice:
+
+- **Served immediately** from R2 at `<business>.demo.jwbsstudio.com`, so the
+  link in the outreach email works the moment it is generated.
+- **Exported as a real Astro + Cloudflare Worker project** — `package.json`,
+  `astro.config.mjs`, `wrangler.jsonc`, pages, layout, stylesheet, their
+  photography and a README — ready to hand over or deploy standalone. Astro
+  cannot be *built* inside a Worker, so the source is generated and the build
+  is left to a machine with a process to run Vite in.
+
+Every generated demo carries a ribbon above the fold saying it is an
+unsolicited concept, who made it, that it is not affiliated with or endorsed by
+the business, and that it can be taken down on request. It is `noindex`, served
+under a restrictive CSP, and the outreach email repeats the offer to remove it.
+
+### Guard rails
+
+- **A hard daily cap** on emails sent by unattended runs, counted from what has
+  actually been sent rather than from a counter, so starting a new run does not
+  reset it. Zero switches unattended sending off entirely — runs still draft
+  every email and wait for you. Sending by hand from a proposal page is never
+  capped.
+- **Nothing is written to an address that was not found on the prospect's own
+  published material.**
+- **Every model decision is logged** with its reasoning, against the campaign
+  and the prospect, so an unattended run is auditable afterwards.
+- **Everything crawled is treated as data**, never as instruction. Copy from
+  somebody's homepage reaches a prompt inside a fenced block that says so.
+
+### The agent
+
+A run takes minutes to hours and outlives any request, so it is driven by a
+**Cloudflare Agent** — one Durable Object per campaign, in its own Worker under
+`workers/agent`. It schedules its own ticks durably (surviving restarts,
+evictions and deploys), holds the run as a single-writer state machine, and
+broadcasts progress to the campaign page over a WebSocket.
+
+The pipeline logic itself is not in the agent. It lives in
+`src/lib/growth/engine.ts` as ordinary functions over a database handle, which
+is why it can be tested in plain Node. The agent is only the part that knows
+about durability: when to tick, what to do when one throws, and a watchdog for
+a run that goes quiet without finishing.
+
+It is a separate Worker because the Astro Cloudflare adapter generates this
+app's Worker entry and there is no supported way to add a Durable Object export
+to it. The app binds it by `script_name`, and `bun run deploy` deploys both in
+the right order.
+
+The browser connects to the agent through an authenticated route on this app,
+not to the agent Worker directly — the agent has no authentication of its own
+and is deliberately not publicly routed. If that socket cannot be established
+the page falls back to polling, so the run view is correct either way.
+
+### Setting up demo hosting
+
+One wildcard record and one route, once:
+
+```
+*.demo.jwbsstudio.com   CNAME   billing.jwbsstudio.com   (proxied)
+route: *.demo.jwbsstudio.com/*  →  this Worker
+```
+
+`DEMO_HOST` in `wrangler.jsonc` must match. After that every demo is live the
+moment it is built with nothing further to set up. If you would rather create a
+record per demo instead, set `CLOUDFLARE_API_TOKEN` (Zone:DNS:Edit on that zone,
+nothing else) and `CLOUDFLARE_ZONE_ID` and it is done automatically.
+
+---
 
 ## Stack and why
 
@@ -326,9 +468,12 @@ August 2024 — do not reintroduce it.
 ```bash
 npm run dev              # astro dev (no bindings — limited use)
 npm run preview          # build + wrangler dev
-npm run deploy           # build + deploy
+npm run deploy           # deploy the agent worker, then build + deploy the app
+npm run deploy:agent     # deploy only the campaign agent worker
+npm run dev:agent        # run the campaign agent worker locally
 npm test                 # run the test suite
 npm run typecheck        # tsc --noEmit
+npm run typecheck:agent  # tsc --noEmit for the agent worker
 npm run db:generate      # generate a migration from schema changes
 npm run db:migrate:local # apply migrations locally
 npm run db:migrate:remote # apply migrations to the deployed database
@@ -341,17 +486,36 @@ npm run user:add         # create or reset a user
 
 **Read these before relying on it.**
 
-1. **The AI prospecting discovery step is not connected.** Scoring,
-   qualification and proposal drafting are implemented and work. What is not
-   implemented is going out and *finding* the businesses — that needs a data
-   source (Google Places API, an OpenStreetMap extract, or a licensed business
-   register), and the choice has real cost and terms-of-service consequences,
-   so it is left as a deliberate decision. The seam is `discoverProspects()` in
-   `src/lib/ai/prospecting.ts`; everything downstream runs against whatever it
-   returns. Do not scrape Google Maps directly — it breaches their terms and
-   will get the Worker's egress range blocked.
+1. **The growth pipeline writes to people who did not ask to hear from you.**
+   That is the point of it, and it is also the thing to be careful with. Read
+   the guard rails above, set the daily cap deliberately, and leave `propose`
+   on `Ask me` until you have read several of the emails it writes. The
+   unsubscribe equivalent here is the offer to take the demo down, which is in
+   every email and on every generated page — honour it the same day.
 
-2. **Some rate figures need confirming.** Anything marked `verify` in
+2. **Discovery coverage is uneven.** OpenStreetMap is strong for anything with
+   a shopfront and thin for businesses run from home or a van; Google Places is
+   better for those but costs per request and constrains how long you may keep
+   the data. Neither is a business register. Expect to paste a list sometimes.
+
+3. **The demos reuse the prospect's own photography.** That is what makes them
+   read as "someone looked at us" rather than a template with a name dropped
+   in — but those images are not licensed to you. They are fine in an
+   unindexed concept the business is being shown; replace them before anything
+   goes live for real. The generated README says so too.
+
+4. **Astro is not built inside the Worker.** The served demo is generated HTML
+   and CSS; the exported Astro project is source that still needs
+   `bun install && bun run build` on a machine with a process. Both come from
+   the same design plan, so they match, but only the first is live
+   automatically.
+
+5. **The live run socket may fall back to polling.** The agent is reached
+   through an authenticated route on this app rather than being publicly
+   exposed. If the upgrade does not survive, the run view polls every four
+   seconds instead. Nothing is lost — D1 is authoritative for everything shown.
+
+6. **Some rate figures need confirming.** Anything marked `verify` in
    `src/lib/tax/rates.ts` came from secondary sources. The app lists them on the
    Tax page and in Settings with links to the official source. The ones most
    worth checking: the ACC work levy rate for your classification unit (the
@@ -359,21 +523,21 @@ npm run user:add         # create or reset a user
    levy low-income threshold, and whether the AU$20,000 instant asset write-off
    was legislated for 2026-27.
 
-3. **It does not decide your tax residence.** It asks you to state it. If both
+7. **It does not decide your tax residence.** It asks you to state it. If both
    countries could claim you, the DTA tie-breaker decides, and that is a
    facts-and-circumstances question for an accountant.
 
-4. **Multi-currency is simplistic.** Invoices carry a currency and an FX rate
+8. **Multi-currency is simplistic.** Invoices carry a currency and an FX rate
    field, but there is no automatic rate lookup and no FX gain/loss tracking.
 
-5. **Estimates, not returns.** The tax figures are for setting money aside.
+9. **Estimates, not returns.** The tax figures are for setting money aside.
    Filing is a job for your accountant.
 
-6. **Single user in practice.** The schema is user-scoped throughout and roles
+10. **Single user in practice.** The schema is user-scoped throughout and roles
    exist, but nothing has been built around the `accountant` or `viewer` roles
    yet.
 
-7. Four dev-only `npm audit` warnings come from drizzle-kit's bundled esbuild.
+11. Four dev-only `npm audit` warnings come from drizzle-kit's bundled esbuild.
    They do not ship to the Worker.
 
 ---
@@ -388,13 +552,28 @@ src/
     pdf/          the PDF writer and the invoice template
     mail/         provider abstraction and email templates
     stripe/       checkout sessions and webhook verification
-    ai/           Workers AI helpers and prospecting
+    ai/           Workers AI helpers and the dashboard assistant
+    growth/       the lead-generation pipeline
+      policy.ts     per-stage autonomy: ask me / AI decides / just do it
+      brief.ts      style direction, saved defaults merged with per-run overrides
+      discovery/    OpenStreetMap, Google Places and paste-a-list providers
+      crawl.ts      polite, robots-respecting crawler
+      html.ts       extraction — portable, so it can be tested in Node
+      assess.ts     the measured presence audit and its scoring
+      qualify.ts    the model's half: fit, shortlist and the design plan
+      render.ts     the demo site generator (the model writes the spec, not the HTML)
+      project.ts    the exported Astro + Cloudflare Worker project
+      publish.ts    subdomain allocation, R2 serving, optional DNS
+      proposal.ts   outreach drafting, the daily cap, sending
+      engine.ts     the stage machine — plain functions, no Worker needed
     auth/         password hashing and sessions
     db/           Drizzle schema and client
     queries/      aggregate queries for dashboard and tax pages
   pages/          Astro routes and API endpoints
   components/     Astro components and React islands
+workers/
+  agent/          the campaign agent — one Durable Object per run, deployed separately
 migrations/       D1 migrations
-tests/            185 tests, mostly the tax engine
+tests/            355 tests: the tax engine, and the growth pipeline's pure parts
 docs/             the tax research
 ```

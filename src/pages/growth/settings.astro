@@ -1,0 +1,115 @@
+---
+import AppLayout from '~/layouts/AppLayout.astro';
+import Card from '~/components/ui/Card.astro';
+import StagePolicy from '~/components/growth/StagePolicy.astro';
+import { eq } from 'drizzle-orm';
+import { bindings, db } from '~/lib/env';
+import { brandKits } from '~/lib/db/schema';
+import { getSettings } from '~/lib/queries/settings';
+import { resolvePolicy } from '~/lib/growth/policy';
+import { PROVIDERS } from '~/lib/growth/discovery/index';
+
+const user = Astro.locals.user!;
+const database = db();
+
+const [settings, kits] = await Promise.all([
+  getSettings(database, user.id),
+  database.select().from(brandKits).where(eq(brandKits.userId, user.id)),
+]);
+
+const policy = resolvePolicy(null, settings.growthPolicy);
+const saved = Astro.url.searchParams.get('saved');
+const error = Astro.url.searchParams.get('error');
+const env = bindings();
+---
+
+<AppLayout title="Growth defaults" subtitle="What every new run starts from">
+  <form method="post" action="/api/growth-settings" class="space-y-4">
+    {saved && <p class="muted rounded-lg px-4 py-3 text-sm" style="background: var(--surface-sunken)" role="status">Saved.</p>}
+    {error && <p class="rounded-lg px-4 py-3 text-sm" style="background: color-mix(in oklch, var(--color-owing) 12%, transparent); color: var(--color-owing)" role="alert">{error}</p>}
+
+    <Card title="Autonomy" subtitle="A new run starts with these and can override any of them">
+      <StagePolicy policy={policy} />
+    </Card>
+
+    <Card title="Outreach" subtitle="The part that reaches people who did not ask to hear from you">
+      <div class="grid gap-3.5 sm:grid-cols-2">
+        <div>
+          <label for="outreachSenderName" class="mb-1.5 block text-sm font-medium">Sign as</label>
+          <input id="outreachSenderName" name="outreachSenderName" value={settings.outreachSenderName} class="field" />
+        </div>
+        <div>
+          <label for="outreachReplyTo" class="mb-1.5 block text-sm font-medium">Reply-to</label>
+          <input id="outreachReplyTo" name="outreachReplyTo" type="email" value={settings.outreachReplyTo} class="field" placeholder={settings.email} />
+        </div>
+      </div>
+
+      <div class="mt-3.5">
+        <label for="outreachBio" class="mb-1.5 block text-sm font-medium">What you do</label>
+        <textarea id="outreachBio" name="outreachBio" rows="3" class="field" placeholder="A sentence or two. This is what the model has to work with when it says who is writing.">{settings.outreachBio}</textarea>
+      </div>
+
+      <div class="mt-3.5">
+        <label for="outreachSignature" class="mb-1.5 block text-sm font-medium">Signature</label>
+        <textarea id="outreachSignature" name="outreachSignature" rows="3" class="field">{settings.outreachSignature}</textarea>
+      </div>
+
+      <div class="mt-3.5 rounded-lg border p-3.5" style="border-color: var(--border)">
+        <label for="outreachDailyCap" class="mb-1.5 block text-sm font-medium">Daily cap on unattended sends</label>
+        <input id="outreachDailyCap" name="outreachDailyCap" type="number" min="0" max="100" value={settings.outreachDailyCap} class="field max-w-28" />
+        <p class="muted mt-2 text-xs leading-relaxed">
+          The hard ceiling on emails a run will send in any rolling 24 hours with nobody watching.
+          Counted from what has actually been sent, so starting a new run does not reset it.
+          <strong style="color: var(--text)"> Zero switches unattended sending off entirely</strong> —
+          runs still draft every email, they just wait for you to press send. Sending by hand from a
+          proposal page is never capped.
+        </p>
+      </div>
+    </Card>
+
+    <Card title="Discovery and hosting">
+      <div class="grid gap-3.5 sm:grid-cols-2">
+        <div>
+          <label for="growthDiscoveryProvider" class="mb-1.5 block text-sm font-medium">Default source</label>
+          <select id="growthDiscoveryProvider" name="growthDiscoveryProvider" class="field">
+            {PROVIDERS.map((provider) => (
+              <option value={provider.name} selected={provider.name === settings.growthDiscoveryProvider}>
+                {provider.label}
+              </option>
+            ))}
+          </select>
+          {!env.GOOGLE_PLACES_API_KEY && (
+            <p class="muted mt-1 text-xs">Google Places needs GOOGLE_PLACES_API_KEY as a Worker secret.</p>
+          )}
+        </div>
+        <div>
+          <label for="growthBrandKitId" class="mb-1.5 block text-sm font-medium">Default style direction</label>
+          <select id="growthBrandKitId" name="growthBrandKitId" class="field">
+            <option value="">Built-in</option>
+            {kits.map((kit) => (
+              <option value={kit.id} selected={kit.id === settings.growthBrandKitId}>{kit.name}</option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      <div class="mt-3.5">
+        <label for="demoHost" class="mb-1.5 block text-sm font-medium">Demos are published under</label>
+        <input id="demoHost" name="demoHost" value={settings.demoHost} class="field font-mono text-sm" />
+        <p class="muted mt-2 text-xs leading-relaxed">
+          Each demo gets its own label, so a run produces <code>wells-coffee.{settings.demoHost}</code>.
+          Point a proxied wildcard <code>*.{settings.demoHost}</code> at this app and add a matching
+          Worker route, and every demo is live the moment it is built with nothing further to set up.
+          {env.DEMO_HOST && env.DEMO_HOST !== settings.demoHost && (
+            <span style="color: var(--color-owing)">
+              {' '}The Worker is configured to serve <code>{env.DEMO_HOST}</code>, so demos on
+              anything else will not resolve until DEMO_HOST in wrangler.jsonc matches.
+            </span>
+          )}
+        </p>
+      </div>
+    </Card>
+
+    <button class="rounded-lg px-4 py-2.5 text-sm font-medium text-white" style="background: var(--color-brand-600)">Save</button>
+  </form>
+</AppLayout>

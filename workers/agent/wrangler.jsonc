@@ -1,0 +1,64 @@
+{
+    "$schema": "../../node_modules/wrangler/config-schema.json",
+    "name": "jwbs-growth-agent",
+    "main": "src/index.ts",
+    "compatibility_date": "2026-09-01",
+    "compatibility_flags": [
+        "nodejs_compat"
+    ],
+    "observability": {
+        "enabled": true
+    },
+    // One Durable Object per campaign. `new_sqlite_classes` rather than
+    // `new_classes`: the Agents SDK keeps its state and its schedule table in
+    // the object's embedded SQLite, and only SQLite-backed classes have it.
+    "durable_objects": {
+        "bindings": [
+            {
+                "name": "CampaignAgent",
+                "class_name": "CampaignAgent"
+            }
+        ]
+    },
+    "migrations": [
+        {
+            "tag": "v1",
+            "new_sqlite_classes": [
+                "CampaignAgent"
+            ]
+        }
+    ],
+    // The same bindings as the app: the agent writes campaign progress to the
+    // same D1 and stores crawled pages and built demos in the same bucket.
+    "d1_databases": [
+        {
+            "binding": "DB",
+            "database_name": "jwbs-billing",
+            "database_id": "da0a78d0-af29-4c41-ba3c-47ee983b6bdc",
+            "migrations_dir": "../../migrations"
+        }
+    ],
+    "r2_buckets": [
+        {
+            "binding": "FILES",
+            "bucket_name": "jwbs-billing-files"
+        }
+    ],
+    "ai": {
+        "binding": "AI"
+    },
+    "vars": {
+        "APP_NAME": "JWBS Studio Billing",
+        "APP_URL": "https://billing.jwbsstudio.com",
+        "MAIL_PROVIDER": "cloudflare",
+        "MAIL_FROM": "hello@jwbsstudio.com",
+        "MAIL_FROM_NAME": "JWBS Studio"
+    },
+    // Outreach is sent from the agent, so it needs its own send binding.
+    "send_email": [
+        {
+            "name": "EMAIL",
+            "remote": true
+        }
+    ]
+}

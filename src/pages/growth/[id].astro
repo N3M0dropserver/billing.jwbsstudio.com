@@ -1,0 +1,227 @@
+---
+import AppLayout from '~/layouts/AppLayout.astro';
+import Card from '~/components/ui/Card.astro';
+import ScoreBar from '~/components/growth/ScoreBar.astro';
+import StagePolicy from '~/components/growth/StagePolicy.astro';
+import RunMonitor from '~/components/growth/RunMonitor.tsx';
+import { and, desc, eq } from 'drizzle-orm';
+import { db } from '~/lib/env';
+import { campaigns, demoSites, designPlans, proposals, prospects } from '~/lib/db/schema';
+import { getSettings } from '~/lib/queries/settings';
+import { CAMPAIGN_STAGES, resolvePolicy, STAGE_LABELS, stageIndex } from '~/lib/growth/policy';
+
+const user = Astro.locals.user!;
+const id = Astro.params.id!;
+const database = db();
+
+const rows = await database
+  .select()
+  .from(campaigns)
+  .where(and(eq(campaigns.id, id), eq(campaigns.userId, user.id)))
+  .limit(1);
+
+const campaign = rows[0];
+if (!campaign) return new Response('Not found', { status: 404 });
+
+const [found, demos, plans, drafts, settings] = await Promise.all([
+  database.select().from(prospects).where(eq(prospects.campaignId, id)).orderBy(desc(prospects.score)),
+  database.select().from(demoSites).where(eq(demoSites.campaignId, id)),
+  database.select().from(designPlans).where(eq(designPlans.campaignId, id)),
+  database.select().from(proposals).where(eq(proposals.campaignId, id)),
+  getSettings(database, user.id),
+]);
+
+const policy = resolvePolicy(campaign.policy, settings.growthPolicy);
+const error = Astro.url.searchParams.get('error');
+
+const demoByProspect = new Map(demos.map((demo) => [demo.prospectId, demo]));
+const planByProspect = new Map(plans.map((plan) => [plan.prospectId, plan]));
+const proposalByProspect = new Map(drafts.map((draft) => [draft.prospectId, draft]));
+
+/** Stages already run cannot have their mode changed; say so rather than pretending. */
+const locked = CAMPAIGN_STAGES.filter((stage) => stageIndex(stage) < stageIndex(campaign.stage));
+
+const waitingOnShortlist = campaign.status === 'waiting' && campaign.waitingOn === 'shortlist';
+const isWaiting = campaign.status === 'waiting';
+const isLive = campaign.status === 'running' || campaign.status === 'waiting';
+
+const SIGNAL_LABELS: Record<string, string> = {
+  'no-website': 'No website',
+  'dated-website': 'Dated site',
+  'no-google-presence': 'No presence',
+  'maps-only': 'Maps listing only',
+  'poor-mobile': 'Not built for phones',
+  'thin-content': 'Almost no content',
+  'broken-site': 'Site does not load',
+  'social-only': 'Social media only',
+  other: 'Other',
+};
+---
+
+<AppLayout title={campaign.name || campaign.niche} subtitle={`${campaign.region || 'Pasted list'} · ${campaign.country}`} width="wide">
+  <div slot="actions" class="flex flex-wrap gap-2">
+    {campaign.status === 'draft' && (
+      <form method="post" action={`/api/campaigns/${id}/control`}>
+        <button name="action" value="start" class="rounded-lg px-4 py-2 text-sm font-medium text-white" style="background: var(--color-brand-600)">Start</button>
+      </form>
+    )}
+    {campaign.status === 'running' && (
+      <form method="post" action={`/api/campaigns/${id}/control`}>
+        <button name="action" value="pause" class="muted rounded-lg border px-3 py-2 text-sm" style="border-color: var(--border)">Pause</button>
+      </form>
+    )}
+    {campaign.status === 'paused' && (
+      <form method="post" action={`/api/campaigns/${id}/control`}>
+        <button name="action" value="resume" class="rounded-lg px-4 py-2 text-sm font-medium text-white" style="background: var(--color-brand-600)">Resume</button>
+      </form>
+    )}
+  </div>
+
+  <div class="grid gap-4 lg:grid-cols-3">
+    <div class="space-y-4 lg:col-span-2">
+      {error && (
+        <p class="rounded-lg px-4 py-3 text-sm" style="background: color-mix(in oklch, var(--color-overdue) 12%, transparent); color: var(--color-overdue)" role="alert">
+          {error}
+        </p>
+      )}
+
+      <Card title="Run">
+        <RunMonitor client:load campaignId={id} />
+      </Card>
+
+      {isWaiting && (
+        <Card
+          title={`${STAGE_LABELS[campaign.waitingOn as 'brief'] ?? campaign.waitingOn} is waiting for you`}
+          subtitle={waitingOnShortlist ? 'Tick the ones worth pursuing' : 'Carry on, or stop here'}
+        >
+          {waitingOnShortlist ? (
+            <form method="post" action={`/api/campaigns/${id}/control`} class="space-y-3">
+              <div class="max-h-[32rem] space-y-1.5 overflow-y-auto pr-1">
+                {found.map((prospect) => (
+                  <label class="flex cursor-pointer items-start gap-3 rounded-lg border p-3" style="border-color: var(--border)">
+                    <input type="checkbox" name="prospectId" value={prospect.id} checked={prospect.selected} class="mt-1" />
+                    <span class="min-w-0 flex-1">
+                      <span class="flex items-baseline justify-between gap-3">
+                        <span class="truncate text-sm font-medium">{prospect.businessName}</span>
+                        <span class="muted shrink-0 text-xs">{SIGNAL_LABELS[prospect.signal] ?? prospect.signal}</span>
+                      </span>
+                      <span class="mt-1.5 block"><ScoreBar score={prospect.score} presenceScore={prospect.presenceScore} fitScore={prospect.fitScore} /></span>
+                      {prospect.notes && <span class="muted mt-1.5 block text-xs leading-relaxed">{prospect.notes}</span>}
+                    </span>
+                  </label>
+                ))}
+              </div>
+              <div class="flex flex-wrap gap-2">
+                <button name="action" value="select" class="rounded-lg px-4 py-2 text-sm font-medium text-white" style="background: var(--color-brand-600)">
+                  Continue with the ticked ones
+                </button>
+                <button
+                  type="button"
+                  data-select-all
+                  class="muted rounded-lg border px-3 py-2 text-sm"
+                  style="border-color: var(--border)"
+                >Select all</button>
+                <button name="action" value="stop" class="muted rounded-lg border px-3 py-2 text-sm" style="border-color: var(--border)">Stop here</button>
+              </div>
+            </form>
+          ) : (
+            <form method="post" action={`/api/campaigns/${id}/control`} class="flex flex-wrap gap-2">
+              <button name="action" value="proceed" class="rounded-lg px-4 py-2 text-sm font-medium text-white" style="background: var(--color-brand-600)">
+                Carry on
+              </button>
+              <button name="action" value="stop" class="muted rounded-lg border px-3 py-2 text-sm" style="border-color: var(--border)">Stop here</button>
+            </form>
+          )}
+        </Card>
+      )}
+
+      <Card title="Prospects" subtitle={`${found.length} found, ${found.filter((p) => p.selected).length} being pursued`}>
+        {found.length === 0 ? (
+          <p class="muted text-sm">Nothing yet.</p>
+        ) : (
+          <ul class="divide-y" style="border-color: var(--border)">
+            {found.map((prospect) => {
+              const demo = demoByProspect.get(prospect.id);
+              const draft = proposalByProspect.get(prospect.id);
+              return (
+                <li class="py-3 first:pt-0 last:pb-0">
+                  <div class="flex items-start justify-between gap-3">
+                    <div class="min-w-0 flex-1">
+                      <a href={`/growth/prospects/${prospect.id}`} class="truncate text-sm font-medium hover:opacity-80">
+                        {prospect.businessName}
+                      </a>
+                      <p class="muted mt-0.5 text-xs">
+                        {SIGNAL_LABELS[prospect.signal] ?? prospect.signal}
+                        {prospect.email && ` · ${prospect.email}`}
+                        {!prospect.selected && ' · not pursued'}
+                      </p>
+                      {prospect.notes && <p class="muted mt-1 text-xs leading-relaxed">{prospect.notes}</p>}
+                      <div class="mt-2 flex flex-wrap gap-2 text-xs">
+                        {demo?.status === 'live' && (
+                          <a href={`https://${demo.host}`} rel="noopener" target="_blank" class="rounded px-2 py-0.5" style="background: color-mix(in oklch, var(--color-paid) 14%, transparent); color: var(--color-paid)">
+                            {demo.host} ↗
+                          </a>
+                        )}
+                        {planByProspect.has(prospect.id) && !demo && (
+                          <span class="muted rounded px-2 py-0.5" style="background: var(--surface-sunken)">planned</span>
+                        )}
+                        {draft && (
+                          <a href={`/growth/proposals/${draft.id}`} class="rounded px-2 py-0.5" style={`background: color-mix(in oklch, ${draft.status === 'sent' ? 'var(--color-paid)' : 'var(--color-owing)'} 14%, transparent); color: ${draft.status === 'sent' ? 'var(--color-paid)' : 'var(--color-owing)'}`}>
+                            {draft.status === 'sent' ? 'email sent' : 'email drafted'}
+                          </a>
+                        )}
+                      </div>
+                    </div>
+                    <div class="w-32 shrink-0 pt-1">
+                      <ScoreBar score={prospect.score} presenceScore={prospect.presenceScore} fitScore={prospect.fitScore} />
+                    </div>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </Card>
+    </div>
+
+    <div class="space-y-4">
+      <Card title="Autonomy" subtitle={locked.length ? `${locked.length} stage(s) already run` : 'Change it while the run is live'}>
+        <form method="post" action={`/api/campaigns/${id}/control`} class="space-y-3">
+          <StagePolicy policy={policy} locked={locked} />
+          <button name="action" value="policy" class="muted w-full rounded-lg border px-3 py-2 text-sm" style="border-color: var(--border)">
+            Save
+          </button>
+        </form>
+      </Card>
+
+      <Card title="This run">
+        <dl class="space-y-2 text-sm">
+          <div class="flex justify-between gap-3"><dt class="muted">Trade</dt><dd class="text-right">{campaign.niche || '—'}</dd></div>
+          <div class="flex justify-between gap-3"><dt class="muted">Source</dt><dd class="text-right">{campaign.discoveryProvider}</dd></div>
+          <div class="flex justify-between gap-3"><dt class="muted">Carry forward</dt><dd class="tabular">{campaign.targetCount}</dd></div>
+          <div class="flex justify-between gap-3"><dt class="muted">Score floor</dt><dd class="tabular">{campaign.scoreFloor}</dd></div>
+        </dl>
+        {campaign.idealClient && (
+          <p class="muted mt-3 border-t pt-3 text-xs leading-relaxed" style="border-color: var(--border)">
+            {campaign.idealClient}
+          </p>
+        )}
+      </Card>
+    </div>
+  </div>
+
+  <script is:inline>
+    document.addEventListener('click', (event) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const button = target.closest('[data-select-all]');
+      if (!button) return;
+      const form = button.closest('form');
+      if (!form) return;
+      // Toggle, so a second press clears them again.
+      const boxes = [...form.querySelectorAll('input[name="prospectId"]')];
+      const allOn = boxes.every((box) => box.checked);
+      for (const box of boxes) box.checked = !allOn;
+    });
+  </script>
+</AppLayout>

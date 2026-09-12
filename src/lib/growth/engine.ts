@@ -1,0 +1,1469 @@
+/**
+ * The stage machine.
+ *
+ * One campaign moves through seven stages. This file knows how to do one
+ * unit of work and what to do next; the Durable Object in `workers/agent`
+ * knows when to call it and how to survive a restart. Keeping the two apart
+ * means the pipeline logic is ordinary code that can be read, reasoned about
+ * and tested without a Worker runtime.
+ *
+ * A unit of work is deliberately small — one prospect crawled, one plan
+ * written, one site built. A Durable Object gets a bounded slice of CPU per
+ * invocation, and a stage that tried to crawl twenty sites in one go would
+ * be killed halfway with no record of where it got to. Small units mean a
+ * run that is interrupted resumes exactly where it stopped.
+ *
+ * Every stage ends by consulting the policy: carry on, ask the model, or
+ * stop and wait for a person.
+ */
+
+import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm';
+import type { Db } from '../db/index';
+import {
+  brandKits,
+  campaignEvents,
+  campaigns,
+  demoSites,
+  designPlans,
+  proposals,
+  prospectArtifacts,
+  prospects,
+  settings,
+  type Campaign,
+  type CampaignStage,
+  type Prospect,
+} from '../db/schema';
+import { newId, newToken } from '../id';
+import { applyOverrides, briefFromKit, type Brief } from './brief';
+import { auditSite, combineScores, type SiteAudit } from './assess';
+import { crawlSite } from './crawl';
+import { discover, discoveryUserAgent, type DiscoveredBusiness } from './discovery/index';
+import { enrichProspect } from './enrich';
+import { normaliseDomain } from './html';
+import { nextStage, resolvePolicy, type StageMode, type StagePolicy } from './policy';
+import {
+  draftDesignPlan,
+  normalisePlan,
+  qualifyProspect,
+  shortlistProspects,
+  type DesignPlanDraft,
+  type PlanSection,
+} from './qualify';
+import { draftProposal, sendOutreach } from './proposal';
+import { renderDemoFiles, type DemoContext } from './render';
+import { renderAstroProject } from './project';
+import { allocateSubdomain, createDnsRecord, publishDemo } from './publish';
+import { prospectPrefix, putObject } from './storage';
+
+/* ------------------------------------------------------------------ */
+/* Context                                                             */
+/* ------------------------------------------------------------------ */
+
+export interface EngineContext {
+  db: Db;
+  bucket: R2Bucket;
+  ai: Ai;
+  env: Env;
+  /** Where this app lives, for building links and identifying the crawler. */
+  appUrl: string;
+}
+
+export interface StepResult {
+  /** True when there is more to do and the caller should tick again. */
+  more: boolean;
+  /** Set when the run has stopped and is waiting on a person. */
+  waitingOn: CampaignStage | null;
+  /** Set when the run is finished, for good or ill. */
+  finished: boolean;
+  /** One line for the live view. */
+  message: string;
+}
+
+/** How long one tick may spend before handing control back. */
+export const TICK_BUDGET_MS = 15_000;
+
+/* ------------------------------------------------------------------ */
+/* Logging                                                             */
+/* ------------------------------------------------------------------ */
+
+export async function logEvent(
+  ctx: EngineContext,
+  campaign: Pick<Campaign, 'id' | 'userId'>,
+  stage: string,
+  level: 'info' | 'decision' | 'warn' | 'error',
+  message: string,
+  detail: Record<string, unknown> = {},
+  prospectId?: string,
+): Promise<void> {
+  await ctx.db.insert(campaignEvents).values({
+    id: newId(),
+    campaignId: campaign.id,
+    userId: campaign.userId,
+    prospectId: prospectId ?? null,
+    stage,
+    level,
+    message: message.slice(0, 1000),
+    detail: JSON.stringify(detail).slice(0, 8000),
+    createdAt: new Date().toISOString(),
+  });
+}
+
+async function touch(ctx: EngineContext, campaignId: string, patch: Partial<Campaign>): Promise<void> {
+  const now = new Date().toISOString();
+  await ctx.db
+    .update(campaigns)
+    .set({ ...patch, lastActivityAt: now, updatedAt: now })
+    .where(eq(campaigns.id, campaignId));
+}
+
+/* ------------------------------------------------------------------ */
+/* Loading                                                             */
+/* ------------------------------------------------------------------ */
+
+export async function loadCampaign(ctx: EngineContext, id: string): Promise<Campaign | null> {
+  const rows = await ctx.db.select().from(campaigns).where(eq(campaigns.id, id)).limit(1);
+  return rows[0] ?? null;
+}
+
+export async function resolveBrief(ctx: EngineContext, campaign: Campaign): Promise<Brief> {
+  let kit = null;
+
+  if (campaign.brandKitId) {
+    const rows = await ctx.db
+      .select()
+      .from(brandKits)
+      .where(eq(brandKits.id, campaign.brandKitId))
+      .limit(1);
+    kit = rows[0] ?? null;
+  }
+
+  if (!kit) {
+    const rows = await ctx.db
+      .select()
+      .from(brandKits)
+      .where(and(eq(brandKits.userId, campaign.userId), eq(brandKits.isDefault, true)))
+      .limit(1);
+    kit = rows[0] ?? null;
+  }
+
+  return applyOverrides(briefFromKit(kit), campaign.briefOverrides);
+}
+
+export async function resolvePolicyFor(
+  ctx: EngineContext,
+  campaign: Campaign,
+): Promise<StagePolicy> {
+  const rows = await ctx.db
+    .select({ growthPolicy: settings.growthPolicy })
+    .from(settings)
+    .where(eq(settings.userId, campaign.userId))
+    .limit(1);
+  return resolvePolicy(campaign.policy, rows[0]?.growthPolicy);
+}
+
+/* ------------------------------------------------------------------ */
+/* The tick                                                            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Do as much work as fits in one budget, then report.
+ *
+ * The loop exists so a stage with twenty small units does not need twenty
+ * round trips through the scheduler, while the budget makes sure control
+ * comes back before the runtime takes it away.
+ */
+export async function tick(ctx: EngineContext, campaignId: string): Promise<StepResult> {
+  const deadline = Date.now() + TICK_BUDGET_MS;
+  let last: StepResult = { more: false, waitingOn: null, finished: false, message: 'Nothing to do.' };
+
+  while (Date.now() < deadline) {
+    last = await step(ctx, campaignId);
+    if (!last.more) return last;
+  }
+
+  return { ...last, more: true };
+}
+
+/** One unit of work. */
+export async function step(ctx: EngineContext, campaignId: string): Promise<StepResult> {
+  const campaign = await loadCampaign(ctx, campaignId);
+  if (!campaign) {
+    return { more: false, waitingOn: null, finished: true, message: 'Campaign not found.' };
+  }
+
+  if (campaign.status === 'paused' || campaign.status === 'cancelled') {
+    return { more: false, waitingOn: null, finished: true, message: `Run is ${campaign.status}.` };
+  }
+  if (campaign.status === 'waiting') {
+    return {
+      more: false,
+      waitingOn: (campaign.waitingOn as CampaignStage) ?? campaign.stage,
+      finished: false,
+      message: 'Waiting for a decision.',
+    };
+  }
+  if (campaign.status === 'complete' || campaign.status === 'failed') {
+    return { more: false, waitingOn: null, finished: true, message: `Run is ${campaign.status}.` };
+  }
+
+  const policy = await resolvePolicyFor(ctx, campaign);
+
+  try {
+    switch (campaign.stage) {
+      case 'brief':
+        return await stageBrief(ctx, campaign, policy);
+      case 'discover':
+        return await stageDiscover(ctx, campaign, policy);
+      case 'shortlist':
+        return await stageShortlist(ctx, campaign, policy);
+      case 'enrich':
+        return await stageEnrich(ctx, campaign, policy);
+      case 'plan':
+        return await stagePlan(ctx, campaign, policy);
+      case 'build':
+        return await stageBuild(ctx, campaign, policy);
+      case 'propose':
+        return await stagePropose(ctx, campaign, policy);
+      default:
+        return await finish(ctx, campaign, 'Nothing left to do.');
+    }
+  } catch (error) {
+    const message = String(error);
+    await logEvent(ctx, campaign, campaign.stage, 'error', 'The stage threw.', { error: message });
+    await touch(ctx, campaign.id, {
+      status: 'failed',
+      error: message.slice(0, 2000),
+      completedAt: new Date().toISOString(),
+    });
+    return { more: false, waitingOn: null, finished: true, message: `Failed: ${message}` };
+  }
+}
+
+/**
+ * A stage has finished its work. Either move on, or stop and ask.
+ */
+async function advance(
+  ctx: EngineContext,
+  campaign: Campaign,
+  policy: StagePolicy,
+  message: string,
+): Promise<StepResult> {
+  const mode = policy[campaign.stage];
+  const following = nextStage(campaign.stage);
+
+  if (mode === 'manual') {
+    await touch(ctx, campaign.id, { status: 'waiting', waitingOn: campaign.stage });
+    await logEvent(ctx, campaign, campaign.stage, 'info', `${message} Waiting for you.`);
+    return { more: false, waitingOn: campaign.stage, finished: false, message };
+  }
+
+  if (!following) return await finish(ctx, campaign, message);
+
+  await touch(ctx, campaign.id, { stage: following, waitingOn: null });
+  await logEvent(ctx, campaign, campaign.stage, 'info', `${message} Moving to ${following}.`);
+  return { more: true, waitingOn: null, finished: false, message };
+}
+
+async function finish(ctx: EngineContext, campaign: Campaign, message: string): Promise<StepResult> {
+  await touch(ctx, campaign.id, {
+    status: 'complete',
+    waitingOn: null,
+    completedAt: new Date().toISOString(),
+  });
+  await logEvent(ctx, campaign, campaign.stage, 'info', `Run complete. ${message}`);
+  return { more: false, waitingOn: null, finished: true, message: `Complete. ${message}` };
+}
+
+/* ------------------------------------------------------------------ */
+/* Stage: brief                                                        */
+/* ------------------------------------------------------------------ */
+
+async function stageBrief(
+  ctx: EngineContext,
+  campaign: Campaign,
+  policy: StagePolicy,
+): Promise<StepResult> {
+  const brief = await resolveBrief(ctx, campaign);
+
+  await logEvent(ctx, campaign, 'brief', 'info', `Building against the "${brief.name}" direction.`, {
+    typefaces: brief.typography.map((t) => t.family),
+    palette: brief.palette.map((c) => c.value),
+    references: brief.references.length,
+  });
+
+  if (policy.brief === 'ai') {
+    // Let the model adapt the direction to the trade, without letting it
+    // replace the designer's rules — it may only add a sentence of context.
+    const { generate } = await import('../ai/index');
+    const result = await generate(ctx.ai, {
+      system:
+        'You adapt a designer\'s existing art direction to one trade. Add at most two sentences ' +
+        'of specific guidance for this trade: what the photography should show, what a customer ' +
+        'is looking for when they land. Never contradict or replace the direction you are given. ' +
+        'Return the sentences only, no preamble.',
+      prompt: `Direction: ${brief.direction}\n\nTrade: ${campaign.niche}\nRegion: ${campaign.region}`,
+      maxTokens: 250,
+      temperature: 0.6,
+    });
+
+    if (result.ok) {
+      const merged = { ...JSON.parse(campaign.briefOverrides || '{}') } as Record<string, unknown>;
+      merged.direction = `${brief.direction}\n\nFor ${campaign.niche}: ${result.data}`;
+      await touch(ctx, campaign.id, { briefOverrides: JSON.stringify(merged) });
+      await logEvent(ctx, campaign, 'brief', 'decision', 'Adapted the direction to the trade.', {
+        added: result.data,
+      });
+    }
+  }
+
+  return await advance(ctx, campaign, policy, 'Brief resolved.');
+}
+
+/* ------------------------------------------------------------------ */
+/* Stage: discover                                                     */
+/* ------------------------------------------------------------------ */
+
+async function stageDiscover(
+  ctx: EngineContext,
+  campaign: Campaign,
+  policy: StagePolicy,
+): Promise<StepResult> {
+  const existing = await ctx.db
+    .select({ count: sql<number>`count(*)` })
+    .from(prospects)
+    .where(eq(prospects.campaignId, campaign.id));
+
+  if ((existing[0]?.count ?? 0) > 0) {
+    return await advance(ctx, campaign, policy, 'Already discovered.');
+  }
+
+  // Look at more than the target: most of what comes back will not be worth
+  // pursuing, and a shortlist can only choose from what it was shown.
+  const limit = Math.min(Math.max(campaign.targetCount * 4, 20), 120);
+
+  const result = await discover(campaign.discoveryProvider, {
+    niche: campaign.niche,
+    region: campaign.region,
+    country: campaign.country,
+    limit,
+    manualInput: campaign.manualInput,
+    apiKey: ctx.env.GOOGLE_PLACES_API_KEY,
+    userAgent: discoveryUserAgent(ctx.appUrl),
+  });
+
+  if (!result.ok) {
+    await logEvent(ctx, campaign, 'discover', 'error', result.error);
+    await touch(ctx, campaign.id, {
+      status: 'failed',
+      error: result.error.slice(0, 2000),
+      completedAt: new Date().toISOString(),
+    });
+    return { more: false, waitingOn: null, finished: true, message: result.error };
+  }
+
+  for (const note of result.data.notes) {
+    await logEvent(ctx, campaign, 'discover', 'info', note);
+  }
+
+  const now = new Date().toISOString();
+  const seenDomains = new Set<string>();
+  let inserted = 0;
+
+  for (const business of result.data.businesses) {
+    const domain = normaliseDomain(business.website ?? '');
+    // One row per domain: chains list every branch and they all share a site.
+    if (domain && seenDomains.has(domain)) continue;
+    if (domain) seenDomains.add(domain);
+
+    await ctx.db.insert(prospects).values({
+      id: newId(),
+      userId: campaign.userId,
+      campaignId: campaign.id,
+      businessName: business.name.slice(0, 200),
+      niche: campaign.niche,
+      region: campaign.region,
+      country: campaign.country,
+      website: (business.website ?? '').slice(0, 500),
+      domain,
+      email: (business.email ?? '').slice(0, 320).toLowerCase(),
+      phone: (business.phone ?? '').slice(0, 50),
+      address: (business.address ?? '').slice(0, 500),
+      mapsUrl: (business.mapsUrl ?? '').slice(0, 500),
+      socialLinks: '[]',
+      source: business.source,
+      sourceRef: business.sourceRef.slice(0, 200),
+      rating: business.rating ?? null,
+      reviewCount: business.reviewCount ?? 0,
+      findings: JSON.stringify({ context: business.context ?? '' }),
+      stage: 'discover',
+      status: 'new',
+      createdAt: now,
+      updatedAt: now,
+    });
+    inserted++;
+  }
+
+  await touch(ctx, campaign.id, { discoveredCount: inserted, startedAt: campaign.startedAt ?? now });
+  await logEvent(
+    ctx,
+    campaign,
+    'discover',
+    'info',
+    `Found ${inserted} business${inserted === 1 ? '' : 'es'} via ${campaign.discoveryProvider}.`,
+  );
+
+  if (inserted === 0) {
+    await touch(ctx, campaign.id, {
+      status: 'failed',
+      error: 'Discovery returned nothing usable.',
+      completedAt: now,
+    });
+    return { more: false, waitingOn: null, finished: true, message: 'Nothing found.' };
+  }
+
+  return await advance(ctx, campaign, policy, `Found ${inserted}.`);
+}
+
+/* ------------------------------------------------------------------ */
+/* Stage: shortlist                                                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Assess one prospect, then — once all are assessed — choose between them.
+ *
+ * Assessment is a single-page fetch, not a crawl. At this point we are
+ * deciding whether a business is worth an hour of attention; spending six
+ * requests on each of eighty businesses to find that out is rude to them and
+ * slow for us. The full crawl happens in `enrich`, on the ones that survive.
+ */
+async function stageShortlist(
+  ctx: EngineContext,
+  campaign: Campaign,
+  policy: StagePolicy,
+): Promise<StepResult> {
+  const pending = await ctx.db
+    .select()
+    .from(prospects)
+    .where(and(eq(prospects.campaignId, campaign.id), eq(prospects.stage, 'discover')))
+    .limit(1);
+
+  const prospect = pending[0];
+
+  if (prospect) {
+    await assessProspect(ctx, campaign, prospect);
+    return { more: true, waitingOn: null, finished: false, message: `Assessed ${prospect.businessName}.` };
+  }
+
+  // Everything is assessed. Now choose.
+  const assessed = await ctx.db
+    .select()
+    .from(prospects)
+    .where(and(eq(prospects.campaignId, campaign.id), eq(prospects.stage, 'shortlist')))
+    .orderBy(desc(prospects.score));
+
+  const eligible = assessed.filter((p) => p.score >= campaign.scoreFloor);
+  const mode = policy.shortlist;
+
+  let chosen: Prospect[] = [];
+  let reasoning = '';
+
+  if (mode === 'ai') {
+    const decision = await shortlistProspects(
+      ctx.ai,
+      eligible.map((p) => ({
+        id: p.id,
+        businessName: p.businessName,
+        score: p.score,
+        presenceScore: p.presenceScore,
+        fitScore: p.fitScore,
+        signal: p.signal,
+        angle: String(readFindings(p).angle ?? ''),
+      })),
+      campaign.targetCount,
+      campaign.idealClient,
+    );
+
+    if (decision.ok && decision.data.selectedIds.length) {
+      const picked = new Set(decision.data.selectedIds);
+      chosen = eligible.filter((p) => picked.has(p.id));
+      reasoning = decision.data.reasoning;
+    } else {
+      // A model that will not answer should not stop the run; fall back to
+      // the ranking, and say so rather than passing it off as a choice.
+      chosen = eligible.slice(0, campaign.targetCount);
+      reasoning = decision.ok
+        ? 'The model selected nothing, so the top of the ranking was taken instead.'
+        : `The model could not choose (${decision.error}), so the top of the ranking was taken.`;
+    }
+  } else {
+    // `auto` and `manual` both pre-select on the ranking. Under `manual` this
+    // is a suggestion the user is about to see and can change.
+    chosen = eligible.slice(0, campaign.targetCount);
+    reasoning = `Top ${chosen.length} by score, above the floor of ${campaign.scoreFloor}.`;
+  }
+
+  const chosenIds = new Set(chosen.map((p) => p.id));
+  const now = new Date().toISOString();
+
+  for (const candidate of assessed) {
+    const selected = chosenIds.has(candidate.id);
+    await ctx.db
+      .update(prospects)
+      .set({
+        selected,
+        selectedBy: selected ? (mode === 'ai' ? 'ai' : 'auto') : null,
+        status: selected ? 'qualified' : 'rejected',
+        updatedAt: now,
+      })
+      .where(eq(prospects.id, candidate.id));
+  }
+
+  await touch(ctx, campaign.id, { shortlistedCount: chosen.length });
+  await logEvent(
+    ctx,
+    campaign,
+    'shortlist',
+    mode === 'ai' ? 'decision' : 'info',
+    `Shortlisted ${chosen.length} of ${assessed.length}.`,
+    { reasoning, selected: chosen.map((p) => p.businessName) },
+  );
+
+  if (chosen.length === 0) {
+    await touch(ctx, campaign.id, {
+      status: 'complete',
+      completedAt: now,
+      error: '',
+    });
+    await logEvent(
+      ctx,
+      campaign,
+      'shortlist',
+      'warn',
+      `Nothing cleared the score floor of ${campaign.scoreFloor}. Lower it, or try another niche.`,
+    );
+    return { more: false, waitingOn: null, finished: true, message: 'Nothing worth pursuing.' };
+  }
+
+  return await advance(ctx, campaign, policy, `Shortlisted ${chosen.length}.`);
+}
+
+/** Audit one prospect's site and ask the model whether they are worth it. */
+async function assessProspect(
+  ctx: EngineContext,
+  campaign: Campaign,
+  prospect: Prospect,
+): Promise<void> {
+  const now = new Date().toISOString();
+  const findings = readFindings(prospect);
+
+  const crawl = prospect.website
+    ? await crawlSite(prospect.website, {
+        userAgent: discoveryUserAgent(ctx.appUrl),
+        maxPages: 1,
+      })
+    : null;
+
+  const audit = auditSite(
+    {
+      name: prospect.businessName,
+      website: prospect.website || undefined,
+      mapsUrl: prospect.mapsUrl || undefined,
+      reviewCount: prospect.reviewCount,
+    },
+    crawl,
+  );
+
+  const siteSummary = crawl?.pages[0]?.extracted.text.slice(0, 3000) ?? '';
+
+  const qualification = await qualifyProspect(ctx.ai, {
+    businessName: prospect.businessName,
+    niche: campaign.niche,
+    idealClient: campaign.idealClient,
+    region: campaign.region,
+    audit,
+    siteSummary,
+    context: String(findings.context ?? ''),
+  });
+
+  const fitScore = qualification.ok ? qualification.data.fitScore : 0;
+  const skip = qualification.ok && qualification.data.skip;
+
+  await ctx.db
+    .update(prospects)
+    .set({
+      stage: 'shortlist',
+      signal: audit.signal,
+      presenceScore: audit.presenceScore,
+      fitScore,
+      // A prospect the model says to skip is ranked out rather than deleted,
+      // so the decision stays visible and can be overridden.
+      score: skip ? 0 : combineScores(audit.presenceScore, fitScore),
+      audit: JSON.stringify(audit).slice(0, 20_000),
+      findings: JSON.stringify({
+        ...findings,
+        angle: qualification.ok ? qualification.data.angle : '',
+        reasoning: qualification.ok ? qualification.data.reasoning : qualification.error,
+        objective: qualification.ok ? qualification.data.objective : 'conversion',
+        skip,
+      }).slice(0, 20_000),
+      notes: qualification.ok ? qualification.data.angle : '',
+      domain: prospect.domain || normaliseDomain(prospect.website),
+      socialLinks: JSON.stringify(crawl?.socials ?? []),
+      email: prospect.email || crawl?.emails[0] || '',
+      updatedAt: now,
+    })
+    .where(eq(prospects.id, prospect.id));
+
+  await logEvent(
+    ctx,
+    campaign,
+    'shortlist',
+    'info',
+    `${prospect.businessName}: need ${audit.presenceScore}, fit ${fitScore}${skip ? ' — model says skip' : ''}.`,
+    { summary: audit.summary },
+    prospect.id,
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Stage: enrich                                                       */
+/* ------------------------------------------------------------------ */
+
+async function stageEnrich(
+  ctx: EngineContext,
+  campaign: Campaign,
+  policy: StagePolicy,
+): Promise<StepResult> {
+  const pending = await selectedAtStage(ctx, campaign, 'shortlist', 1);
+  const prospect = pending[0];
+
+  if (!prospect) {
+    const done = await countAtStage(ctx, campaign, 'enrich');
+    await touch(ctx, campaign.id, { enrichedCount: done });
+    return await advance(ctx, campaign, policy, `Researched ${done}.`);
+  }
+
+  const prefix = prospectPrefix(campaign.userId, campaign.id, prospect.id);
+  const enrichment = await enrichProspect(
+    ctx.bucket,
+    prefix,
+    {
+      name: prospect.businessName,
+      website: prospect.website || undefined,
+      email: prospect.email || undefined,
+      phone: prospect.phone || undefined,
+      rating: prospect.rating ?? undefined,
+      reviewCount: prospect.reviewCount || undefined,
+    },
+    { userAgent: discoveryUserAgent(ctx.appUrl) },
+  );
+
+  const now = new Date().toISOString();
+
+  for (const [index, page] of enrichment.pageObjects.entries()) {
+    await ctx.db.insert(prospectArtifacts).values({
+      id: newId(),
+      userId: campaign.userId,
+      prospectId: prospect.id,
+      campaignId: campaign.id,
+      kind: 'page',
+      label: enrichment.crawl.pages[index]?.extracted.title.slice(0, 200) ?? `Page ${index + 1}`,
+      sourceUrl: enrichment.crawl.pages[index]?.finalUrl ?? '',
+      r2Key: page.key,
+      contentType: page.contentType,
+      bytes: page.bytes,
+      meta: JSON.stringify({
+        wordCount: enrichment.crawl.pages[index]?.extracted.wordCount ?? 0,
+        headings: enrichment.crawl.pages[index]?.extracted.headings.slice(0, 12) ?? [],
+      }),
+      createdAt: now,
+    });
+  }
+
+  for (const image of enrichment.imageObjects) {
+    await ctx.db.insert(prospectArtifacts).values({
+      id: newId(),
+      userId: campaign.userId,
+      prospectId: prospect.id,
+      campaignId: campaign.id,
+      kind: 'image',
+      label: '',
+      sourceUrl: image.sourceUrl,
+      r2Key: image.key,
+      contentType: image.contentType,
+      bytes: image.bytes,
+      meta: '{}',
+      createdAt: now,
+    });
+  }
+
+  // Re-audit with everything the full crawl saw. The one-page audit that got
+  // this prospect shortlisted was a sample; this is the real picture.
+  const audit = auditSite(
+    {
+      name: prospect.businessName,
+      website: prospect.website || undefined,
+      mapsUrl: prospect.mapsUrl || undefined,
+      reviewCount: enrichment.reviewCount,
+    },
+    enrichment.crawl,
+  );
+
+  const findings = readFindings(prospect);
+
+  await ctx.db
+    .update(prospects)
+    .set({
+      stage: 'enrich',
+      enrichedAt: now,
+      email: enrichment.contact.email || prospect.email,
+      phone: enrichment.contact.phone || prospect.phone,
+      contactName: enrichment.contact.name.slice(0, 120),
+      contactRole: enrichment.contact.role.slice(0, 120),
+      domain: enrichment.domain || prospect.domain,
+      socialLinks: JSON.stringify(enrichment.socials).slice(0, 4000),
+      rating: enrichment.rating,
+      reviewCount: enrichment.reviewCount,
+      reviewSummary: enrichment.reviewSummary.slice(0, 2000),
+      presenceScore: audit.presenceScore,
+      score: combineScores(audit.presenceScore, prospect.fitScore),
+      signal: audit.signal,
+      audit: JSON.stringify(audit).slice(0, 20_000),
+      findings: JSON.stringify({
+        ...findings,
+        openingHours: enrichment.openingHours,
+        siteContent: enrichment.siteContent.slice(0, 12_000),
+        researchNotes: enrichment.notes,
+      }).slice(0, 40_000),
+      updatedAt: now,
+    })
+    .where(eq(prospects.id, prospect.id));
+
+  await logEvent(
+    ctx,
+    campaign,
+    'enrich',
+    'info',
+    `Researched ${prospect.businessName}: ${enrichment.crawl.pages.length} page(s), ` +
+      `${enrichment.imageObjects.length} image(s), ${enrichment.contact.email ? 'email found' : 'no email'}.`,
+    { notes: enrichment.notes, socials: enrichment.socials.map((s) => s.platform) },
+    prospect.id,
+  );
+
+  return { more: true, waitingOn: null, finished: false, message: `Researched ${prospect.businessName}.` };
+}
+
+/* ------------------------------------------------------------------ */
+/* Stage: plan                                                         */
+/* ------------------------------------------------------------------ */
+
+async function stagePlan(
+  ctx: EngineContext,
+  campaign: Campaign,
+  policy: StagePolicy,
+): Promise<StepResult> {
+  const pending = await selectedAtStage(ctx, campaign, 'enrich', 1);
+  const prospect = pending[0];
+
+  if (!prospect) {
+    const done = await countAtStage(ctx, campaign, 'plan');
+    await touch(ctx, campaign.id, { plannedCount: done });
+    return await advance(ctx, campaign, policy, `Planned ${done}.`);
+  }
+
+  const brief = await resolveBrief(ctx, campaign);
+  const findings = readFindings(prospect);
+  const audit = readAudit(prospect);
+  const now = new Date().toISOString();
+
+  const planInput = {
+    businessName: prospect.businessName,
+    niche: campaign.niche,
+    region: campaign.region,
+    brief,
+    audit,
+    objective: (findings.objective as 'conversion') ?? 'conversion',
+    angle: String(findings.angle ?? ''),
+    siteContent: String(findings.siteContent ?? ''),
+    contact: { email: prospect.email, phone: prospect.phone, address: prospect.address },
+  };
+
+  let draft: DesignPlanDraft;
+
+  if (policy.plan === 'auto') {
+    // `auto` skips the model entirely and lays out what we already know.
+    // Cheap, instant, and honest about being a scaffold.
+    draft = scaffoldPlan(planInput.businessName, campaign.niche, campaign.region, brief, prospect);
+    await logEvent(ctx, campaign, 'plan', 'info', `Scaffolded a plan for ${prospect.businessName}.`, {}, prospect.id);
+  } else {
+    const result = await draftDesignPlan(ctx.ai, planInput);
+    if (!result.ok) {
+      draft = scaffoldPlan(planInput.businessName, campaign.niche, campaign.region, brief, prospect);
+      await logEvent(
+        ctx,
+        campaign,
+        'plan',
+        'warn',
+        `The model could not plan ${prospect.businessName} (${result.error}); using a scaffold.`,
+        {},
+        prospect.id,
+      );
+    } else {
+      draft = result.data;
+      await logEvent(
+        ctx,
+        campaign,
+        'plan',
+        'decision',
+        `Planned ${prospect.businessName}: ${draft.summary}`,
+        { objective: draft.objective, sections: draft.sections.map((s) => s.type) },
+        prospect.id,
+      );
+    }
+  }
+
+  await ctx.db.insert(designPlans).values({
+    id: newId(),
+    userId: campaign.userId,
+    prospectId: prospect.id,
+    campaignId: campaign.id,
+    brandKitId: brief.brandKitId,
+    summary: draft.summary.slice(0, 400),
+    strategy: draft.strategy.slice(0, 2000),
+    objective: draft.objective,
+    palette: JSON.stringify(brief.palette),
+    typography: JSON.stringify(brief.typography),
+    sections: JSON.stringify(draft.sections).slice(0, 60_000),
+    meta: JSON.stringify(draft.meta),
+    model: policy.plan === 'auto' ? 'scaffold' : 'workers-ai',
+    status: 'draft',
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  await ctx.db
+    .update(prospects)
+    .set({ stage: 'plan', plannedAt: now, updatedAt: now })
+    .where(eq(prospects.id, prospect.id));
+
+  return { more: true, waitingOn: null, finished: false, message: `Planned ${prospect.businessName}.` };
+}
+
+/** A usable plan without asking a model anything. */
+function scaffoldPlan(
+  businessName: string,
+  niche: string,
+  region: string,
+  brief: Brief,
+  prospect: Prospect,
+): DesignPlanDraft {
+  const sections: PlanSection[] = [
+    {
+      id: 'hero',
+      type: 'hero',
+      heading: businessName,
+      subheading: `${niche} · ${region}`,
+      body: '',
+      items: [],
+      cta: { label: 'Get in touch', href: '#contact' },
+      imageHint: 'Their best existing photograph, full bleed.',
+      notes: 'Scaffolded without a model — the copy needs writing.',
+    },
+    {
+      id: 'about',
+      type: 'intro',
+      heading: `About ${businessName}`,
+      subheading: '',
+      body: '',
+      items: [],
+      cta: null,
+      imageHint: '',
+      notes: 'Carry the existing about copy across and cut it in half.',
+    },
+    {
+      id: 'contact',
+      type: 'contact',
+      heading: 'Get in touch',
+      subheading: '',
+      body: '',
+      items: [],
+      cta: prospect.email ? { label: 'Email us', href: `mailto:${prospect.email}` } : null,
+      imageHint: '',
+      notes: '',
+    },
+  ];
+
+  const ordered = brief.sectionOrder.length
+    ? sections.sort(
+        (a, b) =>
+          indexOrLast(brief.sectionOrder, a.type) - indexOrLast(brief.sectionOrder, b.type),
+      )
+    : sections;
+
+  return {
+    summary: `A one-page site for ${businessName}.`,
+    strategy:
+      'Laid out from what is already known about the business. Written without a model, so the ' +
+      'structure is sound and the copy is a placeholder.',
+    objective: 'conversion',
+    sections: ordered,
+    meta: { title: `${businessName} — ${niche} in ${region}`, description: '' },
+  };
+}
+
+function indexOrLast(order: string[], type: string): number {
+  const index = order.indexOf(type);
+  return index === -1 ? order.length : index;
+}
+
+/* ------------------------------------------------------------------ */
+/* Stage: build                                                        */
+/* ------------------------------------------------------------------ */
+
+async function stageBuild(
+  ctx: EngineContext,
+  campaign: Campaign,
+  policy: StagePolicy,
+): Promise<StepResult> {
+  const pending = await selectedAtStage(ctx, campaign, 'plan', 1);
+  const prospect = pending[0];
+
+  if (!prospect) {
+    const done = await countAtStage(ctx, campaign, 'build');
+    await touch(ctx, campaign.id, { builtCount: done });
+    return await advance(ctx, campaign, policy, `Built ${done}.`);
+  }
+
+  const now = new Date().toISOString();
+  const planRows = await ctx.db
+    .select()
+    .from(designPlans)
+    .where(eq(designPlans.prospectId, prospect.id))
+    .orderBy(desc(designPlans.createdAt))
+    .limit(1);
+
+  const plan = planRows[0];
+  if (!plan) {
+    await ctx.db.update(prospects).set({ stage: 'build', updatedAt: now }).where(eq(prospects.id, prospect.id));
+    await logEvent(ctx, campaign, 'build', 'warn', `No plan for ${prospect.businessName}; skipped.`, {}, prospect.id);
+    return { more: true, waitingOn: null, finished: false, message: 'Skipped, no plan.' };
+  }
+
+  const audit = readAudit(prospect);
+
+  // Under `ai`, the model's own judgement about whether there is an honest
+  // case to make is respected here rather than at the shortlist, because by
+  // now there is a real plan to judge.
+  if (policy.build === 'ai' && audit.observations.length === 0) {
+    await ctx.db.update(prospects).set({ stage: 'build', updatedAt: now }).where(eq(prospects.id, prospect.id));
+    await logEvent(
+      ctx,
+      campaign,
+      'build',
+      'decision',
+      `Skipped ${prospect.businessName}: nothing measurable is wrong with their site, so there is nothing honest to lead with.`,
+      {},
+      prospect.id,
+    );
+    return { more: true, waitingOn: null, finished: false, message: 'Skipped, no honest angle.' };
+  }
+
+  const brief = await resolveBrief(ctx, campaign);
+  const settingsRow = await loadSettings(ctx, campaign.userId);
+  const demoHost = settingsRow.demoHost || 'demo.jwbsstudio.com';
+
+  const { label, host } = await allocateSubdomain(prospect.businessName, demoHost, async (candidate) => {
+    const rows = await ctx.db
+      .select({ id: demoSites.id })
+      .from(demoSites)
+      .where(eq(demoSites.host, candidate))
+      .limit(1);
+    return rows.length > 0;
+  });
+
+  /* -- Their photography, copied into the demo -------------------- */
+
+  const imageRows = await ctx.db
+    .select()
+    .from(prospectArtifacts)
+    .where(and(eq(prospectArtifacts.prospectId, prospect.id), eq(prospectArtifacts.kind, 'image')))
+    .limit(8);
+
+  const images: Array<{ path: string; body: ArrayBuffer; contentType: string }> = [];
+  for (const [index, row] of imageRows.entries()) {
+    const object = await ctx.bucket.get(row.r2Key);
+    if (!object) continue;
+    const extension = row.r2Key.split('.').pop() ?? 'jpg';
+    images.push({
+      path: `images/${String(index).padStart(2, '0')}.${extension}`,
+      body: await object.arrayBuffer(),
+      contentType: row.contentType || 'image/jpeg',
+    });
+  }
+
+  const context: DemoContext = {
+    businessName: prospect.businessName,
+    niche: campaign.niche,
+    region: campaign.region,
+    contact: { email: prospect.email, phone: prospect.phone, address: prospect.address },
+    socials: parseJson<Array<{ platform: string; url: string }>>(prospect.socialLinks, []),
+    images: images.map((image) => `/${image.path}`),
+    openingHours: parseJson<string[]>(
+      JSON.stringify(readFindings(prospect).openingHours ?? []),
+      [],
+    ),
+    designerName: settingsRow.businessName || settingsRow.outreachSenderName || 'JWBS Studio',
+    designerUrl: settingsRow.website || ctx.appUrl,
+  };
+
+  const draft: DesignPlanDraft = {
+    summary: plan.summary,
+    strategy: plan.strategy,
+    objective: plan.objective as DesignPlanDraft['objective'],
+    sections: parseJson<PlanSection[]>(plan.sections, []),
+    meta: parseJson<{ title: string; description: string }>(plan.meta, { title: prospect.businessName, description: '' }),
+  };
+
+  const demoId = newId();
+  await ctx.db.insert(demoSites).values({
+    id: demoId,
+    userId: campaign.userId,
+    prospectId: prospect.id,
+    campaignId: campaign.id,
+    planId: plan.id,
+    subdomain: label,
+    host,
+    status: 'building',
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  try {
+    const published = await publishDemo(
+      ctx.bucket,
+      host,
+      renderDemoFiles(draft, brief, context),
+      renderAstroProject(draft, brief, context, host),
+      images,
+    );
+
+    // Only needed when there is no wildcard record; harmless when there is.
+    let dnsRecordId: string | null = null;
+    if (ctx.env.CLOUDFLARE_API_TOKEN && ctx.env.CLOUDFLARE_ZONE_ID) {
+      const dns = await createDnsRecord(
+        ctx.env.CLOUDFLARE_API_TOKEN,
+        ctx.env.CLOUDFLARE_ZONE_ID,
+        host,
+        new URL(ctx.appUrl).hostname,
+      );
+      if (dns.ok) dnsRecordId = dns.recordId || null;
+      else await logEvent(ctx, campaign, 'build', 'warn', `DNS record not created: ${dns.error}`, {}, prospect.id);
+    }
+
+    await ctx.db
+      .update(demoSites)
+      .set({
+        status: 'live',
+        r2Prefix: published.prefix,
+        sourcePrefix: published.sourcePrefix,
+        fileCount: published.fileCount,
+        bytes: published.bytes,
+        dnsRecordId,
+        publishedAt: now,
+        updatedAt: now,
+      })
+      .where(eq(demoSites.id, demoId));
+
+    await ctx.db
+      .update(prospects)
+      .set({ stage: 'build', builtAt: now, updatedAt: now })
+      .where(eq(prospects.id, prospect.id));
+
+    await logEvent(
+      ctx,
+      campaign,
+      'build',
+      'info',
+      `Published a demo for ${prospect.businessName} at ${host}.`,
+      { host, files: published.fileCount, bytes: published.bytes },
+      prospect.id,
+    );
+  } catch (error) {
+    await ctx.db
+      .update(demoSites)
+      .set({ status: 'failed', buildError: String(error).slice(0, 1000), updatedAt: now })
+      .where(eq(demoSites.id, demoId));
+    await ctx.db.update(prospects).set({ stage: 'build', updatedAt: now }).where(eq(prospects.id, prospect.id));
+    await logEvent(ctx, campaign, 'build', 'error', `Build failed for ${prospect.businessName}: ${error}`, {}, prospect.id);
+  }
+
+  return { more: true, waitingOn: null, finished: false, message: `Built ${prospect.businessName}.` };
+}
+
+/* ------------------------------------------------------------------ */
+/* Stage: propose                                                      */
+/* ------------------------------------------------------------------ */
+
+async function stagePropose(
+  ctx: EngineContext,
+  campaign: Campaign,
+  policy: StagePolicy,
+): Promise<StepResult> {
+  const pending = await selectedAtStage(ctx, campaign, 'build', 1);
+  const prospect = pending[0];
+
+  if (!prospect) {
+    const done = await countAtStage(ctx, campaign, 'propose');
+    await touch(ctx, campaign.id, { proposedCount: done });
+    return await advance(ctx, campaign, policy, `Drafted ${done} proposal(s).`);
+  }
+
+  const now = new Date().toISOString();
+  const settingsRow = await loadSettings(ctx, campaign.userId);
+  const brief = await resolveBrief(ctx, campaign);
+  const audit = readAudit(prospect);
+
+  const demoRows = await ctx.db
+    .select()
+    .from(demoSites)
+    .where(and(eq(demoSites.prospectId, prospect.id), eq(demoSites.status, 'live')))
+    .orderBy(desc(demoSites.createdAt))
+    .limit(1);
+
+  const demo = demoRows[0];
+  const planRows = await ctx.db
+    .select()
+    .from(designPlans)
+    .where(eq(designPlans.prospectId, prospect.id))
+    .orderBy(desc(designPlans.createdAt))
+    .limit(1);
+  const plan = planRows[0];
+
+  if (!demo || !plan) {
+    await ctx.db.update(prospects).set({ stage: 'propose', updatedAt: now }).where(eq(prospects.id, prospect.id));
+    await logEvent(ctx, campaign, 'propose', 'warn', `No live demo for ${prospect.businessName}; skipped.`, {}, prospect.id);
+    return { more: true, waitingOn: null, finished: false, message: 'Skipped, no demo.' };
+  }
+
+  const token = newToken(24);
+  const demoUrl = `https://${demo.host}`;
+  const proposalUrl = `${ctx.appUrl}/proposal/${token}`;
+
+  const draft = await draftProposal(ctx.ai, {
+    businessName: prospect.businessName,
+    niche: campaign.niche,
+    region: campaign.region,
+    audit,
+    plan: {
+      summary: plan.summary,
+      strategy: plan.strategy,
+      objective: plan.objective as DesignPlanDraft['objective'],
+      sections: [],
+      meta: { title: '', description: '' },
+    },
+    demoUrl,
+    proposalUrl,
+    senderName: settingsRow.outreachSenderName || settingsRow.businessName || 'JWBS Studio',
+    senderBio: settingsRow.outreachBio,
+    signature: settingsRow.outreachSignature,
+    capabilities: brief.capabilities,
+  });
+
+  if (!draft.ok) {
+    await ctx.db.update(prospects).set({ stage: 'propose', updatedAt: now }).where(eq(prospects.id, prospect.id));
+    await logEvent(ctx, campaign, 'propose', 'error', `Could not draft for ${prospect.businessName}: ${draft.error}`, {}, prospect.id);
+    return { more: true, waitingOn: null, finished: false, message: 'Draft failed.' };
+  }
+
+  const proposalId = newId();
+  await ctx.db.insert(proposals).values({
+    id: proposalId,
+    userId: campaign.userId,
+    prospectId: prospect.id,
+    campaignId: campaign.id,
+    demoSiteId: demo.id,
+    title: `Concept site for ${prospect.businessName}`,
+    status: 'draft',
+    body: draft.data.pageBody.slice(0, 8000),
+    emailSubject: draft.data.subject,
+    emailBody: draft.data.body,
+    sentTo: prospect.email,
+    currency: campaign.country === 'AU' ? 'AUD' : 'NZD',
+    publicToken: token,
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  await ctx.db
+    .update(prospects)
+    .set({ stage: 'propose', proposedAt: now, updatedAt: now })
+    .where(eq(prospects.id, prospect.id));
+
+  /* -- Sending ---------------------------------------------------- */
+
+  const shouldSend = policy.propose === 'auto' || policy.propose === 'ai';
+
+  if (!shouldSend) {
+    await logEvent(
+      ctx,
+      campaign,
+      'propose',
+      'info',
+      `Drafted an email to ${prospect.businessName}. Not sent — the stage is set to ask you.`,
+      { subject: draft.data.subject },
+      prospect.id,
+    );
+    return { more: true, waitingOn: null, finished: false, message: `Drafted for ${prospect.businessName}.` };
+  }
+
+  // `ai` will not write to somebody when there is nothing measurable to say.
+  if (policy.propose === 'ai' && audit.observations.length === 0) {
+    await logEvent(
+      ctx,
+      campaign,
+      'propose',
+      'decision',
+      `Drafted but did not send to ${prospect.businessName}: there is no verified observation to open with.`,
+      {},
+      prospect.id,
+    );
+    return { more: true, waitingOn: null, finished: false, message: 'Held back.' };
+  }
+
+  const sentToday = await countSentToday(ctx.db, campaign.userId);
+  const outcome = await sendOutreach(
+    ctx.env,
+    {
+      to: prospect.email,
+      toName: prospect.contactName || prospect.businessName,
+      subject: draft.data.subject,
+      body: draft.data.body,
+      demoUrl,
+      proposalUrl,
+      senderName: settingsRow.outreachSenderName || settingsRow.businessName || 'JWBS Studio',
+      signature: settingsRow.outreachSignature,
+      replyTo: settingsRow.outreachReplyTo || settingsRow.email,
+    },
+    {
+      sentToday,
+      dailyCap: settingsRow.outreachDailyCap,
+      initiatedByUser: false,
+    },
+  );
+
+  if (outcome.ok) {
+    await ctx.db
+      .update(proposals)
+      .set({
+        status: 'sent',
+        sentAt: now,
+        sendResult: `${outcome.result.provider}:${outcome.result.id ?? 'ok'}`,
+        updatedAt: now,
+      })
+      .where(eq(proposals.id, proposalId));
+    await ctx.db
+      .update(prospects)
+      .set({ status: 'contacted', updatedAt: now })
+      .where(eq(prospects.id, prospect.id));
+    await logEvent(ctx, campaign, 'propose', 'info', `Emailed ${prospect.businessName} at ${prospect.email}.`, {}, prospect.id);
+  } else {
+    await ctx.db
+      .update(proposals)
+      .set({ sendResult: outcome.error.slice(0, 500), updatedAt: now })
+      .where(eq(proposals.id, proposalId));
+    await logEvent(
+      ctx,
+      campaign,
+      'propose',
+      outcome.capped ? 'warn' : 'error',
+      `Not sent to ${prospect.businessName}: ${outcome.error}`,
+      {},
+      prospect.id,
+    );
+
+    // A spent cap stops the stage rather than burning through the rest of
+    // the shortlist drafting emails that cannot go out.
+    if (outcome.capped) {
+      await touch(ctx, campaign.id, { status: 'waiting', waitingOn: 'propose' });
+      return { more: false, waitingOn: 'propose', finished: false, message: outcome.error };
+    }
+  }
+
+  return { more: true, waitingOn: null, finished: false, message: `Proposed to ${prospect.businessName}.` };
+}
+
+/* ------------------------------------------------------------------ */
+/* Helpers                                                             */
+/* ------------------------------------------------------------------ */
+
+async function selectedAtStage(
+  ctx: EngineContext,
+  campaign: Campaign,
+  stage: CampaignStage,
+  limit: number,
+): Promise<Prospect[]> {
+  return ctx.db
+    .select()
+    .from(prospects)
+    .where(
+      and(
+        eq(prospects.campaignId, campaign.id),
+        eq(prospects.selected, true),
+        eq(prospects.stage, stage),
+      ),
+    )
+    .orderBy(desc(prospects.score))
+    .limit(limit);
+}
+
+async function countAtStage(
+  ctx: EngineContext,
+  campaign: Campaign,
+  stage: CampaignStage,
+): Promise<number> {
+  const rows = await ctx.db
+    .select({ count: sql<number>`count(*)` })
+    .from(prospects)
+    .where(
+      and(
+        eq(prospects.campaignId, campaign.id),
+        eq(prospects.selected, true),
+        eq(prospects.stage, stage),
+      ),
+    );
+  return rows[0]?.count ?? 0;
+}
+
+/**
+ * Emails actually sent in the last 24 hours, across every campaign.
+ *
+ * Counted from the proposals table rather than from a counter, so the cap
+ * survives a restart and cannot be reset by starting a new run.
+ */
+export async function countSentToday(db: Db, userId: string): Promise<number> {
+  const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const rows = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(proposals)
+    .where(
+      and(
+        eq(proposals.userId, userId),
+        inArray(proposals.status, ['sent', 'viewed', 'accepted', 'declined']),
+        gte(proposals.sentAt, since),
+      ),
+    );
+  return rows[0]?.count ?? 0;
+}
+
+async function loadSettings(ctx: EngineContext, userId: string) {
+  const rows = await ctx.db.select().from(settings).where(eq(settings.userId, userId)).limit(1);
+  const row = rows[0];
+  if (row) return row;
+
+  // A user provisioned by SQL may have no settings row yet; the run should
+  // not die over it.
+  return {
+    businessName: '',
+    website: '',
+    email: '',
+    demoHost: 'demo.jwbsstudio.com',
+    outreachDailyCap: 0,
+    outreachSenderName: '',
+    outreachBio: '',
+    outreachSignature: '',
+    outreachReplyTo: '',
+  } as unknown as typeof settings.$inferSelect;
+}
+
+export function parseJson<T>(raw: string | null | undefined, fallback: T): T {
+  if (!raw) return fallback;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+export function readFindings(prospect: Pick<Prospect, 'findings'>): Record<string, unknown> {
+  return parseJson<Record<string, unknown>>(prospect.findings, {});
+}
+
+export function readAudit(prospect: Pick<Prospect, 'audit' | 'businessName'>): SiteAudit {
+  return parseJson<SiteAudit>(prospect.audit, {
+    checks: [],
+    presenceScore: 0,
+    signal: 'other',
+    summary: '',
+    observations: [],
+    context: [],
+    platform: null,
+    pagesSeen: 0,
+    crawledAt: new Date().toISOString(),
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/* Gates                                                               */
+/* ------------------------------------------------------------------ */
+
+export type GateDecision =
+  | { action: 'proceed' }
+  | { action: 'select'; prospectIds: string[] }
+  | { action: 'stop' };
+
+/**
+ * Answer the question a waiting stage is asking.
+ *
+ * A selection at the shortlist gate replaces whatever was pre-selected, so
+ * the user's choice is the whole answer rather than an addition to the
+ * model's.
+ */
+export async function decideGate(
+  ctx: EngineContext,
+  campaignId: string,
+  decision: GateDecision,
+): Promise<StepResult> {
+  const campaign = await loadCampaign(ctx, campaignId);
+  if (!campaign) {
+    return { more: false, waitingOn: null, finished: true, message: 'Campaign not found.' };
+  }
+
+  const now = new Date().toISOString();
+
+  if (decision.action === 'stop') {
+    await touch(ctx, campaign.id, { status: 'cancelled', waitingOn: null, completedAt: now });
+    await logEvent(ctx, campaign, campaign.stage, 'info', 'Stopped here.');
+    return { more: false, waitingOn: null, finished: true, message: 'Stopped.' };
+  }
+
+  if (decision.action === 'select') {
+    const chosen = new Set(decision.prospectIds);
+    const all = await ctx.db
+      .select({ id: prospects.id })
+      .from(prospects)
+      .where(eq(prospects.campaignId, campaign.id));
+
+    for (const row of all) {
+      const selected = chosen.has(row.id);
+      await ctx.db
+        .update(prospects)
+        .set({
+          selected,
+          selectedBy: selected ? 'user' : null,
+          status: selected ? 'qualified' : 'rejected',
+          updatedAt: now,
+        })
+        .where(eq(prospects.id, row.id));
+    }
+
+    await touch(ctx, campaign.id, { shortlistedCount: chosen.size });
+    await logEvent(ctx, campaign, campaign.stage, 'decision', `You selected ${chosen.size}.`);
+  }
+
+  const following = nextStage(campaign.stage);
+  if (!following) return await finish(ctx, campaign, 'Approved at the last stage.');
+
+  await touch(ctx, campaign.id, { stage: following, status: 'running', waitingOn: null });
+  await logEvent(ctx, campaign, campaign.stage, 'info', `Approved. Moving to ${following}.`);
+  return { more: true, waitingOn: null, finished: false, message: `Moving to ${following}.` };
+}

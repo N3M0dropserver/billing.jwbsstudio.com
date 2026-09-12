@@ -1,0 +1,392 @@
+/**
+ * OpenStreetMap discovery, via Nominatim for the region and Overpass for the
+ * businesses inside it.
+ *
+ * This is the default because it needs no key, no billing account and no
+ * contract. The data is ODbL: you may use it and build on it, and if you
+ * redistribute a derived database you must credit OpenStreetMap and share
+ * alike. Showing prospects in your own admin, and writing to a business you
+ * found, is not redistribution — but the attribution note is carried through
+ * on every run so the obligation is not quietly lost.
+ *
+ * Both services are donated infrastructure with published usage policies:
+ * one request at a time, a real User-Agent, and no hammering. Both are
+ * honoured here. Do not raise the limits without reading their policies.
+ *
+ * Coverage is the honest trade-off. OSM is excellent for anything with a
+ * shopfront and thinner for businesses that work from home or from a van;
+ * for those, Google Places is the better provider.
+ */
+
+import type {
+  DiscoveredBusiness,
+  DiscoveryProvider,
+  DiscoveryRequest,
+  DiscoveryResult,
+} from './types';
+
+const NOMINATIM = 'https://nominatim.openstreetmap.org/search';
+/** Mirrors, tried in order. The main instance is the busiest. */
+const OVERPASS_ENDPOINTS = [
+  'https://overpass-api.de/api/interpreter',
+  'https://overpass.kumi.systems/api/interpreter',
+];
+
+const ATTRIBUTION = 'Business data © OpenStreetMap contributors, ODbL.';
+
+/**
+ * Niche to OSM tag filters.
+ *
+ * Keys are matched as substrings against the lower-cased niche, longest
+ * first, so "coffee roaster" beats "coffee". Values are complete tag
+ * filters in Overpass syntax.
+ */
+const NICHE_TAGS: Array<[string, string[]]> = [
+  ['coffee roast', ['"craft"="coffee_roaster"', '"shop"="coffee"']],
+  ['roaster', ['"craft"="coffee_roaster"']],
+  ['cafe', ['"amenity"="cafe"']],
+  ['coffee', ['"amenity"="cafe"', '"shop"="coffee"']],
+  ['restaurant', ['"amenity"="restaurant"']],
+  ['bar', ['"amenity"="bar"', '"amenity"="pub"']],
+  ['brewery', ['"craft"="brewery"', '"industrial"="brewery"']],
+  ['winery', ['"craft"="winery"', '"shop"="wine"']],
+  ['distiller', ['"craft"="distillery"']],
+  ['bakery', ['"shop"="bakery"']],
+  ['butcher', ['"shop"="butcher"']],
+  ['florist', ['"shop"="florist"']],
+  ['hairdress', ['"shop"="hairdresser"']],
+  ['barber', ['"shop"="hairdresser"']],
+  ['salon', ['"shop"="beauty"', '"shop"="hairdresser"']],
+  ['beauty', ['"shop"="beauty"']],
+  ['tattoo', ['"shop"="tattoo"']],
+  ['spa', ['"leisure"="spa"', '"shop"="beauty"']],
+  ['gym', ['"leisure"="fitness_centre"']],
+  ['fitness', ['"leisure"="fitness_centre"']],
+  ['yoga', ['"leisure"="fitness_centre"', '"sport"="yoga"']],
+  ['physio', ['"healthcare"="physiotherapist"']],
+  ['dentist', ['"amenity"="dentist"', '"healthcare"="dentist"']],
+  ['doctor', ['"amenity"="doctors"', '"healthcare"="doctor"']],
+  ['vet', ['"amenity"="veterinary"']],
+  ['optometr', ['"shop"="optician"']],
+  ['pharmac', ['"amenity"="pharmacy"']],
+  ['chiroprac', ['"healthcare"="chiropractor"']],
+  ['massage', ['"shop"="massage"', '"healthcare"="massage"']],
+  ['accountant', ['"office"="accountant"']],
+  ['lawyer', ['"office"="lawyer"']],
+  ['solicitor', ['"office"="lawyer"']],
+  ['architect', ['"office"="architect"']],
+  ['engineer', ['"office"="engineer"']],
+  ['estate agent', ['"office"="estate_agent"']],
+  ['real estate', ['"office"="estate_agent"']],
+  ['insurance', ['"office"="insurance"']],
+  ['travel agent', ['"shop"="travel_agency"']],
+  ['builder', ['"craft"="builder"', '"shop"="trade"']],
+  ['carpenter', ['"craft"="carpenter"']],
+  ['joiner', ['"craft"="joiner"', '"craft"="carpenter"']],
+  ['plumber', ['"craft"="plumber"']],
+  ['electrician', ['"craft"="electrician"']],
+  ['roofer', ['"craft"="roofer"']],
+  ['painter', ['"craft"="painter"']],
+  ['landscap', ['"craft"="gardener"', '"shop"="garden_centre"']],
+  ['garden', ['"shop"="garden_centre"', '"craft"="gardener"']],
+  ['nursery', ['"shop"="garden_centre"']],
+  ['mechanic', ['"shop"="car_repair"']],
+  ['panelbeat', ['"shop"="car_repair"']],
+  ['car yard', ['"shop"="car"']],
+  ['car deal', ['"shop"="car"']],
+  ['tyre', ['"shop"="tyres"']],
+  ['bike', ['"shop"="bicycle"']],
+  ['jewell', ['"shop"="jewelry"', '"craft"="jeweller"']],
+  ['furniture', ['"shop"="furniture"']],
+  ['gallery', ['"tourism"="gallery"', '"shop"="art"']],
+  ['photograph', ['"shop"="photo"', '"craft"="photographer"']],
+  ['print', ['"shop"="copyshop"', '"craft"="printer"']],
+  ['sign', ['"craft"="signmaker"']],
+  ['clothing', ['"shop"="clothes"']],
+  ['boutique', ['"shop"="clothes"']],
+  ['book', ['"shop"="books"']],
+  ['pet', ['"shop"="pet"', '"shop"="pet_grooming"']],
+  ['hotel', ['"tourism"="hotel"']],
+  ['motel', ['"tourism"="motel"']],
+  ['lodge', ['"tourism"="hotel"', '"tourism"="chalet"']],
+  ['bed and breakfast', ['"tourism"="guest_house"']],
+  ['holiday park', ['"tourism"="caravan_site"', '"tourism"="camp_site"']],
+  ['childcare', ['"amenity"="childcare"', '"amenity"="kindergarten"']],
+  ['daycare', ['"amenity"="childcare"']],
+  ['driving school', ['"amenity"="driving_school"']],
+  ['music', ['"shop"="musical_instrument"', '"amenity"="music_school"']],
+  ['cleaner', ['"shop"="laundry"', '"shop"="dry_cleaning"']],
+  ['storage', ['"shop"="storage_rental"']],
+  ['hardware', ['"shop"="hardware"', '"shop"="doityourself"']],
+];
+
+/** OSM element types worth looking at. Nodes, ways and relations all carry POIs. */
+const ELEMENT_TYPES = ['node', 'way', 'relation'];
+
+/**
+ * Escape a user-supplied string for use inside an Overpass regex literal.
+ *
+ * Overpass takes the value between double quotes and hands it to a regex
+ * engine, so both the quote and the regex metacharacters have to go. Anything
+ * outside a conservative allowlist is dropped rather than escaped — a niche
+ * with a backslash in it is a typo, not a search.
+ */
+export function escapeOverpassRegex(value: string): string {
+  return value
+    .replace(/[^\p{L}\p{N}\s'&-]/gu, ' ')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .replace(/[.*+?^${}()|[\]\\'-]/g, '\\$&');
+}
+
+/** Pick tag filters for a niche, longest key first so specifics win. */
+export function filtersForNiche(niche: string): { filters: string[]; matched: string | null } {
+  const needle = niche.toLowerCase().trim();
+  const candidates = [...NICHE_TAGS].sort((a, b) => b[0].length - a[0].length);
+  for (const [key, filters] of candidates) {
+    if (needle.includes(key)) return { filters, matched: key };
+  }
+  return { filters: [], matched: null };
+}
+
+/**
+ * Build the Overpass QL for an area and a niche.
+ *
+ * When the niche maps onto known tags we query those. When it does not we
+ * fall back to a name search across the keys businesses actually live under,
+ * which is looser but still bounded by the area.
+ */
+export function buildOverpassQuery(areaId: number, niche: string, limit: number): string {
+  const { filters } = filtersForNiche(niche);
+  const clauses: string[] = [];
+
+  if (filters.length) {
+    for (const filter of filters) {
+      for (const type of ELEMENT_TYPES) clauses.push(`  ${type}[${filter}](area.searchArea);`);
+    }
+  } else {
+    const pattern = escapeOverpassRegex(niche);
+    // No tag match: search names, but only on elements that carry a key a
+    // business would have, so we do not sweep up streets and buildings.
+    for (const key of ['shop', 'craft', 'office', 'amenity', 'healthcare', 'tourism', 'leisure']) {
+      for (const type of ELEMENT_TYPES) {
+        clauses.push(`  ${type}["${key}"]["name"~"${pattern}",i](area.searchArea);`);
+      }
+    }
+  }
+
+  return [
+    `[out:json][timeout:60];`,
+    `area(${areaId})->.searchArea;`,
+    `(`,
+    ...clauses,
+    `);`,
+    `out center tags ${Math.max(1, Math.min(limit * 3, 400))};`,
+  ].join('\n');
+}
+
+interface NominatimPlace {
+  osm_type?: string;
+  osm_id?: number;
+  display_name?: string;
+  type?: string;
+  class?: string;
+}
+
+/**
+ * Resolve a region name to an Overpass area id.
+ *
+ * Overpass area ids are derived from OSM ids: relations get 3600000000 added,
+ * ways 2400000000. Nodes have no area, so a region that only resolves to a
+ * node cannot be used as a boundary.
+ */
+async function resolveArea(
+  request: DiscoveryRequest,
+): Promise<{ areaId: number; label: string } | { error: string }> {
+  const params = new URLSearchParams({
+    q: request.region,
+    format: 'json',
+    limit: '5',
+    addressdetails: '0',
+  });
+  const code = request.country.toLowerCase();
+  if (code === 'nz' || code === 'au') params.set('countrycodes', code);
+
+  let response: Response;
+  try {
+    response = await fetch(`${NOMINATIM}?${params}`, {
+      headers: { 'user-agent': request.userAgent, accept: 'application/json' },
+    });
+  } catch (error) {
+    return { error: `Could not reach Nominatim: ${String(error)}` };
+  }
+
+  if (!response.ok) {
+    return { error: `Nominatim returned ${response.status} looking up "${request.region}".` };
+  }
+
+  let places: NominatimPlace[];
+  try {
+    places = (await response.json()) as NominatimPlace[];
+  } catch {
+    return { error: 'Nominatim returned something that was not JSON.' };
+  }
+
+  for (const place of places) {
+    if (!place.osm_id) continue;
+    if (place.osm_type === 'relation') {
+      return { areaId: 3600000000 + place.osm_id, label: place.display_name ?? request.region };
+    }
+    if (place.osm_type === 'way') {
+      return { areaId: 2400000000 + place.osm_id, label: place.display_name ?? request.region };
+    }
+  }
+
+  return {
+    error:
+      `"${request.region}" did not resolve to an area OpenStreetMap can search inside. ` +
+      'Try a town, city or district name rather than a street or a suburb nickname.',
+  };
+}
+
+interface OverpassElement {
+  type?: string;
+  id?: number;
+  tags?: Record<string, string>;
+}
+
+async function runOverpass(query: string, userAgent: string): Promise<
+  { elements: OverpassElement[] } | { error: string }
+> {
+  let lastError = 'No Overpass endpoint responded.';
+
+  for (const endpoint of OVERPASS_ENDPOINTS) {
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          'user-agent': userAgent,
+          accept: 'application/json',
+        },
+        body: new URLSearchParams({ data: query }),
+      });
+
+      if (response.status === 429 || response.status === 504) {
+        lastError = `${endpoint} is rate limiting (${response.status}).`;
+        continue;
+      }
+      if (!response.ok) {
+        lastError = `${endpoint} returned ${response.status}.`;
+        continue;
+      }
+
+      const body = (await response.json()) as { elements?: OverpassElement[] };
+      return { elements: body.elements ?? [] };
+    } catch (error) {
+      lastError = `${endpoint} failed: ${String(error)}`;
+    }
+  }
+
+  return { error: lastError };
+}
+
+function addressFrom(tags: Record<string, string>): string {
+  const parts = [
+    [tags['addr:housenumber'], tags['addr:street']].filter(Boolean).join(' '),
+    tags['addr:suburb'],
+    tags['addr:city'] ?? tags['addr:town'],
+    tags['addr:postcode'],
+  ].filter((part) => part && part.trim());
+  return parts.join(', ');
+}
+
+/** Turn an OSM element into a business, or null when it is too thin to use. */
+export function elementToBusiness(element: OverpassElement): DiscoveredBusiness | null {
+  const tags = element.tags ?? {};
+  const name = (tags.name ?? tags['name:en'] ?? '').trim();
+  // An unnamed POI cannot be researched or written to.
+  if (!name) return null;
+
+  const website = (tags.website ?? tags['contact:website'] ?? tags.url ?? '').trim();
+  const descriptors = ['shop', 'craft', 'office', 'amenity', 'healthcare', 'tourism', 'leisure']
+    .map((key) => (tags[key] ? `${key}=${tags[key]}` : ''))
+    .filter(Boolean);
+
+  const context = [
+    descriptors.join(' '),
+    tags.description ?? '',
+    tags.cuisine ? `cuisine ${tags.cuisine}` : '',
+    tags.opening_hours ? 'has published hours' : '',
+    tags['contact:facebook'] || tags.facebook ? 'has a Facebook page tagged' : '',
+    tags['contact:instagram'] || tags.instagram ? 'has an Instagram tagged' : '',
+  ]
+    .filter(Boolean)
+    .join('; ');
+
+  return {
+    name,
+    website: website || undefined,
+    email: (tags.email ?? tags['contact:email'] ?? '').trim() || undefined,
+    phone: (tags.phone ?? tags['contact:phone'] ?? '').trim() || undefined,
+    address: addressFrom(tags) || undefined,
+    mapsUrl:
+      element.type && element.id
+        ? `https://www.openstreetmap.org/${element.type}/${element.id}`
+        : undefined,
+    context: context || undefined,
+    source: 'overpass',
+    sourceRef: element.type && element.id ? `${element.type}/${element.id}` : name,
+  };
+}
+
+export const overpassProvider: DiscoveryProvider = {
+  name: 'overpass',
+  label: 'OpenStreetMap',
+  description:
+    'Free and needs no account. Strong on anything with a shopfront, thinner on businesses run ' +
+    'from home or a van. Data is ODbL — credit OpenStreetMap if you republish it.',
+
+  unavailableReason(request) {
+    if (!request.region.trim()) return 'Discovery by OpenStreetMap needs a region to search inside.';
+    if (!request.niche.trim()) return 'Name the trade you are looking for.';
+    return null;
+  },
+
+  async run(request): Promise<DiscoveryResult> {
+    const area = await resolveArea(request);
+    if ('error' in area) return { ok: false, error: area.error };
+
+    const query = buildOverpassQuery(area.areaId, request.niche, request.limit);
+    const result = await runOverpass(query, request.userAgent);
+    if ('error' in result) return { ok: false, error: result.error };
+
+    const notes = [ATTRIBUTION, `Searched inside ${area.label}.`];
+    const { matched } = filtersForNiche(request.niche);
+    if (!matched) {
+      notes.push(
+        `No OpenStreetMap category matches "${request.niche}", so this searched business names ` +
+          'instead. Expect a looser set of results.',
+      );
+    }
+
+    const seen = new Set<string>();
+    const businesses: DiscoveredBusiness[] = [];
+    for (const element of result.elements) {
+      const business = elementToBusiness(element);
+      if (!business) continue;
+      // Chains map one POI per branch; one row per name is enough to judge.
+      const key = business.name.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      businesses.push(business);
+      if (businesses.length >= request.limit) break;
+    }
+
+    if (businesses.length === 0) {
+      notes.push('Nothing came back. Try a broader region or a more common word for the trade.');
+    }
+
+    return { ok: true, data: { businesses, notes } };
+  },
+};

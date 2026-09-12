@@ -1,0 +1,29 @@
+---
+/**
+ * A score with its two halves shown.
+ *
+ * The combined number is what the list sorts on, but need and fit are
+ * different kinds of claim — one measured, one judged — and collapsing them
+ * into a single bar hides which is which.
+ */
+interface Props {
+  score: number;
+  presenceScore: number;
+  fitScore: number;
+}
+
+const { score, presenceScore, fitScore } = Astro.props;
+---
+
+<div class="flex items-center gap-2.5">
+  <span class="tabular w-9 text-right text-sm font-semibold">{score}</span>
+  <div class="flex-1" title={`Need ${presenceScore}, fit ${fitScore}`}>
+    <div class="flex h-1.5 overflow-hidden rounded-full" style="background: var(--surface-sunken)">
+      <div style={`width: ${presenceScore / 2}%; background: var(--color-owing)`}></div>
+      <div style={`width: ${fitScore / 2}%; background: var(--color-brand-500)`}></div>
+    </div>
+  </div>
+  <span class="muted tabular hidden text-[11px] sm:inline">
+    {presenceScore}<span class="opacity-50">/</span>{fitScore}
+  </span>
+</div>

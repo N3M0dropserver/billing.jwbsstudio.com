@@ -1,0 +1,149 @@
+---
+import AppLayout from '~/layouts/AppLayout.astro';
+import Card from '~/components/ui/Card.astro';
+import { and, eq } from 'drizzle-orm';
+import { db } from '~/lib/env';
+import { brandAssets, brandKits } from '~/lib/db/schema';
+import { briefFromKit, DEFAULT_SECTION_ORDER, FALLBACK_BRIEF } from '~/lib/growth/brief';
+
+const user = Astro.locals.user!;
+const id = Astro.params.id!;
+const database = db();
+const isNew = id === 'new';
+
+const kit = isNew
+  ? null
+  : (await database
+      .select()
+      .from(brandKits)
+      .where(and(eq(brandKits.id, id), eq(brandKits.userId, user.id)))
+      .limit(1))[0];
+
+if (!isNew && !kit) return new Response('Not found', { status: 404 });
+
+const assets = kit
+  ? await database.select().from(brandAssets).where(eq(brandAssets.brandKitId, kit.id))
+  : [];
+
+const brief = briefFromKit(kit ?? null);
+const error = Astro.url.searchParams.get('error');
+const saved = Astro.url.searchParams.get('saved');
+
+const referencesText = brief.references.map((r) => (r.note ? `${r.url} — ${r.note}` : r.url)).join('\n');
+const typographyText = brief.typography.map((t) => `${t.role}: ${t.family}${t.url ? ` ${t.url}` : ''}`).join('\n');
+const paletteText = brief.palette.map((c) => `${c.name} ${c.value} ${c.role}`).join('\n');
+---
+
+<AppLayout title={isNew ? 'New style direction' : kit!.name} subtitle="What every generated site is built from">
+  <form method="post" action="/api/brand-kits" enctype="multipart/form-data" class="space-y-4">
+    <input type="hidden" name="id" value={isNew ? '' : kit!.id} />
+
+    {error && <p class="rounded-lg px-4 py-3 text-sm" style="background: color-mix(in oklch, var(--color-owing) 12%, transparent); color: var(--color-owing)" role="alert">{error}</p>}
+    {saved && <p class="muted rounded-lg px-4 py-3 text-sm" style="background: var(--surface-sunken)" role="status">Saved.</p>}
+
+    <Card title="Name it">
+      <div class="grid gap-3.5 sm:grid-cols-2">
+        <div>
+          <label for="name" class="mb-1.5 block text-sm font-medium">Name</label>
+          <input id="name" name="name" value={kit?.name ?? ''} required class="field" placeholder="Warm editorial" />
+        </div>
+        <div>
+          <label for="suitableFor" class="mb-1.5 block text-sm font-medium">Suits</label>
+          <input id="suitableFor" name="suitableFor" value={kit?.suitableFor ?? ''} class="field" placeholder="Food, hospitality, makers" />
+        </div>
+      </div>
+      <div class="mt-3.5">
+        <label for="description" class="mb-1.5 block text-sm font-medium">Description</label>
+        <textarea id="description" name="description" rows="2" class="field">{kit?.description ?? ''}</textarea>
+      </div>
+      <label class="mt-3.5 flex items-center gap-2 text-sm">
+        <input type="checkbox" name="isDefault" value="yes" checked={kit?.isDefault ?? false} />
+        Use this for new runs
+      </label>
+    </Card>
+
+    <Card title="References" subtitle="Sites whose feel you are after">
+      <textarea name="referenceUrls" rows="5" class="field font-mono text-xs" placeholder="https://example.com — the type and the restraint, not the colour">{referencesText}</textarea>
+      <p class="muted mt-1 text-xs">One per line. Add “— why” after a dash; the reason is worth more than the link.</p>
+    </Card>
+
+    <Card title="Type and colour" subtitle="These are used exactly — the generator introduces nothing else">
+      <div class="grid gap-3.5 sm:grid-cols-2">
+        <div>
+          <label for="typography" class="mb-1.5 block text-sm font-medium">Typefaces</label>
+          <textarea id="typography" name="typography" rows="5" class="field font-mono text-xs" placeholder="display: Fraunces https://fonts.googleapis.com/css2?family=Fraunces&display=swap&#10;body: Inter https://fonts.googleapis.com/css2?family=Inter&display=swap">{typographyText}</textarea>
+          <p class="muted mt-1 text-xs">
+            <code>role: Family</code> per line — display, heading, body, mono or accent. Add a
+            Google Fonts stylesheet URL to have it loaded; without one it is treated as a system face.
+          </p>
+        </div>
+        <div>
+          <label for="palette" class="mb-1.5 block text-sm font-medium">Palette</label>
+          <textarea id="palette" name="palette" rows="5" class="field font-mono text-xs" placeholder="bg #fbfaf7 background&#10;accent #1f6f5c accent">{paletteText}</textarea>
+          <p class="muted mt-1 text-xs">
+            <code>name value role</code> per line. Roles: background, surface, text, muted, accent, border.
+          </p>
+        </div>
+      </div>
+
+      <div class="mt-3.5 flex flex-wrap gap-1.5">
+        {brief.palette.map((colour) => (
+          <span class="flex items-center gap-1.5 rounded-full border px-2 py-1 text-xs" style="border-color: var(--border)">
+            <span class="size-3.5 rounded-full" style={`background: ${colour.value}`}></span>
+            {colour.name}
+          </span>
+        ))}
+      </div>
+    </Card>
+
+    <Card title="The rules" subtitle="Handed to the model verbatim">
+      <div class="space-y-3.5">
+        <div>
+          <label for="prompt" class="mb-1.5 block text-sm font-medium">Art direction</label>
+          <textarea id="prompt" name="prompt" rows="4" class="field" placeholder={FALLBACK_BRIEF.direction}>{kit?.prompt ?? ''}</textarea>
+        </div>
+        <div class="grid gap-3.5 sm:grid-cols-2">
+          <div>
+            <label for="toneNotes" class="mb-1.5 block text-sm font-medium">Voice</label>
+            <textarea id="toneNotes" name="toneNotes" rows="3" class="field" placeholder={FALLBACK_BRIEF.tone}>{kit?.toneNotes ?? ''}</textarea>
+          </div>
+          <div>
+            <label for="avoid" class="mb-1.5 block text-sm font-medium">Never</label>
+            <textarea id="avoid" name="avoid" rows="3" class="field" placeholder={FALLBACK_BRIEF.avoid}>{kit?.avoid ?? ''}</textarea>
+          </div>
+        </div>
+        <div>
+          <label for="capabilities" class="mb-1.5 block text-sm font-medium">What you can deliver</label>
+          <textarea id="capabilities" name="capabilities" rows="2" class="field" placeholder={FALLBACK_BRIEF.capabilities}>{kit?.capabilities ?? ''}</textarea>
+          <p class="muted mt-1 text-xs">Keeps the proposals from promising work you do not do.</p>
+        </div>
+        <div>
+          <label for="sectionOrder" class="mb-1.5 block text-sm font-medium">Preferred section order</label>
+          <input id="sectionOrder" name="sectionOrder" value={brief.sectionOrder.join(', ')} class="field font-mono text-xs" placeholder={DEFAULT_SECTION_ORDER.join(', ')} />
+        </div>
+      </div>
+    </Card>
+
+    <Card title="Screenshots and templates" subtitle="Images, PDFs, fonts or a zipped template, up to 8 MB each">
+      <input type="file" name="assets" multiple class="field" accept="image/*,application/pdf,font/*,.zip,.woff,.woff2,.ttf,.otf" />
+      {assets.length > 0 && (
+        <ul class="muted mt-3 space-y-1 text-xs">
+          {assets.map((asset) => (
+            <li class="flex justify-between gap-3">
+              <span class="truncate">{asset.label}</span>
+              <span class="tabular shrink-0">{Math.round(asset.bytes / 1024)} KB</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      <p class="muted mt-3 text-xs leading-relaxed">
+        Stored alongside the run for reference. The generator works from the written direction,
+        type and palette above — those are what actually shape the output.
+      </p>
+    </Card>
+
+    <button class="rounded-lg px-4 py-2.5 text-sm font-medium text-white" style="background: var(--color-brand-600)">
+      {isNew ? 'Create' : 'Save'}
+    </button>
+  </form>
+</AppLayout>

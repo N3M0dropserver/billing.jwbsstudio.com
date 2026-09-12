@@ -15,3 +15,15 @@ STRIPE_WEBHOOK_SECRET=""
 
 # Resend (only needed when MAIL_PROVIDER=resend)
 RESEND_API_KEY=""
+
+# Google Places discovery (optional). Without it the growth pipeline uses
+# OpenStreetMap, which needs no key. Places has broader coverage and carries
+# ratings, but costs per request and its terms limit how long results may be
+# cached.
+GOOGLE_PLACES_API_KEY=""
+
+# Only needed if each demo subdomain should get its own DNS record rather than
+# being covered by a wildcard. The token needs Zone:DNS:Edit on that zone and
+# nothing else. With a wildcard record in place, leave both blank.
+CLOUDFLARE_API_TOKEN=""
+CLOUDFLARE_ZONE_ID=""

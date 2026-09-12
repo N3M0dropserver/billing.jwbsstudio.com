@@ -1,0 +1,164 @@
+---
+import AppLayout from '~/layouts/AppLayout.astro';
+import Card from '~/components/ui/Card.astro';
+import StagePolicy from '~/components/growth/StagePolicy.astro';
+import { eq } from 'drizzle-orm';
+import { bindings, db } from '~/lib/env';
+import { brandKits } from '~/lib/db/schema';
+import { getSettings } from '~/lib/queries/settings';
+import { resolvePolicy } from '~/lib/growth/policy';
+import { PROVIDERS } from '~/lib/growth/discovery/index';
+
+const user = Astro.locals.user!;
+const database = db();
+
+const [kits, settings] = await Promise.all([
+  database.select().from(brandKits).where(eq(brandKits.userId, user.id)),
+  getSettings(database, user.id),
+]);
+
+const policy = resolvePolicy(null, settings.growthPolicy);
+const error = Astro.url.searchParams.get('error');
+const hasPlacesKey = Boolean(bindings().GOOGLE_PLACES_API_KEY);
+---
+
+<AppLayout title="New run" subtitle="What you are looking for, and how much of it happens without you">
+  <form method="post" action="/api/campaigns" class="space-y-4">
+    {error && (
+      <p class="rounded-lg px-4 py-3 text-sm" style="background: color-mix(in oklch, var(--color-overdue) 12%, transparent); color: var(--color-overdue)" role="alert">
+        {error}
+      </p>
+    )}
+
+    <Card title="Who you are looking for">
+      <div class="grid gap-3.5 sm:grid-cols-2">
+        <div>
+          <label for="niche" class="mb-1.5 block text-sm font-medium">Trade or niche</label>
+          <input id="niche" name="niche" placeholder="Coffee roasters" class="field" />
+        </div>
+        <div>
+          <label for="region" class="mb-1.5 block text-sm font-medium">Region</label>
+          <input id="region" name="region" placeholder="Wellington" class="field" />
+          <p class="muted mt-1 text-xs">A town, city or district. Not a street.</p>
+        </div>
+        <div>
+          <label for="country" class="mb-1.5 block text-sm font-medium">Country</label>
+          <select id="country" name="country" class="field">
+            <option value="NZ">New Zealand</option>
+            <option value="AU">Australia</option>
+          </select>
+        </div>
+        <div>
+          <label for="name" class="mb-1.5 block text-sm font-medium">Name this run</label>
+          <input id="name" name="name" placeholder="Optional" class="field" />
+        </div>
+      </div>
+
+      <div class="mt-3.5">
+        <label for="idealClient" class="mb-1.5 block text-sm font-medium">The client you actually want</label>
+        <textarea id="idealClient" name="idealClient" rows="3" class="field"
+          placeholder="Owner-operated, a few staff, cares how things look, already spends money on packaging or signage. Not franchises."></textarea>
+        <p class="muted mt-1 text-xs">
+          Free text. This steers the scoring more than anything else on the page — it is what
+          separates “needs a site” from “would be a good client”.
+        </p>
+      </div>
+    </Card>
+
+    <Card title="Where the businesses come from">
+      <div class="space-y-2.5">
+        {PROVIDERS.map((provider) => (
+          <label class="flex cursor-pointer gap-3 rounded-lg border p-3" style="border-color: var(--border)">
+            <input
+              type="radio"
+              name="discoveryProvider"
+              value={provider.name}
+              checked={provider.name === settings.growthDiscoveryProvider}
+              class="mt-1"
+            />
+            <span class="min-w-0">
+              <span class="block text-sm font-medium">
+                {provider.label}
+                {provider.name === 'google-places' && !hasPlacesKey && (
+                  <span class="muted ml-2 text-xs font-normal">needs an API key</span>
+                )}
+              </span>
+              <span class="muted block text-xs leading-relaxed">{provider.description}</span>
+            </span>
+          </label>
+        ))}
+      </div>
+
+      <div class="mt-3.5">
+        <label for="manualInput" class="mb-1.5 block text-sm font-medium">Pasted list</label>
+        <textarea id="manualInput" name="manualInput" rows="5" class="field font-mono text-xs"
+          placeholder="Wells Coffee Roasters, wellscoffee.co.nz, hello@wellscoffee.co.nz&#10;Third Street Bakery  03 555 0198"></textarea>
+        <p class="muted mt-1 text-xs">Only used when “Paste a list” is selected. One business per line.</p>
+      </div>
+    </Card>
+
+    <Card title="Style direction" subtitle="What the generated sites should look like">
+      <div class="grid gap-3.5 sm:grid-cols-2">
+        <div>
+          <label for="brandKitId" class="mb-1.5 block text-sm font-medium">Saved direction</label>
+          <select id="brandKitId" name="brandKitId" class="field">
+            <option value="">Default</option>
+            {kits.map((kit) => (
+              <option value={kit.id} selected={kit.id === settings.growthBrandKitId}>{kit.name}</option>
+            ))}
+          </select>
+        </div>
+        <div class="grid grid-cols-2 gap-3.5">
+          <div>
+            <label for="targetCount" class="mb-1.5 block text-sm font-medium">Carry forward</label>
+            <input id="targetCount" name="targetCount" type="number" min="1" max="50" value="10" class="field" />
+          </div>
+          <div>
+            <label for="scoreFloor" class="mb-1.5 block text-sm font-medium">Score floor</label>
+            <input id="scoreFloor" name="scoreFloor" type="number" min="0" max="100" value="55" class="field" />
+          </div>
+        </div>
+      </div>
+
+      <details class="mt-4">
+        <summary class="cursor-pointer text-sm font-medium">Override the direction for this run only</summary>
+        <div class="mt-3 space-y-3.5">
+          <div>
+            <label for="brief.references" class="mb-1.5 block text-sm font-medium">Reference sites</label>
+            <textarea id="brief.references" name="brief.references" rows="3" class="field font-mono text-xs"
+              placeholder="https://example.com — the type and the restraint, not the colour"></textarea>
+            <p class="muted mt-1 text-xs">One per line. Add “— why” after a dash to say what you are after.</p>
+          </div>
+          <div>
+            <label for="brief.direction" class="mb-1.5 block text-sm font-medium">Art direction</label>
+            <textarea id="brief.direction" name="brief.direction" rows="3" class="field"
+              placeholder="Leave blank to use the saved direction."></textarea>
+          </div>
+          <div class="grid gap-3.5 sm:grid-cols-2">
+            <div>
+              <label for="brief.tone" class="mb-1.5 block text-sm font-medium">Voice</label>
+              <textarea id="brief.tone" name="brief.tone" rows="2" class="field"></textarea>
+            </div>
+            <div>
+              <label for="brief.avoid" class="mb-1.5 block text-sm font-medium">Never</label>
+              <textarea id="brief.avoid" name="brief.avoid" rows="2" class="field"></textarea>
+            </div>
+          </div>
+        </div>
+      </details>
+    </Card>
+
+    <Card title="How much happens without you" subtitle="Starts from your saved defaults">
+      <StagePolicy policy={policy} />
+    </Card>
+
+    <div class="flex flex-wrap gap-2">
+      <button name="start" value="yes" class="rounded-lg px-4 py-2.5 text-sm font-medium text-white" style="background: var(--color-brand-600)">
+        Create and start
+      </button>
+      <button name="start" value="no" class="muted rounded-lg border px-4 py-2.5 text-sm" style="border-color: var(--border)">
+        Create without starting
+      </button>
+    </div>
+  </form>
+</AppLayout>

@@ -1,0 +1,123 @@
+---
+import AppLayout from '~/layouts/AppLayout.astro';
+import Card from '~/components/ui/Card.astro';
+import EmptyState from '~/components/ui/EmptyState.astro';
+import { desc, eq, sql } from 'drizzle-orm';
+import { db } from '~/lib/env';
+import { brandKits, campaigns, demoSites, proposals, prospects } from '~/lib/db/schema';
+import { STAGE_LABELS } from '~/lib/growth/policy';
+
+const user = Astro.locals.user!;
+const database = db();
+
+const [runs, kits, totals] = await Promise.all([
+  database
+    .select()
+    .from(campaigns)
+    .where(eq(campaigns.userId, user.id))
+    .orderBy(desc(campaigns.createdAt))
+    .limit(30),
+  database.select().from(brandKits).where(eq(brandKits.userId, user.id)),
+  Promise.all([
+    database.select({ n: sql<number>`count(*)` }).from(prospects).where(eq(prospects.userId, user.id)),
+    database.select({ n: sql<number>`count(*)` }).from(demoSites).where(eq(demoSites.userId, user.id)),
+    database.select({ n: sql<number>`count(*)` }).from(proposals).where(eq(proposals.userId, user.id)),
+  ]),
+]);
+
+const [prospectCount, demoCount, proposalCount] = totals.map((rows) => rows[0]?.n ?? 0);
+
+const STATUS_COLOURS: Record<string, string> = {
+  draft: 'var(--text-muted)',
+  running: 'var(--color-brand-600)',
+  waiting: 'var(--color-owing)',
+  paused: 'var(--text-muted)',
+  complete: 'var(--color-paid)',
+  failed: 'var(--color-overdue)',
+  cancelled: 'var(--text-muted)',
+};
+---
+
+<AppLayout title="Growth" subtitle="Find businesses worth helping, and show them what you would do" width="wide">
+  <div slot="actions" class="flex gap-2">
+    <a href="/growth/settings" class="muted rounded-lg border px-3 py-2 text-sm" style="border-color: var(--border)">Defaults</a>
+    <a href="/growth/brand" class="muted rounded-lg border px-3 py-2 text-sm" style="border-color: var(--border)">Style directions</a>
+    <a href="/growth/new" class="rounded-lg px-4 py-2 text-sm font-medium text-white" style="background: var(--color-brand-600)">New run</a>
+  </div>
+
+  <div class="grid gap-4 lg:grid-cols-3">
+    <div class="space-y-4 lg:col-span-2">
+      <Card title="Runs" subtitle={`${runs.length} so far`}>
+        {runs.length === 0 ? (
+          <EmptyState
+            title="No runs yet"
+            actionHref="/growth/new"
+            actionLabel="Start one"
+            description="A run takes a trade and a region, finds businesses whose web presence is weak, and — as far as you let it — researches them, designs them a page, builds it and drafts the email."
+          />
+        ) : (
+          <ul class="divide-y" style="border-color: var(--border)">
+            {runs.map((run) => (
+              <li class="py-3 first:pt-0 last:pb-0">
+                <a href={`/growth/${run.id}`} class="flex items-start justify-between gap-4 hover:opacity-80">
+                  <div class="min-w-0">
+                    <p class="truncate font-medium">{run.name || run.niche}</p>
+                    <p class="muted mt-0.5 text-xs">
+                      {run.region && `${run.region} · `}
+                      {STAGE_LABELS[run.stage] ?? run.stage}
+                      {run.discoveredCount > 0 && ` · ${run.discoveredCount} found`}
+                      {run.builtCount > 0 && ` · ${run.builtCount} built`}
+                      {run.proposedCount > 0 && ` · ${run.proposedCount} proposed`}
+                    </p>
+                  </div>
+                  <span
+                    class="shrink-0 rounded-full px-2.5 py-0.5 text-xs font-medium"
+                    style={`color: ${STATUS_COLOURS[run.status] ?? 'var(--text-muted)'}; background: color-mix(in oklch, ${STATUS_COLOURS[run.status] ?? 'var(--text-muted)'} 12%, transparent)`}
+                  >
+                    {run.status === 'waiting' ? 'Needs you' : run.status}
+                  </span>
+                </a>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Card>
+    </div>
+
+    <div class="space-y-4">
+      <Card title="So far">
+        <dl class="space-y-2.5 text-sm">
+          <div class="flex justify-between"><dt class="muted">Prospects</dt><dd class="tabular font-medium">{prospectCount}</dd></div>
+          <div class="flex justify-between"><dt class="muted">Demos built</dt><dd class="tabular font-medium">{demoCount}</dd></div>
+          <div class="flex justify-between"><dt class="muted">Proposals</dt><dd class="tabular font-medium">{proposalCount}</dd></div>
+        </dl>
+      </Card>
+
+      <Card title="Style directions" subtitle="What the generated sites look like">
+        {kits.length === 0 ? (
+          <div class="space-y-3">
+            <p class="muted text-sm leading-relaxed">
+              Nothing saved yet, so runs use a restrained built-in direction. Add your own
+              references, type and palette and the demos start looking like your work.
+            </p>
+            <a href="/growth/brand/new" class="inline-block rounded-lg px-3 py-2 text-sm font-medium text-white" style="background: var(--color-brand-600)">
+              Add one
+            </a>
+          </div>
+        ) : (
+          <ul class="space-y-2 text-sm">
+            {kits.map((kit) => (
+              <li>
+                <a href={`/growth/brand/${kit.id}`} class="flex items-baseline justify-between gap-2 hover:opacity-80">
+                  <span class="font-medium">{kit.name}</span>
+                  {kit.isDefault && <span class="muted text-xs">default</span>}
+                </a>
+                {kit.suitableFor && <p class="muted text-xs">{kit.suitableFor}</p>}
+              </li>
+            ))}
+          </ul>
+        )}
+      </Card>
+    </div>
+  </div>
+</AppLayout>
