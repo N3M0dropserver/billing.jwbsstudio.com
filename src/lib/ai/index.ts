@@ -15,7 +15,12 @@ export const MODELS = {
 } as const;
 
 export type AiResult<T> =
-  | { ok: true; data: T }
+  /**
+   * `raw` carries the provider's untouched response so callers that care —
+   * the usage tracker — can read `usage` off it without this module having to
+   * know what it will be asked for next.
+   */
+  | { ok: true; data: T; raw?: unknown }
   | { ok: false; error: string };
 
 export interface GenerateOptions {
@@ -42,7 +47,7 @@ export async function generate(ai: Ai, options: GenerateOptions): Promise<AiResu
 
     const text = typeof response === 'string' ? response : (response.response ?? '');
     if (!text.trim()) return { ok: false, error: 'The model returned nothing.' };
-    return { ok: true, data: text.trim() };
+    return { ok: true, data: text.trim(), raw: response };
   } catch (error) {
     return { ok: false, error: String(error) };
   }
@@ -58,8 +63,19 @@ export async function generate(ai: Ai, options: GenerateOptions): Promise<AiResu
 export async function generateJson<T>(
   ai: Ai,
   options: GenerateOptions,
+  /**
+   * Text that has already been generated.
+   *
+   * Lets the tracked wrapper in `usage.ts` reuse one call for both the
+   * request and the parse, rather than making the same request twice to get
+   * a typed result.
+   */
+  existingText?: string,
 ): Promise<AiResult<T>> {
-  const result = await generate(ai, { ...options, temperature: options.temperature ?? 0.2 });
+  const result =
+    existingText !== undefined
+      ? ({ ok: true, data: existingText } as AiResult<string>)
+      : await generate(ai, { ...options, temperature: options.temperature ?? 0.2 });
   if (!result.ok) return result;
 
   const extracted = extractJson(result.data);

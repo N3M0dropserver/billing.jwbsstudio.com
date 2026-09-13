@@ -1,0 +1,57 @@
+---
+import AppLayout from '~/layouts/AppLayout.astro';
+import Card from '~/components/ui/Card.astro';
+import EmptyState from '~/components/ui/EmptyState.astro';
+import { eq } from 'drizzle-orm';
+import { db } from '~/lib/env';
+import { brandKits } from '~/lib/db/schema';
+import { FALLBACK_BRIEF } from '~/lib/growth/brief';
+
+const user = Astro.locals.user!;
+const kits = await db().select().from(brandKits).where(eq(brandKits.userId, user.id));
+---
+
+<AppLayout title="Style directions" subtitle="The references, type and rules the generated sites are built from">
+  <a slot="actions" href="/growth/brand/new" class="rounded-lg px-4 py-2 text-sm font-medium text-white" style="background: var(--color-brand-600)">
+    New direction
+  </a>
+
+  {kits.length === 0 ? (
+    <div class="space-y-4">
+      <EmptyState
+        title="No directions saved"
+        description="Until you add one, runs use a restrained built-in direction. Save your own references, typefaces, palette and rules and every generated demo starts looking like your work rather than a template."
+        actionHref="/growth/brand/new"
+        actionLabel="Add one"
+      />
+      <Card title="What the built-in direction is">
+        <dl class="space-y-2.5 text-sm">
+          <div><dt class="muted text-xs">Type</dt><dd>{FALLBACK_BRIEF.typography.map((t) => `${t.family} (${t.role})`).join(', ')}</dd></div>
+          <div>
+            <dt class="muted text-xs">Palette</dt>
+            <dd class="mt-1 flex gap-1.5">
+              {FALLBACK_BRIEF.palette.map((colour) => (
+                <span class="size-6 rounded border" style={`background: ${colour.value}; border-color: var(--border)`} title={`${colour.name} ${colour.value}`}></span>
+              ))}
+            </dd>
+          </div>
+          <div><dt class="muted text-xs">Direction</dt><dd class="leading-relaxed">{FALLBACK_BRIEF.direction}</dd></div>
+          <div><dt class="muted text-xs">Never</dt><dd class="leading-relaxed">{FALLBACK_BRIEF.avoid}</dd></div>
+        </dl>
+      </Card>
+    </div>
+  ) : (
+    <div class="grid gap-4 sm:grid-cols-2">
+      {kits.map((kit) => (
+        <Card title={kit.name} subtitle={kit.suitableFor}>
+          <a href={`/growth/brand/${kit.id}`} class="block">
+            {kit.description && <p class="muted text-sm leading-relaxed">{kit.description}</p>}
+            <p class="muted mt-3 text-xs">
+              {kit.isDefault ? 'Default for new runs' : 'Chosen per run'}
+            </p>
+          </a>
+        </Card>
+      ))}
+    </div>
+  )}
+</AppLayout>

@@ -1,0 +1,129 @@
+---
+/**
+ * The public proposal page.
+ *
+ * Reached by the link in the outreach email, by a person who did not ask for
+ * any of this. It is deliberately plain and says what it is in the first
+ * paragraph: an unsolicited concept, built without their involvement, easy to
+ * make go away.
+ *
+ * Token-authenticated and unindexed. There is no session here and nothing is
+ * shown that the email did not already contain.
+ */
+import { eq, sql } from 'drizzle-orm';
+import { db } from '~/lib/env';
+import { demoSites, proposals, prospects, settings as settingsTable } from '~/lib/db/schema';
+
+const token = Astro.params.token!;
+const database = db();
+
+const rows = await database
+  .select()
+  .from(proposals)
+  .where(eq(proposals.publicToken, token))
+  .limit(1);
+
+const proposal = rows[0];
+if (!proposal) return new Response('Not found', { status: 404 });
+
+const [prospect, demo, owner] = await Promise.all([
+  proposal.prospectId
+    ? database.select().from(prospects).where(eq(prospects.id, proposal.prospectId)).limit(1).then((r) => r[0])
+    : Promise.resolve(undefined),
+  proposal.demoSiteId
+    ? database.select().from(demoSites).where(eq(demoSites.id, proposal.demoSiteId)).limit(1).then((r) => r[0])
+    : Promise.resolve(undefined),
+  database.select().from(settingsTable).where(eq(settingsTable.userId, proposal.userId)).limit(1).then((r) => r[0]),
+]);
+
+// Record the view. A draft that has not been sent should not be marked as
+// viewed just because its own author opened the link.
+if (proposal.status === 'sent' || proposal.status === 'viewed') {
+  await database
+    .update(proposals)
+    .set({
+      status: 'viewed',
+      viewedAt: proposal.viewedAt ?? new Date().toISOString(),
+      viewCount: sql`${proposals.viewCount} + 1`,
+      updatedAt: new Date().toISOString(),
+    })
+    .where(eq(proposals.id, proposal.id));
+}
+
+const designer = owner?.outreachSenderName || owner?.businessName || 'JWBS Studio';
+const designerEmail = owner?.outreachReplyTo || owner?.email || '';
+const businessName = prospect?.businessName ?? 'your business';
+const paragraphs = proposal.body.split(/\n{2,}/).map((part) => part.trim()).filter(Boolean);
+---
+
+<!doctype html>
+<html lang="en-NZ">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>A concept for {businessName}</title>
+    <style>
+      :root {
+        --bg: #fbfaf7; --surface: #fff; --text: #1b1a17; --muted: #6b6760;
+        --accent: #1f6f5c; --line: #e6e2da;
+        color-scheme: light;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #14130f; --surface: #1c1b17; --text: #f2efe8; --muted: #a09a90;
+          --accent: #6bbfa6; --line: #2e2c26;
+          color-scheme: dark;
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0; background: var(--bg); color: var(--text);
+        font: 16px/1.65 ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      .wrap { max-width: 40rem; margin-inline: auto; padding: clamp(2.5rem, 8vw, 5rem) clamp(1.25rem, 5vw, 2rem); }
+      h1 { font-size: clamp(1.75rem, 1.3rem + 2vw, 2.5rem); line-height: 1.15; letter-spacing: -0.02em; margin: 0 0 1.5rem; text-wrap: balance; }
+      p { margin: 0 0 1.15em; text-wrap: pretty; }
+      .note { color: var(--muted); font-size: 0.9rem; border-left: 2px solid var(--line); padding-left: 1rem; }
+      .cta { display: inline-block; margin: 1rem 0 2rem; padding: 0.9rem 1.75rem; border-radius: 999px; background: var(--accent); color: #fff; text-decoration: none; font-weight: 550; }
+      .cta:hover { filter: brightness(1.08); }
+      footer { margin-top: 3rem; border-top: 1px solid var(--line); padding-top: 1.5rem; color: var(--muted); font-size: 0.875rem; }
+      a { color: var(--accent); }
+      a:focus-visible, .cta:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+    </style>
+  </head>
+  <body>
+    <main class="wrap">
+      <h1>A concept for {businessName}</h1>
+
+      <p class="note">
+        I built this without being asked and without your involvement. Nothing here has been
+        checked with you, and none of it is live anywhere a customer can find it. If you would
+        rather it did not exist, say so and it is gone the same day.
+      </p>
+
+      {paragraphs.map((paragraph) => <p>{paragraph}</p>)}
+
+      {demo?.status === 'live' && (
+        <a class="cta" href={`https://${demo.host}`} rel="noopener">See the concept →</a>
+      )}
+
+      <p>
+        It is a starting point, not a proposal in the contractual sense — the interesting
+        conversation is what you would change about it.
+      </p>
+
+      <footer>
+        <p>
+          {designer}
+          {designerEmail && (
+            <>
+              {' · '}<a href={`mailto:${designerEmail}?subject=${encodeURIComponent(`Re: concept for ${businessName}`)}`}>{designerEmail}</a>
+            </>
+          )}
+        </p>
+      </footer>
+    </main>
+  </body>
+</html>

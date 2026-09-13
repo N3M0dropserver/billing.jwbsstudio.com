@@ -1,5 +1,6 @@
 import { defineMiddleware } from 'astro:middleware';
 import { bindings, db as getDbFromEnv } from '~/lib/env';
+import { serveDemo } from '~/lib/growth/publish';
 import {
   readSessionToken,
   resolveSession,
@@ -16,6 +17,8 @@ const PUBLIC_PREFIXES = [
   '/api/stripe/webhook',
   '/pay/', // public invoice view + payment page
   '/proposal/', // public proposal view
+  '/api/proposals/', // public accept/decline, token-authenticated
+  '/d/', // generated demo sites, served on this origin as well as their subdomain
   '/_astro/',
   '/favicon',
   '/robots.txt',
@@ -51,6 +54,27 @@ export const onRequest = defineMiddleware(async (context, next) => {
       path: url.pathname,
     });
     env = null;
+  }
+
+  /**
+   * Generated demo sites.
+   *
+   * They are served by this Worker on subdomains of DEMO_HOST, straight out
+   * of R2. This has to come before everything else: a demo is public by
+   * design and must not be bounced to a login page, and it shares no cookies,
+   * session or CSRF surface with the app. A host that looks like a demo but
+   * has nothing in the bucket falls through, so a stray wildcard request
+   * still lands on the app rather than a blank 404.
+   */
+  const demoApex = env?.DEMO_HOST;
+  if (env?.FILES && demoApex) {
+    const host = url.hostname.toLowerCase();
+    const isDemoHost = host.endsWith(`.${demoApex.toLowerCase()}`) && host !== demoApex.toLowerCase();
+
+    if (isDemoHost) {
+      const served = await serveDemo(env.FILES, host, url, request);
+      if (served) return served;
+    }
   }
 
   if (!env?.DB) {

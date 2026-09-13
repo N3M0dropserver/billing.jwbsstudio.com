@@ -34,6 +34,25 @@ export function ai(): Ai {
   return e.AI;
 }
 
+/**
+ * The campaign agent's Durable Object namespace, from the Worker in
+ * `workers/agent`. Missing means that Worker has not been deployed yet.
+ */
+export function campaignAgent(): DurableObjectNamespace {
+  const e = bindings();
+  if (!e.CAMPAIGN_AGENT) {
+    throw new Error(
+      'Durable Object binding "CAMPAIGN_AGENT" is missing. Deploy the agent Worker first — ' +
+        '`bun run deploy:agent` — then this one.',
+    );
+  }
+  return e.CAMPAIGN_AGENT;
+}
+
+export function demoHost(): string {
+  return bindings().DEMO_HOST || 'demo.jwbsstudio.com';
+}
+
 export function appUrl(): string {
   return bindings().APP_URL || 'http://localhost:8787';
 }
