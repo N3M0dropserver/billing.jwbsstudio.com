@@ -688,6 +688,67 @@ export const projects = sqliteTable(
 );
 
 /* ------------------------------------------------------------------ */
+/* Bank statements                                                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Transactions imported from a bank CSV.
+ *
+ * Kept as their own records rather than turned straight into payments,
+ * because most lines on a statement are not payments at all and the ones that
+ * are still need a person to agree which invoice they settle. A row here is
+ * evidence; a payment is a decision.
+ */
+export const bankTransactions = sqliteTable(
+  'bank_transactions',
+  {
+    id: id(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+
+    /** What the user called this import, e.g. "ASB business — March". */
+    source: text('source').notNull().default(''),
+    /** ISO date of the transaction, as the bank stated it. */
+    occurredOn: text('occurred_on').notNull(),
+    /** Signed cents. Positive is money in. */
+    amount: integer('amount').notNull(),
+    currency: text('currency', { enum: ['NZD', 'AUD'] }).notNull().default('NZD'),
+    description: text('description').notNull().default(''),
+    reference: text('reference').notNull().default(''),
+
+    /**
+     * Stable identity within this account, so re-importing an overlapping
+     * statement updates rather than duplicates. See src/lib/bank/csv.ts.
+     */
+    fingerprint: text('fingerprint').notNull(),
+
+    status: text('status', { enum: ['unmatched', 'matched', 'ignored'] })
+      .notNull()
+      .default('unmatched'),
+    matchedInvoiceId: text('matched_invoice_id').references(() => invoices.id, {
+      onDelete: 'set null',
+    }),
+    matchedPaymentId: text('matched_payment_id').references(() => payments.id, {
+      onDelete: 'set null',
+    }),
+    /** Why it was matched, kept so a wrong match can be understood later. */
+    matchReason: text('match_reason').notNull().default(''),
+
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    // One row per transaction per account, enforced rather than hoped for.
+    uniqueIndex('bank_tx_fingerprint_idx').on(t.userId, t.fingerprint),
+    index('bank_tx_user_status_idx').on(t.userId, t.status),
+    index('bank_tx_user_date_idx').on(t.userId, t.occurredOn),
+  ],
+);
+
+export type BankTransaction = typeof bankTransactions.$inferSelect;
+
+/* ------------------------------------------------------------------ */
 /* Proposals and prospecting                                           */
 /* ------------------------------------------------------------------ */
 
