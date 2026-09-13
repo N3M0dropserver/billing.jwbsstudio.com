@@ -32,6 +32,7 @@ const formatDate = (iso: string) =>
     day: 'numeric', month: 'short', year: '2-digit', timeZone: 'UTC',
   });
 const today = new Date().toISOString().slice(0, 10);
+const isOverdue = (row: (typeof rows)[number]) => row.dueOn < today && row.status !== 'paid';
 ---
 
 <AppLayout
@@ -39,26 +40,21 @@ const today = new Date().toISOString().slice(0, 10);
   subtitle={`${rows.length} invoice${rows.length === 1 ? '' : 's'} · ${formatMoneyWithCode(totals.outstanding, 'NZD')} outstanding`}
   width="wide"
 >
-  <a
-    slot="actions"
-    href="/invoices/new"
-    class="rounded-lg px-3.5 py-2 text-sm font-medium text-white"
-    style="background: var(--color-brand-600)"
-  >New invoice</a>
+  <a slot="actions" href="/invoices/new" class="btn btn-primary">New invoice</a>
 
-  <div class="mb-4 flex flex-wrap gap-1.5">
-    {
-      tabs.map((tab) => (
-        <a
-          href={`/invoices?status=${tab.key}`}
-          class:list={[
-            'rounded-lg px-3 py-1.5 text-sm font-medium transition-colors',
-            status === tab.key ? 'text-white' : 'muted card hover:opacity-80',
-          ]}
-          style={status === tab.key ? 'background: var(--color-brand-600)' : ''}
-        >{tab.label}</a>
-      ))
-    }
+  <!-- Filters scroll sideways on a phone rather than wrapping into three rows. -->
+  <div class="-mx-4 mb-4 overflow-x-auto px-4 sm:mx-0 sm:px-0">
+    <div class="flex w-max gap-1.5 sm:w-auto sm:flex-wrap">
+      {
+        tabs.map((tab) => (
+          <a
+            href={`/invoices?status=${tab.key}`}
+            class:list={['seg', status === tab.key && 'seg-on']}
+            aria-current={status === tab.key ? 'page' : undefined}
+          >{tab.label}</a>
+        ))
+      }
+    </div>
   </div>
 
   {
@@ -70,18 +66,52 @@ const today = new Date().toISOString().slice(0, 10);
         actionLabel="New invoice"
       />
     ) : (
-      <div class="card overflow-hidden p-0">
-        <div class="overflow-x-auto">
+      <>
+        {/* Phones: one tappable row per invoice, with the figures stacked. */}
+        <div class="card divide-y overflow-hidden lg:hidden" style="border-color: var(--border)">
+          {rows.map((row) => (
+            <a href={`/invoices/${row.id}`} class="block px-4 py-3.5" style="border-color: var(--border)">
+              <div class="flex items-start justify-between gap-3">
+                <div class="min-w-0">
+                  <p class="label">{row.number}</p>
+                  <p class="muted mt-1 truncate text-sm">{row.clientName ?? 'Manual entry'}</p>
+                </div>
+                <StatusBadge status={row.status} />
+              </div>
+              <div class="mt-2.5 flex items-baseline justify-between gap-3">
+                <p class="tabular text-base font-semibold">
+                  {row.total - row.amountPaid > 0
+                    ? formatMoneyWithCode(row.total - row.amountPaid, row.currency)
+                    : formatMoneyWithCode(row.total, row.currency)}
+                </p>
+                <p
+                  class="label-xs"
+                  style={isOverdue(row) ? 'color: var(--color-overdue)' : 'color: var(--text-muted)'}
+                >
+                  {row.total - row.amountPaid > 0 ? 'Due' : 'Issued'}{' '}
+                  {formatDate(row.total - row.amountPaid > 0 ? row.dueOn : row.issuedOn)}
+                </p>
+              </div>
+            </a>
+          ))}
+          <div class="flex items-baseline justify-between gap-3 px-4 py-3" style="background: var(--surface-sunken); border-color: var(--border)">
+            <span class="label muted">{rows.length} total</span>
+            <span class="tabular text-sm font-semibold">{formatMoneyWithCode(totals.outstanding, 'NZD')}</span>
+          </div>
+        </div>
+
+        {/* Desktop: the full grid, where every column has room. */}
+        <div class="card hidden overflow-hidden lg:block">
           <table class="w-full text-sm">
             <thead>
-              <tr class="muted border-b text-left text-xs" style="border-color: var(--border)">
-                <th scope="col" class="px-4 py-2.5 font-medium">Number</th>
-                <th scope="col" class="px-4 py-2.5 font-medium">Client</th>
-                <th scope="col" class="px-4 py-2.5 font-medium">Issued</th>
-                <th scope="col" class="px-4 py-2.5 font-medium">Due</th>
-                <th scope="col" class="px-4 py-2.5 text-right font-medium">Total</th>
-                <th scope="col" class="px-4 py-2.5 text-right font-medium">Outstanding</th>
-                <th scope="col" class="px-4 py-2.5 font-medium">Status</th>
+              <tr class="border-b text-left" style="border-color: var(--border)">
+                <th scope="col" class="label muted px-4 py-2.5 font-medium">Number</th>
+                <th scope="col" class="label muted px-4 py-2.5 font-medium">Client</th>
+                <th scope="col" class="label muted px-4 py-2.5 font-medium">Issued</th>
+                <th scope="col" class="label muted px-4 py-2.5 font-medium">Due</th>
+                <th scope="col" class="label muted px-4 py-2.5 text-right font-medium">Total</th>
+                <th scope="col" class="label muted px-4 py-2.5 text-right font-medium">Outstanding</th>
+                <th scope="col" class="label muted px-4 py-2.5 font-medium">Status</th>
               </tr>
             </thead>
             <tbody>
@@ -89,13 +119,13 @@ const today = new Date().toISOString().slice(0, 10);
                 <tr class="border-b last:border-0" style="border-color: var(--border)">
                   <td class="px-4 py-2.5">
                     <a href={`/invoices/${row.id}`} class="font-medium hover:underline">{row.number}</a>
-                    {row.isManualEntry && <span class="muted ml-1.5 text-xs">manual</span>}
+                    {row.isManualEntry && <span class="label-xs muted ml-1.5">manual</span>}
                   </td>
                   <td class="muted px-4 py-2.5">{row.clientName ?? '—'}</td>
-                  <td class="muted px-4 py-2.5 whitespace-nowrap">{formatDate(row.issuedOn)}</td>
+                  <td class="tabular muted px-4 py-2.5 whitespace-nowrap">{formatDate(row.issuedOn)}</td>
                   <td
-                    class="px-4 py-2.5 whitespace-nowrap"
-                    style={row.dueOn < today && row.status !== 'paid' ? 'color: var(--color-overdue)' : 'color: var(--text-muted)'}
+                    class="tabular px-4 py-2.5 whitespace-nowrap"
+                    style={isOverdue(row) ? 'color: var(--color-overdue)' : 'color: var(--text-muted)'}
                   >{formatDate(row.dueOn)}</td>
                   <td class="tabular px-4 py-2.5 text-right">{formatMoneyWithCode(row.total, row.currency)}</td>
                   <td class="tabular px-4 py-2.5 text-right font-medium">
@@ -108,16 +138,16 @@ const today = new Date().toISOString().slice(0, 10);
               ))}
             </tbody>
             <tfoot>
-              <tr class="border-t font-medium" style="border-color: var(--border); background: var(--surface-sunken)">
-                <td class="px-4 py-2.5" colspan="4">{rows.length} invoices</td>
-                <td class="tabular px-4 py-2.5 text-right">{formatMoneyWithCode(totals.total, 'NZD')}</td>
-                <td class="tabular px-4 py-2.5 text-right">{formatMoneyWithCode(totals.outstanding, 'NZD')}</td>
+              <tr class="border-t" style="border-color: var(--border); background: var(--surface-sunken)">
+                <td class="label muted px-4 py-2.5" colspan="4">{rows.length} invoices</td>
+                <td class="tabular px-4 py-2.5 text-right font-medium">{formatMoneyWithCode(totals.total, 'NZD')}</td>
+                <td class="tabular px-4 py-2.5 text-right font-medium">{formatMoneyWithCode(totals.outstanding, 'NZD')}</td>
                 <td></td>
               </tr>
             </tfoot>
           </table>
         </div>
-      </div>
+      </>
     )
   }
 </AppLayout>

@@ -59,29 +59,33 @@ const formatDateTime = (iso: string) =>
         {entries.length === 0 ? (
           <p class="muted text-sm">Nothing tracked yet. Even rough time beats no time.</p>
         ) : (
-          <table class="w-full text-sm">
-            <tbody>
-              {entries.map(({ entry, clientName }) => (
-                <tr class="border-b last:border-0" style="border-color: var(--border)">
-                  <td class="py-2.5 pr-3">
-                    {entry.description || <span class="muted">Untitled</span>}
-                    {clientName && <span class="muted block text-xs">{clientName}</span>}
-                  </td>
-                  <td class="muted py-2.5 text-xs whitespace-nowrap">{formatDateTime(entry.startedAt)}</td>
-                  <td class="tabular py-2.5 pl-3 text-right font-medium">{hours(entry.minutes)}</td>
-                  <td class="py-2.5 pl-3 text-right">
-                    {!entry.billable ? (
-                      <span class="muted text-xs">non-billable</span>
-                    ) : entry.billed ? (
-                      <span class="text-xs" style="color: var(--color-paid)">billed</span>
-                    ) : (
-                      <span class="text-xs" style="color: var(--color-owing)">unbilled</span>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <ul class="divide-y" style="border-color: var(--border)">
+            {entries.map(({ entry, clientName }) => (
+              <li class="flex items-start justify-between gap-3 py-3 first:pt-0 last:pb-0" style="border-color: var(--border)">
+                <div class="min-w-0">
+                  <p class="text-sm">{entry.description || <span class="muted">Untitled</span>}</p>
+                  <p class="label-xs muted mt-1.5">
+                    {clientName ? `${clientName} · ` : ''}{formatDateTime(entry.startedAt)}
+                  </p>
+                </div>
+                <div class="shrink-0 text-right">
+                  <p class="tabular text-sm font-medium">{hours(entry.minutes)}</p>
+                  <p
+                    class="label-xs mt-1.5"
+                    style={
+                      !entry.billable
+                        ? 'color: var(--text-muted)'
+                        : entry.billed
+                          ? 'color: var(--color-paid)'
+                          : 'color: var(--color-owing)'
+                    }
+                  >
+                    {!entry.billable ? 'Non-billable' : entry.billed ? 'Billed' : 'Unbilled'}
+                  </p>
+                </div>
+              </li>
+            ))}
+          </ul>
         )}
       </Card>
     </div>
@@ -116,8 +120,7 @@ const formatDateTime = (iso: string) =>
         {unbilled.length > 0 && (
           <a
             href="/invoices/new?from=time"
-            class="mt-4 block rounded-lg px-4 py-2.5 text-center text-sm font-medium text-white"
-            style="background: var(--color-brand-600)"
+            class="btn btn-primary mt-4 w-full"
           >Turn into an invoice</a>
         )}
       </Card>

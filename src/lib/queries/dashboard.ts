@@ -7,6 +7,7 @@
  */
 
 import { and, eq, gte, lte, sql, desc, ne } from 'drizzle-orm';
+import type { SQLiteColumn } from 'drizzle-orm/sqlite-core';
 import type { Db } from '~/lib/db';
 import {
   invoices,
@@ -18,30 +19,92 @@ import {
   assets,
   depreciationEntries,
 } from '~/lib/db/schema';
-import type { Cents } from '~/lib/tax/money';
+import type { Cents, Currency } from '~/lib/tax/money';
 import { nzTaxYearFor, auFinancialYearFor } from '~/lib/tax/engine';
 import type { Jurisdiction } from '~/lib/tax/rates';
-import { nzRates, auRates } from '~/lib/tax/rates';
+import {
+  apportion,
+  overlapDays,
+  straddles,
+  toResidenceCurrency,
+  yearRangeFor,
+  type DateRange,
+} from '~/lib/tax/period';
+import { resolveRatesYear } from '~/lib/tax/rates';
 
 export interface TaxYearRange {
+  /** The real tax year the date falls in. Always correct, table or no table. */
   year: string;
   startsOn: string;
   endsOn: string;
   jurisdiction: Jurisdiction;
+  /**
+   * The year whose rate table the figures are computed from. The same as
+   * `year` unless no table has been added for it yet.
+   */
+  ratesYear: string;
+  /** True when `ratesYear` is a fallback — last year's rates, this year's income. */
+  ratesAreProvisional: boolean;
 }
 
+/**
+ * The tax year a date falls in, and the rate table to compute it with.
+ *
+ * The date range is derived from the calendar rather than read off the rate
+ * table, so a year with no table still has the right boundaries. Only the
+ * RATES fall back, and when they do it is reported rather than assumed.
+ */
 export function currentTaxYear(jurisdiction: Jurisdiction, now = new Date()): TaxYearRange {
-  if (jurisdiction === 'NZ') {
-    const year = nzTaxYearFor(now);
-    const r = nzRates(year);
-    return { year, startsOn: r.startsOn, endsOn: r.endsOn, jurisdiction };
-  }
-  const year = auFinancialYearFor(now);
-  const r = auRates(year);
-  return { year, startsOn: r.startsOn, endsOn: r.endsOn, jurisdiction };
+  const year = jurisdiction === 'NZ' ? nzTaxYearFor(now) : auFinancialYearFor(now);
+  return taxYearRange(jurisdiction, year);
 }
 
+export function taxYearRange(jurisdiction: Jurisdiction, year: string): TaxYearRange {
+  const { startsOn, endsOn } = yearRangeFor(jurisdiction, year);
+  const resolved = resolveRatesYear(jurisdiction, year);
+  return {
+    year,
+    startsOn,
+    endsOn,
+    jurisdiction,
+    ratesYear: resolved.ratesYear,
+    ratesAreProvisional: resolved.provisional,
+  };
+}
+
+/**
+ * What was actually billed in one currency, before any conversion.
+ *
+ * Kept alongside the converted figures so the dashboard can show "NZ$41,200,
+ * including A$6,000 converted at 1.09" rather than a single number whose
+ * provenance is invisible.
+ */
+export interface CurrencySlice {
+  currency: Currency;
+  invoiced: Cents;
+  paid: Cents;
+  invoiceCount: number;
+}
+
+/**
+ * Invoice aggregates for a tax year.
+ *
+ * Two things every figure here now respects, and did not before:
+ *
+ *  1. **Currency.** Invoices carry NZD or AUD. Every total used to be a bare
+ *     sum of the cents column, so an A$1,000 invoice and a NZ$1,000 invoice
+ *     added to "$2,000" and the dashboard stamped the default currency on the
+ *     result. Each row is converted through its own stored
+ *     `fxRateToResidence` before it is added to anything.
+ *  2. **Source.** An invoice records the jurisdiction whose GST rules apply,
+ *     which is also where the supply was made. The residence country taxes
+ *     both, but only after the foreign slice has been through the foreign tax
+ *     credit machinery — so they are counted apart rather than pooled.
+ */
 export interface InvoiceTotals {
+  /** Currency every `Cents` figure on this object is expressed in. */
+  residenceCurrency: Currency;
+
   invoicedTotal: Cents;
   paidTotal: Cents;
   unpaidTotal: Cents;
@@ -51,12 +114,27 @@ export interface InvoiceTotals {
   invoiceCount: number;
   paidCount: number;
   overdueCount: number;
+
+  /** Supplies made in the country of residence. */
+  domestic: { invoiced: Cents; gstCollected: Cents };
+  /** Supplies made in the other country. Taxed at home, credited for tax paid there. */
+  foreign: { invoiced: Cents; gstCollected: Cents };
+
+  /** What was billed, per currency, before conversion. */
+  byCurrency: CurrencySlice[];
+  /**
+   * Foreign-currency invoices still sitting at a rate of exactly 1 — i.e.
+   * counted at face value. Surfaced rather than silently trusted, because a
+   * missing rate understates or overstates income by the whole spread.
+   */
+  unconvertedForeignCurrencyCount: number;
 }
 
 export async function getInvoiceTotals(
   db: Db,
   userId: string,
   range: TaxYearRange,
+  residenceCurrency: Currency,
 ): Promise<InvoiceTotals> {
   const today = new Date().toISOString().slice(0, 10);
 
@@ -67,6 +145,9 @@ export async function getInvoiceTotals(
       gstAmount: invoices.gstAmount,
       total: invoices.total,
       amountPaid: invoices.amountPaid,
+      currency: invoices.currency,
+      jurisdiction: invoices.jurisdiction,
+      fxRateToResidence: invoices.fxRateToResidence,
     })
     .from(invoices)
     .where(
@@ -79,6 +160,7 @@ export async function getInvoiceTotals(
     );
 
   const totals: InvoiceTotals = {
+    residenceCurrency,
     invoicedTotal: 0,
     paidTotal: 0,
     unpaidTotal: 0,
@@ -88,20 +170,57 @@ export async function getInvoiceTotals(
     invoiceCount: 0,
     paidCount: 0,
     overdueCount: 0,
+    domestic: { invoiced: 0, gstCollected: 0 },
+    foreign: { invoiced: 0, gstCollected: 0 },
+    byCurrency: [],
+    unconvertedForeignCurrencyCount: 0,
   };
 
+  const residenceJurisdiction: Jurisdiction = residenceCurrency === 'NZD' ? 'NZ' : 'AU';
+  const perCurrency = new Map<Currency, CurrencySlice>();
+
   for (const row of rows) {
+    const rate = row.currency === residenceCurrency ? 1 : row.fxRateToResidence;
+    const convert = (amount: Cents) => toResidenceCurrency(amount, rate);
+
+    const total = convert(row.total);
+    const amountPaid = convert(row.amountPaid);
+    const gstAmount = convert(row.gstAmount);
+
+    // Track the un-converted figures per currency regardless of status, so
+    // the breakdown matches what the invoice list shows.
+    const slice = perCurrency.get(row.currency) ?? {
+      currency: row.currency,
+      invoiced: 0,
+      paid: 0,
+      invoiceCount: 0,
+    };
+
     if (row.status === 'draft') {
-      totals.draftTotal += row.total;
+      totals.draftTotal += total;
       continue;
     }
 
-    totals.invoiceCount += 1;
-    totals.invoicedTotal += row.total;
-    totals.gstCollected += row.gstAmount;
-    totals.paidTotal += row.amountPaid;
+    if (row.currency !== residenceCurrency && row.fxRateToResidence === 1) {
+      totals.unconvertedForeignCurrencyCount += 1;
+    }
 
-    const outstanding = row.total - row.amountPaid;
+    slice.invoiced += row.total;
+    slice.paid += row.amountPaid;
+    slice.invoiceCount += 1;
+    perCurrency.set(row.currency, slice);
+
+    totals.invoiceCount += 1;
+    totals.invoicedTotal += total;
+    totals.gstCollected += gstAmount;
+    totals.paidTotal += amountPaid;
+
+    const bucket =
+      row.jurisdiction === residenceJurisdiction ? totals.domestic : totals.foreign;
+    bucket.invoiced += total;
+    bucket.gstCollected += gstAmount;
+
+    const outstanding = total - amountPaid;
     if (outstanding > 0 && row.status !== 'written-off') {
       totals.unpaidTotal += outstanding;
       if (row.dueOn < today) {
@@ -112,21 +231,42 @@ export async function getInvoiceTotals(
     if (row.status === 'paid') totals.paidCount += 1;
   }
 
+  totals.byCurrency = [...perCurrency.values()].sort((a, b) =>
+    a.currency === residenceCurrency ? -1 : b.currency === residenceCurrency ? 1 : 0,
+  );
+
   return totals;
 }
 
 export interface ExpenseTotals {
+  /** Currency every `Cents` figure on this object is expressed in. */
+  residenceCurrency: Currency;
   grossTotal: Cents;
   claimableTotal: Cents;
   gstReclaimable: Cents;
   count: number;
   byCategory: Array<{ category: string; claimable: Cents; count: number }>;
+  /**
+   * Claimable spend split by where it was incurred. A deduction belongs
+   * against the income it was incurred to earn, so foreign-jurisdiction
+   * costs reduce the foreign slice rather than the domestic one.
+   */
+  domesticClaimable: Cents;
+  foreignClaimable: Cents;
+  /**
+   * GST/VAT-equivalent paid in the other country. Not reclaimable on a
+   * domestic return, so it is reported apart from `gstReclaimable`.
+   */
+  foreignGstPaid: Cents;
+  /** Foreign-currency expenses still counted at face value. */
+  unconvertedForeignCurrencyCount: number;
 }
 
 export async function getExpenseTotals(
   db: Db,
   userId: string,
   range: TaxYearRange,
+  residenceCurrency: Currency,
 ): Promise<ExpenseTotals> {
   const rows = await db
     .select({
@@ -135,6 +275,9 @@ export async function getExpenseTotals(
       gstAmount: expenses.gstAmount,
       claimableAmount: expenses.claimableAmount,
       businessUsePercent: expenses.businessUsePercent,
+      currency: expenses.currency,
+      jurisdiction: expenses.jurisdiction,
+      fxRateToResidence: expenses.fxRateToResidence,
     })
     .from(expenses)
     .where(
@@ -145,23 +288,48 @@ export async function getExpenseTotals(
       ),
     );
 
+  const residenceJurisdiction: Jurisdiction = residenceCurrency === 'NZD' ? 'NZ' : 'AU';
   const byCategory = new Map<string, { claimable: Cents; count: number }>();
   const totals: ExpenseTotals = {
+    residenceCurrency,
     grossTotal: 0,
     claimableTotal: 0,
     gstReclaimable: 0,
     count: rows.length,
     byCategory: [],
+    domesticClaimable: 0,
+    foreignClaimable: 0,
+    foreignGstPaid: 0,
+    unconvertedForeignCurrencyCount: 0,
   };
 
   for (const row of rows) {
-    totals.grossTotal += row.amountGross;
-    totals.claimableTotal += row.claimableAmount;
+    const rate = row.currency === residenceCurrency ? 1 : row.fxRateToResidence;
+    if (row.currency !== residenceCurrency && row.fxRateToResidence === 1) {
+      totals.unconvertedForeignCurrencyCount += 1;
+    }
+
+    const amountGross = toResidenceCurrency(row.amountGross, rate);
+    const claimableAmount = toResidenceCurrency(row.claimableAmount, rate);
     // Only the business-use share of the GST is reclaimable.
-    totals.gstReclaimable += Math.round(row.gstAmount * row.businessUsePercent);
+    const gstShare = toResidenceCurrency(
+      Math.round(row.gstAmount * row.businessUsePercent),
+      rate,
+    );
+    const isDomestic = row.jurisdiction === residenceJurisdiction;
+
+    totals.grossTotal += amountGross;
+    totals.claimableTotal += claimableAmount;
+    if (isDomestic) {
+      totals.domesticClaimable += claimableAmount;
+      totals.gstReclaimable += gstShare;
+    } else {
+      totals.foreignClaimable += claimableAmount;
+      totals.foreignGstPaid += gstShare;
+    }
 
     const entry = byCategory.get(row.category) ?? { claimable: 0, count: 0 };
-    entry.claimable += row.claimableAmount;
+    entry.claimable += claimableAmount;
     entry.count += 1;
     byCategory.set(row.category, entry);
   }
@@ -187,74 +355,151 @@ export async function getDepreciationForYear(
   return rows[0]?.claimable ?? 0;
 }
 
-export interface EmploymentTotals {
+/**
+ * Income recorded outside the invoicing system — a part-time job, interest,
+ * dividends, rent — resolved against a tax year window.
+ *
+ * Three things happen here that did not before, and each of them matters to
+ * anyone with work on both sides of the Tasman:
+ *
+ *  1. **Nothing is filtered out by jurisdiction.** Income sourced in the
+ *     country you are NOT resident in is still taxed by the country you ARE
+ *     resident in. Dropping it produced a tax estimate that was simply too
+ *     low.
+ *  2. **Amounts are converted.** A row in AUD is multiplied by the rate
+ *     stored on the row before it is added to anything denominated in NZD.
+ *  3. **Periods are apportioned.** A pay period is attributed to the years it
+ *     overlaps, weighted by days, rather than dumped whole into one label.
+ *     The NZ and AU years are three months out of step, so a period that sits
+ *     inside one straddles the other.
+ */
+export interface IncomeSlice {
+  /** Converted into the residence currency. */
   grossIncome: Cents;
   taxWithheld: Cents;
   accLevyWithheld: Cents;
+  /** Before conversion, for showing the user what they actually entered. */
+  grossInSourceCurrency: Cents;
+  taxWithheldInSourceCurrency: Cents;
 }
 
-export async function getEmploymentIncome(
+export interface IncomeForYear {
+  /** Salary or wages sourced in the residence country. */
+  domesticEmployment: IncomeSlice;
+  /** Salary or wages sourced in the other country. */
+  foreignEmployment: IncomeSlice;
+  /** Interest, dividends, rent and the like, sourced in the residence country. */
+  domesticOther: IncomeSlice;
+  /** The same, sourced in the other country. */
+  foreignOther: IncomeSlice;
+  /** Rows whose period crosses the year boundary and so were split. */
+  apportionedRowCount: number;
+  /** Rows in a currency other than the residence currency. */
+  convertedRowCount: number;
+  /** Rows in a foreign currency left at a rate of exactly 1. */
+  unconvertedForeignCurrencyRowCount: number;
+}
+
+function emptySlice(): IncomeSlice {
+  return {
+    grossIncome: 0,
+    taxWithheld: 0,
+    accLevyWithheld: 0,
+    grossInSourceCurrency: 0,
+    taxWithheldInSourceCurrency: 0,
+  };
+}
+
+function emptyIncomeForYear(): IncomeForYear {
+  return {
+    domesticEmployment: emptySlice(),
+    foreignEmployment: emptySlice(),
+    domesticOther: emptySlice(),
+    foreignOther: emptySlice(),
+    apportionedRowCount: 0,
+    convertedRowCount: 0,
+    unconvertedForeignCurrencyRowCount: 0,
+  };
+}
+
+/**
+ * The period a row covers. Rows created before periods existed carry only a
+ * year label, so they fall back to the whole of that year in their own
+ * jurisdiction's calendar.
+ */
+function periodFor(row: {
+  earnedFrom: string | null;
+  earnedTo: string | null;
+  taxYear: string;
+  jurisdiction: Jurisdiction;
+}): DateRange {
+  if (row.earnedFrom && row.earnedTo) {
+    return { startsOn: row.earnedFrom, endsOn: row.earnedTo };
+  }
+  if (row.earnedFrom) return { startsOn: row.earnedFrom, endsOn: row.earnedFrom };
+  return yearRangeFor(row.jurisdiction, row.taxYear);
+}
+
+export async function getIncomeForYear(
   db: Db,
   userId: string,
-  taxYear: string,
-  jurisdiction: Jurisdiction,
-): Promise<EmploymentTotals> {
+  range: TaxYearRange,
+  residenceCurrency: 'NZD' | 'AUD',
+): Promise<IncomeForYear> {
   const rows = await db
     .select({
       kind: incomeSources.kind,
+      jurisdiction: incomeSources.jurisdiction,
+      taxYear: incomeSources.taxYear,
+      earnedFrom: incomeSources.earnedFrom,
+      earnedTo: incomeSources.earnedTo,
       grossAmount: incomeSources.grossAmount,
       taxWithheld: incomeSources.taxWithheld,
       accLevyWithheld: incomeSources.accLevyWithheld,
+      currency: incomeSources.currency,
+      fxRateToResidence: incomeSources.fxRateToResidence,
     })
     .from(incomeSources)
-    .where(
-      and(
-        eq(incomeSources.userId, userId),
-        eq(incomeSources.taxYear, taxYear),
-        eq(incomeSources.jurisdiction, jurisdiction),
-      ),
-    );
+    .where(eq(incomeSources.userId, userId));
 
-  const totals: EmploymentTotals = { grossIncome: 0, taxWithheld: 0, accLevyWithheld: 0 };
+  const window: DateRange = { startsOn: range.startsOn, endsOn: range.endsOn };
+  const totals = emptyIncomeForYear();
+
   for (const row of rows) {
-    if (row.kind !== 'employment') continue;
-    totals.grossIncome += row.grossAmount;
-    totals.taxWithheld += row.taxWithheld;
-    totals.accLevyWithheld += row.accLevyWithheld;
+    const period = periodFor(row);
+    if (overlapDays(period, window) <= 0) continue;
+
+    const gross = apportion(row.grossAmount, period, window);
+    const withheld = apportion(row.taxWithheld, period, window);
+    const accLevy = apportion(row.accLevyWithheld, period, window);
+    const fx = row.fxRateToResidence;
+
+    const isForeign = row.jurisdiction !== range.jurisdiction;
+    const slice =
+      row.kind === 'employment'
+        ? isForeign
+          ? totals.foreignEmployment
+          : totals.domesticEmployment
+        : isForeign
+          ? totals.foreignOther
+          : totals.domesticOther;
+
+    slice.grossInSourceCurrency += gross;
+    slice.taxWithheldInSourceCurrency += withheld;
+    slice.grossIncome += toResidenceCurrency(gross, fx);
+    slice.taxWithheld += toResidenceCurrency(withheld, fx);
+    slice.accLevyWithheld += toResidenceCurrency(accLevy, fx);
+
+    if (straddles(period, window)) totals.apportionedRowCount += 1;
+    if (row.currency !== residenceCurrency) {
+      totals.convertedRowCount += 1;
+      // A foreign-currency row left at 1:1 is being added to the residence
+      // figures as though the currencies were at par. Worth saying out loud.
+      if (fx === 1) totals.unconvertedForeignCurrencyRowCount += 1;
+    }
   }
+
   return totals;
-}
-
-/** Non-employment, non-business income for the year. */
-export async function getOtherIncome(
-  db: Db,
-  userId: string,
-  taxYear: string,
-  jurisdiction: Jurisdiction,
-): Promise<{ gross: Cents; credits: Cents }> {
-  const rows = await db
-    .select({
-      kind: incomeSources.kind,
-      grossAmount: incomeSources.grossAmount,
-      taxWithheld: incomeSources.taxWithheld,
-    })
-    .from(incomeSources)
-    .where(
-      and(
-        eq(incomeSources.userId, userId),
-        eq(incomeSources.taxYear, taxYear),
-        eq(incomeSources.jurisdiction, jurisdiction),
-      ),
-    );
-
-  let gross = 0;
-  let credits = 0;
-  for (const row of rows) {
-    if (row.kind === 'employment') continue;
-    gross += row.grossAmount;
-    credits += row.taxWithheld;
-  }
-  return { gross, credits };
 }
 
 export interface CumulativePoint {
@@ -273,6 +518,7 @@ export async function getCumulativeSeries(
   db: Db,
   userId: string,
   range: TaxYearRange,
+  residenceCurrency: Currency,
 ): Promise<CumulativePoint[]> {
   const rows = await db
     .select({
@@ -281,6 +527,8 @@ export async function getCumulativeSeries(
       paidOn: invoices.paidOn,
       total: invoices.total,
       amountPaid: invoices.amountPaid,
+      currency: invoices.currency,
+      fxRateToResidence: invoices.fxRateToResidence,
     })
     .from(invoices)
     .where(
@@ -301,11 +549,17 @@ export async function getCumulativeSeries(
   const paidByDate = new Map<string, Cents>();
 
   for (const row of rows) {
-    invoicedByDate.set(row.issuedOn, (invoicedByDate.get(row.issuedOn) ?? 0) + row.total);
-    if (row.amountPaid > 0) {
+    // One scale, one currency. Mixing NZD and AUD cents here drew a line that
+    // was not to any scale at all.
+    const rate = row.currency === residenceCurrency ? 1 : row.fxRateToResidence;
+    const total = toResidenceCurrency(row.total, rate);
+    const amountPaid = toResidenceCurrency(row.amountPaid, rate);
+
+    invoicedByDate.set(row.issuedOn, (invoicedByDate.get(row.issuedOn) ?? 0) + total);
+    if (amountPaid > 0) {
       // Fall back to the due date when no payment date was recorded.
       const when = row.paidOn ?? row.dueOn;
-      paidByDate.set(when, (paidByDate.get(when) ?? 0) + row.amountPaid);
+      paidByDate.set(when, (paidByDate.get(when) ?? 0) + amountPaid);
     }
   }
 
@@ -337,14 +591,27 @@ export async function getRevenueByClient(
   db: Db,
   userId: string,
   range: TaxYearRange,
+  residenceCurrency: Currency,
   limit = 8,
 ): Promise<ClientRevenue[]> {
+  /**
+   * Conversion happens inside the SUM rather than after it, so the grouping,
+   * the ordering and the LIMIT all see the same converted figure. Ranking
+   * clients by an unconverted sum put a client billed in the weaker currency
+   * above one billed in the stronger, which is the wrong answer to "who is my
+   * biggest client".
+   */
+  const converted = (column: SQLiteColumn) => sql<number>`coalesce(sum(CAST(round(
+    ${column} * (CASE WHEN ${invoices.currency} = ${residenceCurrency}
+      THEN 1 ELSE ${invoices.fxRateToResidence} END)
+  ) AS INTEGER)), 0)`;
+
   const rows = await db
     .select({
       clientId: clients.id,
       name: clients.name,
-      invoiced: sql<number>`coalesce(sum(${invoices.total}), 0)`,
-      paid: sql<number>`coalesce(sum(${invoices.amountPaid}), 0)`,
+      invoiced: converted(invoices.total),
+      paid: converted(invoices.amountPaid),
       invoiceCount: sql<number>`count(${invoices.id})`,
     })
     .from(invoices)
@@ -359,7 +626,7 @@ export async function getRevenueByClient(
       ),
     )
     .groupBy(clients.id, clients.name)
-    .orderBy(desc(sql`sum(${invoices.total})`))
+    .orderBy(desc(converted(invoices.total)))
     .limit(limit);
 
   return rows.map((r) => ({
@@ -424,11 +691,36 @@ export async function getTimeSummary(
   return summary;
 }
 
-/** Rolling 12-month turnover, for the GST registration threshold test. */
-export async function getRollingTurnover(db: Db, userId: string): Promise<Cents> {
+/**
+ * Rolling 12-month turnover for the GST registration threshold test, split by
+ * the jurisdiction of the supply and left in that jurisdiction's OWN currency.
+ *
+ * Both of those matter and neither used to happen. The NZ$60,000 test is
+ * about supplies made in New Zealand; the A$75,000 test is about Australian
+ * turnover. Pooling the two — and adding AUD cents to NZD cents while doing
+ * it — could report you over a threshold you are nowhere near, or, worse,
+ * leave you quiet while you crossed one. Registering late is the expensive
+ * direction: GST is payable on supplies made from the date you were required
+ * to register, whether or not you had registered.
+ *
+ * No conversion is applied. A threshold denominated in NZD is tested against
+ * NZ supplies, which are already in NZD.
+ */
+export interface TurnoverByJurisdiction {
+  NZ: Cents;
+  AU: Cents;
+}
+
+export async function getRollingTurnover(
+  db: Db,
+  userId: string,
+): Promise<TurnoverByJurisdiction> {
   const twelveMonthsAgo = new Date(Date.now() - 365 * 86_400_000).toISOString().slice(0, 10);
   const rows = await db
-    .select({ total: sql<number>`coalesce(sum(${invoices.subtotal}), 0)` })
+    .select({
+      jurisdiction: invoices.jurisdiction,
+      total: sql<number>`coalesce(sum(${invoices.subtotal}), 0)`,
+    })
     .from(invoices)
     .where(
       and(
@@ -437,8 +729,12 @@ export async function getRollingTurnover(db: Db, userId: string): Promise<Cents>
         ne(invoices.status, 'void'),
         ne(invoices.status, 'draft'),
       ),
-    );
-  return rows[0]?.total ?? 0;
+    )
+    .groupBy(invoices.jurisdiction);
+
+  const turnover: TurnoverByJurisdiction = { NZ: 0, AU: 0 };
+  for (const row of rows) turnover[row.jurisdiction] += row.total;
+  return turnover;
 }
 
 export interface UpcomingItem {
@@ -446,6 +742,12 @@ export interface UpcomingItem {
   label: string;
   date: string;
   amount: Cents;
+  /**
+   * The invoice's own currency. These are individual documents rather than a
+   * total, so each is shown as it was billed — converting them would invent a
+   * figure that appears on no invoice.
+   */
+  currency: Currency;
   href: string;
 }
 
@@ -458,6 +760,7 @@ export async function getUpcoming(db: Db, userId: string, limit = 6): Promise<Up
       dueOn: invoices.dueOn,
       total: invoices.total,
       amountPaid: invoices.amountPaid,
+      currency: invoices.currency,
       clientName: clients.name,
     })
     .from(invoices)
@@ -476,20 +779,30 @@ export async function getUpcoming(db: Db, userId: string, limit = 6): Promise<Up
     label: `${row.number}${row.clientName ? ` · ${row.clientName}` : ''}`,
     date: row.dueOn,
     amount: row.total - row.amountPaid,
+    currency: row.currency,
     href: `/invoices/${row.id}`,
   }));
 }
 
-/** Total actually banked in the year, and the merchant fees taken out of it. */
+/**
+ * Total actually banked in the year, and the merchant fees taken out of it,
+ * converted into the residence currency at the rate recorded on each payment.
+ */
 export async function getBankedTotals(
   db: Db,
   userId: string,
   range: TaxYearRange,
+  residenceCurrency: Currency,
 ): Promise<{ received: Cents; fees: Cents }> {
+  const converted = (column: SQLiteColumn) => sql<number>`coalesce(sum(CAST(round(
+    ${column} * (CASE WHEN ${payments.currency} = ${residenceCurrency}
+      THEN 1 ELSE ${payments.fxRateToResidence} END)
+  ) AS INTEGER)), 0)`;
+
   const rows = await db
     .select({
-      received: sql<number>`coalesce(sum(${payments.amount}), 0)`,
-      fees: sql<number>`coalesce(sum(${payments.fee}), 0)`,
+      received: converted(payments.amount),
+      fees: converted(payments.fee),
     })
     .from(payments)
     .where(

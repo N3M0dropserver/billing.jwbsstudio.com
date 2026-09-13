@@ -29,6 +29,21 @@ export const POST: APIRoute = async ({ request, locals, redirect }) => {
   const amountGross = parseAmount(String(form.get('amount') ?? '0'));
   if (amountGross <= 0) return redirect('/tax/expenses/new?error=amount', 302);
 
+  /**
+   * An expense in the other country's currency needs a rate to be worth
+   * anything in a return kept in the residence currency. Blank means 1, and
+   * the dashboard reports how many records are sitting unconverted rather
+   * than quietly treating A$ as NZ$.
+   */
+  // The form has no separate currency field: an expense incurred under NZ
+  // rules was paid in NZD, and one under AU rules in AUD. Deriving it keeps
+  // the two from ever disagreeing.
+  const currency = jurisdiction === 'AU' ? 'AUD' : 'NZD';
+  const residenceCurrency = settings.taxResidence === 'NZ' ? 'NZD' : 'AUD';
+  const rawRate = Number.parseFloat(String(form.get('fxRateToResidence') ?? ''));
+  const fxRateToResidence =
+    currency === residenceCurrency ? 1 : Number.isFinite(rawRate) && rawRate > 0 ? rawRate : 1;
+
   const registered =
     jurisdiction === 'NZ' ? settings.nzGstRegistered : settings.auGstRegistered;
   const hasGst = registered && form.get('hasGst') !== 'no';
@@ -46,6 +61,15 @@ export const POST: APIRoute = async ({ request, locals, redirect }) => {
   const businessUsePercent = Number.isFinite(rawUse)
     ? Math.min(Math.max(rawUse / 100, 0), 1)
     : (guidance?.defaultBusinessUse ?? 1);
+
+  /**
+   * A receipt key only counts if it sits under this user's own prefix. The
+   * field is a plain hidden input, so it is as forgeable as anything else on
+   * the form — without this check a key from another account could be pinned
+   * to a record here and its image read back through /api/expenses/:id/receipt.
+   */
+  const claimedKey = String(form.get('receiptKey') ?? '');
+  const receiptKey = claimedKey.startsWith(`receipts/${user.id}/`) ? claimedKey : null;
 
   const isCapital = form.get('isCapital') === 'yes';
   const now = new Date().toISOString();
@@ -111,7 +135,8 @@ export const POST: APIRoute = async ({ request, locals, redirect }) => {
     amountGross,
     gstAmount,
     amountNet,
-    currency: settings.defaultCurrency,
+    currency,
+    fxRateToResidence,
     jurisdiction,
     businessUsePercent,
     // A capital item's deduction comes through depreciation, not here, so
@@ -119,6 +144,7 @@ export const POST: APIRoute = async ({ request, locals, redirect }) => {
     claimableAmount: isCapital ? 0 : Math.round(amountNet * businessUsePercent),
     isCapital,
     assetId,
+    receiptKey,
     isBillable: form.get('isBillable') === 'yes',
     notes: String(form.get('notes') ?? ''),
     createdAt: now,

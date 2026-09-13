@@ -18,13 +18,52 @@ position, and quick actions.
 handled automatically based on where the client is. Generates a real PDF,
 emails it with the PDF attached, and gives the client a public link to view and
 pay. Bank transfer always; Stripe card payment optionally, with a webhook that
-marks the invoice paid.
+marks the invoice paid. Correctable until money is recorded against them, after
+which the remedy is a credit note rather than a quiet amendment; voidable and
+write-off-able after that, both reversible, neither deleting the number.
+
+**Quotes** — agree the work and the price before it starts. Priced through the
+same GST engine as the invoice it becomes, sent as a PDF, read and accepted by
+the client on a public link. Accepting records who agreed and when; turning it
+into an invoice stays your decision, and copies the lines exactly as they were
+quoted. Quotes number separately from invoices, so one that comes to nothing
+leaves no gap in the invoice sequence.
+
+**Chasing** — payment reminders on a schedule you set: a courtesy note before
+the due date, then a ladder of chases after it. Off until you switch it on, and
+switchable off again for one client or one invoice. Runs on a Cloudflare Cron
+Trigger.
+
+**Bank reconciliation** — import a CSV from any NZ or AU bank and credits are
+matched against outstanding invoices, with a stated confidence and a stated
+reason for each. Re-importing an overlapping period is safe. An exact amount on
+its own is never treated as certain, because two invoices for the same round
+figure are exactly where a silent mis-match happens.
+
+**Email templates** — a drag-and-drop email builder at `/templates` for writing
+the wording once and reusing it, with merge variables like
+`{{invoice.number}}` and `{{client.firstName}}`. Blocks on the left, the email
+in the middle, settings for the selected block on the right; six base templates
+to start from. Templates are
+optional: choosing none falls back to the built-in wording, so sending works on
+a fresh account with no templates at all. Sends are recorded, with approximate
+open tracking — read the caveats in *Email* before trusting the numbers.
 
 **Tax & accounting** — a proper tax engine for both countries. Progressive
 brackets, ACC levies, student loan, Medicare levy, HELP, GST/BAS, provisional
 tax and PAYG instalments. Expense tracking with business-use apportionment,
 depreciation schedules, and guidance on what is actually claimable — including
-the rules that differ between NZ and AU.
+the rules that differ between NZ and AU. Photograph a receipt and a vision
+model fills the expense form in; the image is kept with the record, which is
+what both revenue authorities expect you to retain.
+
+**Other income** — a part-time job, interest, dividends or rent, recorded per
+pay period in either currency. Employment income changes the bracket your
+self-employed income is taxed in, so it changes what you should be setting
+aside. Work done across the Tasman is taxed by your country of residence with a
+credit for the tax withheld at source, and because the two tax years are three
+months out of step, a period crossing the boundary is split across both by
+days. See *Working across both countries* in the research doc.
 
 **Clients** — contacts, communications log, per-client revenue, proposals.
 
@@ -35,16 +74,29 @@ publishes a demo site on its own subdomain, and drafts the outreach email.
 Every stage is independently set to run by itself, be decided by the model, or
 stop and wait for you. See *The growth pipeline* below.
 
+**Activity log** — what you sent and what the client did with it: invoice sent,
+reminder sent, email opened, web invoice viewed, PDF downloaded, card payment
+started, payment recorded. It lives where the question gets asked: the full
+history on the invoice page, and the client's own history — invoice events
+interleaved with the calls and notes you logged — on the client page. See
+*The activity log* for what each signal is actually worth.
+
 **Time** — a timer that survives closing the tab, manual entry, and one-click
 conversion of unbilled time into an invoice.
 
 **Omni search** — ⌘K from anywhere, across invoices, clients, expenses, time
 and projects, with the quick actions exposed as commands.
 
+**Money is one currency.** Invoices, expenses and payments each carry the rate
+that applied on their own date, and every total, chart and tax figure is
+converted into the currency of your tax residence before anything is added up.
+Anything left without a rate is reported on the dashboard rather than counted
+at face value.
+
 ## The tax engine
 
 This is the part that has to be right, so it is a pure, dependency-free module
-with **185 tests** covering both jurisdictions.
+with **381 tests** across the suite, most of them here.
 
 - `src/lib/tax/rates.ts` — versioned rate tables. Every figure carries a source
   URL and a confidence marker. Figures marked `verify` are surfaced in the UI
@@ -55,6 +107,8 @@ with **185 tests** covering both jurisdictions.
 - `src/lib/tax/nz.ts` / `au.ts` — per-jurisdiction calculation.
 - `src/lib/tax/engine.ts` — the combined position, foreign tax credits, and the
   three reserve bands.
+- `src/lib/tax/period.ts` — attributing income earned over a period to a tax
+  year, and converting between the two currencies.
 - `src/lib/tax/gst.ts` — GST, export treatment, threshold monitoring.
 - `src/lib/tax/deductions.ts` — depreciation, home office, vehicle, and the
   claimable-guidance rules.
@@ -318,7 +372,13 @@ npx wrangler secret put SESSION_SECRET
 npx wrangler secret put RESEND_API_KEY        # if sending email via Resend
 npx wrangler secret put STRIPE_SECRET_KEY     # optional
 npx wrangler secret put STRIPE_WEBHOOK_SECRET # optional
+npx wrangler secret put CRON_SECRET           # for automatic reminders
 ```
+
+`CRON_SECRET` is what the scheduled job authenticates with. Without it the
+reminder and housekeeping endpoints refuse everything and nothing is sent —
+which is the right failure for an endpoint that emails your clients. Generate
+it the same way as the session secret.
 
 ### 3. Migrate and create your user
 
@@ -336,6 +396,37 @@ Copy it in one go — a character lost to a line wrap or a shell that ate the
 `$` presents later as "that email and password combination was not
 recognised", with no hint that the password is nearly right. If that happens,
 sign in with an emailed link instead (below) and set a password you chose.
+
+### Migrations, and the one rule about them
+
+Migrations are generated from `src/lib/db/schema.ts`, never written by hand:
+
+```bash
+npm run db:generate
+```
+
+Every `CREATE` in `migrations/` is `CREATE ... IF NOT EXISTS`, and every `DROP`
+is `DROP ... IF EXISTS`. drizzle-kit does not emit them that way, so
+`db:generate` runs `scripts/idempotent-migrations.mjs` afterwards to add the
+guards, and `tests/migrations.test.ts` fails if any are missing. The reason is
+that wrangler decides what to apply by **filename**, against the names in the
+`d1_migrations` table — a name it does not recognise is run in full, and a bare
+`CREATE TABLE` then aborts the whole migration on the first object that is
+already there.
+
+That makes re-application survivable, not safe: SQLite has no
+`ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, so a re-run still stops at the
+first column it has already added. **So never rename or renumber a migration
+that has been applied anywhere.** If a branch merge forces it, record the new
+name as already applied rather than letting it re-run:
+
+```sql
+INSERT INTO d1_migrations (name, applied_at)
+SELECT '0010_growth_engine.sql', CURRENT_TIMESTAMP
+WHERE NOT EXISTS (SELECT 1 FROM d1_migrations WHERE name = '0010_growth_engine.sql');
+```
+
+Locally, deleting the database and migrating from scratch is usually simpler.
 
 ### 4. Run it
 
@@ -483,6 +574,69 @@ of production.
 
 ---
 
+## The activity log
+
+Three logs exist, and they are not the same thing:
+
+| Table | Keyed by | Holds |
+| --- | --- | --- |
+| `activity_log` | the acting user | the internal audit trail, including every auth decision |
+| `communications` | client | calls, meetings and notes you log by hand |
+| `invoice_events` | invoice | what was sent, and what the client did with it |
+
+The third is the new one, and it exists because neither of the others can
+answer "INV-0042 went out Tuesday, the reminder Friday, and they opened both
+but have never opened the web invoice" — which is what you want to know before
+chasing a payment.
+
+There is no separate activity screen, deliberately: the log is only useful
+next to the thing it describes. The invoice page carries that invoice's
+history, with an engagement summary in the card header — "2 web views · 1 PDF
+download", or "Sent, but the client has not opened it yet". The client page
+carries theirs, merging `invoice_events` with `communications` so a logged
+phone call sits in sequence with the reminder that prompted it.
+
+### What each signal is worth
+
+In descending order of how much you should trust it:
+
+1. **Payment started** — they reached Stripe's checkout. Unambiguous, and an
+   abandoned checkout is very different from silence.
+2. **PDF downloaded** — deliberate, and usually means the invoice is on its way
+   to whoever actually pays it.
+3. **Web invoice viewed** — someone opened the public link. Strong.
+4. **Email opened** — a 1×1 image in the email was fetched. **Weak.** Treat it
+   as a hint, never as proof:
+   - Most clients block remote images by default, so *no open does not mean
+     unread*.
+   - Apple Mail Privacy Protection and corporate scanners pre-fetch every image
+     whether or not anyone opened the message, so *an open does not mean read*.
+     Where the fetch is recognisably a proxy (Gmail, Mimecast and friends) the
+     event says so.
+   - A forwarded email logs against the original send.
+
+Repeats of the same client-side event within 30 minutes collapse into one row,
+so a reload does not look like renewed interest. Anything after that window
+gets its own row, because coming back to an invoice twice in a week is a real
+signal.
+
+### Open tracking is optional
+
+**Settings → Record when a client opens an invoice email** controls it, and it
+is on by default. Switched off, invoice emails contain no remote images at all
+and the log simply has no `email-opened` rows — everything else still works,
+including the three stronger signals above, none of which need a pixel.
+
+The pixel URL carries the invoice's existing public token and the id of the
+send event, and nothing else — no address, no name. Anyone holding that URL
+could already open the invoice itself, so it discloses nothing new. The route
+(`/t/<token>/<send>.gif`) answers every request with the same image and the
+same 200, hit or miss, so it cannot be used to work out which tokens are real.
+
+Every write in this subsystem is best effort: a logging failure is written to
+the console and swallowed, because a client must never see an error page — and
+an invoice must never fail to send — over a row in an activity table.
+
 ## Email
 
 Sending uses **Cloudflare Email Service** by default, via the `send_email`
@@ -526,6 +680,92 @@ Set `MAIL_PROVIDER` to `resend` in `wrangler.jsonc` and
 behind one interface in `src/lib/mail/`. Set it to `none` to disable sending
 entirely.
 
+### Templates
+
+`/templates` is a visual builder for the outbound wording. It saves three
+things per template: the Tiptap JSON it reloads from, the rendered HTML that gets
+mailed, and a plain-text alternative. Rendering happens **in the browser** —
+the Worker never runs React Email, which keeps Tiptap out of the Worker bundle
+entirely (it is a ~2.5 MB client chunk, ~790 KB gzipped, loaded only on the
+builder page).
+
+A three-pane builder, in the shape anyone who has used Klaviyo or GrapesJS
+expects: **blocks** and **layers** on the left, the **canvas** in the middle,
+**design** and **variables** on the right. Blocks drag onto the canvas (or
+click, for touch and keyboard); the selected block gets an outline and a
+toolbar to move, duplicate or delete it; the design panel edits its spacing,
+colour, size and alignment, and the email's own background and width. A
+desktop/mobile toggle changes the canvas width the way a client would.
+
+The thing that makes this work is that **there is no second model of the
+email**. The canvas is a real rich-text editor — click in and type, paste, undo
+— and every piece of builder chrome is a reading of that same document rather
+than a parallel tree kept in sync with it. A block dragged in and a paragraph
+typed by hand produce the same kind of node, which is why the builder and the
+text editing can coexist instead of fighting. `builder/targeting.ts` is the
+whole translation layer: which block is under this point, where is it on
+screen, and how do you move it. `tests/builder.test.ts` drives those against a
+real editor, because ProseMirror position arithmetic is where this kind of
+thing quietly goes wrong — a node's position is not its index, and nothing
+throws when you get it a little bit off.
+
+**Base templates** (`src/lib/mail/starters.ts`) give a finished layout to edit
+down rather than a blank page; one can be chosen when the template is created
+or applied later from *Start from a base*. They are authored as HTML rather
+than editor JSON, for two reasons: hand-written Tiptap JSON is unreviewable,
+and converting HTML into it needs the editor schema, which must stay out of
+the Worker. So a starter's id rides along on the redirect into the editor and
+the browser applies the body. `tests/starters.test.ts` parses every starter and
+every palette block through the real schema and asserts each one arrives as the
+block it claims to be — a button missing one attribute is still valid HTML, it
+just silently turns into a paragraph.
+
+Bodies use `{{variable}}` tokens, substituted at send time. The catalogue lives
+in `src/lib/mail/variables.ts` and is shared by the editor palette and the send
+path, so a variable cannot exist in one and not the other. Substituted values
+are HTML-escaped; an unrecognised token renders as nothing rather than leaking
+`{{like.this}}` into a client's inbox.
+
+Four things are deliberately true:
+
+- **Templates are optional.** No template, or a template with an empty body,
+  falls back to the built-in wording in `src/lib/mail/templates.ts`. Sending
+  cannot be broken by the template system.
+- **The sign-in email is not templatable.** A malformed template there would
+  lock you out of the app.
+- **Deleting a template archives it** rather than removing the row, so past
+  sends keep resolving.
+- **A base template is only offered for kinds it can fill.** A proposal starter
+  on an invoice template would carry `{{proposal.amount}}`, which an invoice
+  send has no value for — it would reach a client as a gap mid-sentence. The
+  test suite enforces the same rule the picker does.
+
+### Open tracking, and why the numbers lie
+
+Every send embeds a 1×1 pixel at `/e/<token>.gif` and gets a row in
+`email_sends`. When a mail client loads that image, the open is recorded.
+
+Treat the counts as a hint, never as fact:
+
+- **Apple Mail Privacy Protection fetches every image on arrival**, read or
+  not. That is an open that never happened, and it is a large share of consumer
+  mail. Hits that arrive within ten seconds of sending, or from a recognised
+  scanner, are flagged `likely_prefetch` so they can be discounted.
+- **Gmail proxies images** through `googleusercontent.com` and caches them. The
+  first load registers; re-opens usually do not, and the IP and user agent
+  belong to Google.
+- **Blocked images** (Outlook's default) mean a real, careful read records
+  nothing.
+
+Which is why open tracking **never drives invoice status**. The signal that
+means something is the client following the link: `/pay/<token>` stamps
+`invoices.viewed_at`, and that is what moves an invoice to *viewed*.
+
+Images dropped into the editor go to R2 under `email-assets/` and are served
+publicly from `/email-assets/…` — they have to be, since a mail client sends no
+cookies. Keys are random and unguessable, but treat anything uploaded there as
+published.
+
 ### A note on what not to use
 
 Cloudflare Email **Routing** is a different product: inbound only, it cannot
@@ -544,10 +784,40 @@ npm test                 # run the test suite
 npm run typecheck        # tsc --noEmit
 npm run typecheck:agent  # tsc --noEmit for the agent worker
 npm run db:generate      # generate a migration from schema changes
+npm run db:idempotent    # add the IF NOT EXISTS guards to migrations by hand
 npm run db:migrate:local # apply migrations locally
 npm run db:migrate:remote # apply migrations to the deployed database
 npm run user:add         # create or reset a user
 ```
+
+The package manager is **bun** (`packageManager` in package.json pins it, and
+`bun.lock` needs bun 1.4 or newer to read). `npm` works for everything above;
+use `bun run <script>` if you would rather not mix them.
+
+### Scheduled work
+
+Two Cron Triggers, declared in `wrangler.jsonc`:
+
+| Schedule (UTC) | Task | What it does |
+| --- | --- | --- |
+| `0 8 * * *` | `reminders` | Sends payment reminders that are due |
+| `0 3 * * 0` | `housekeeping` | Purges expired sessions and spent sign-in links |
+
+Cron Triggers invoke a Worker's `scheduled()` handler, which the Astro
+Cloudflare adapter does not emit. `scripts/wrap-worker.mjs` runs after
+`astro build` and adds one that calls back into the app's own `fetch`, so the
+job runs inside the real application rather than as a second, half-wired copy
+of it. If the adapter ever changes the shape of its entrypoint, that script
+fails the build rather than deploying something that silently never fires.
+
+To see what tonight's run would do without sending anything:
+
+```bash
+curl -X POST -H "Authorization: Bearer $CRON_SECRET" \
+  "https://billing.jwbsstudio.com/api/cron/reminders?dryRun=1"
+```
+
+Add `&today=2026-12-24` to ask the same question about a future date.
 
 ---
 
@@ -600,8 +870,12 @@ npm run user:add         # create or reset a user
    countries could claim you, the DTA tie-breaker decides, and that is a
    facts-and-circumstances question for an accountant.
 
-9. **Multi-currency is simplistic.** Invoices carry a currency and an FX rate
-   field, but there is no automatic rate lookup and no FX gain/loss tracking.
+9. **Exchange rates are entered by hand.** Every invoice, expense, payment and
+   pay period carries the rate that applied on its own date, and every total is
+   converted through it — but you type the rate, there is no automatic lookup,
+   and FX gain or loss between invoicing and payment is not tracked. Records
+   left without a rate are counted at face value and reported as such on the
+   dashboard.
 
 10. **Estimates, not returns.** The tax figures are for setting money aside.
    Filing is a job for your accountant.
@@ -623,7 +897,7 @@ src/
     tax/          the tax engine — pure, tested, no I/O
     invoices/     invoice arithmetic and multi-table operations
     pdf/          the PDF writer and the invoice template
-    mail/         provider abstraction and email templates
+    mail/         providers, built-in templates, variables, open tracking
     stripe/       checkout sessions and webhook verification
     ai/           Workers AI helpers, usage tracking, the prompt cache and pricing
     growth/       the lead-generation pipeline
@@ -642,6 +916,7 @@ src/
       proposal.ts   outreach drafting, the daily cap, sending
       engine.ts     the stage machine — plain functions, no Worker needed
     auth/         password hashing and sessions
+    activity/     the invoice activity log: events, timelines, open tracking
     db/           Drizzle schema and client
     queries/      aggregate queries for dashboard and tax pages
   pages/          Astro routes and API endpoints
@@ -649,6 +924,7 @@ src/
 workers/
   agent/          the campaign agent — one Durable Object per run, deployed separately
 migrations/       D1 migrations
-tests/            398 tests: the tax engine, and the growth pipeline's pure parts
+tests/            679 tests: the tax engine, the growth pipeline's pure parts, the
+                  activity log, templates, quotes and bank matching
 docs/             the tax research
 ```

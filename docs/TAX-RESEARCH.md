@@ -259,10 +259,61 @@ Once residence is settled:
   would have paid at home, and the excess is generally neither refundable nor
   carried forward.
 
-The app implements exactly that: `calculateCombined()` applies the residence
-country's rules and credits foreign tax up to the cap. It does **not** decide
-your residence, because that is a facts-and-circumstances question. It asks you
-to state it and shows what follows.
+The app implements exactly that: `calculateCombined()` adds foreign income to
+the residence country's taxable base and then credits foreign tax against the
+liability that produces. It does **not** decide your residence, because that is
+a facts-and-circumstances question. It asks you to state it and shows what
+follows.
+
+The order matters, and getting it wrong is not a rounding error. Crediting
+foreign tax without first taxing the foreign income means declaring overseas
+work *reduces* your bill by the tax you paid overseas — which is backwards, and
+was the behaviour until this was fixed. On NZ$21,800 of Australian part-time
+work with NZ$3,270 withheld, an NZ resident on NZ$80,000 of studio income went
+from an estimated NZ$18,357 to NZ$15,087. The right answer is NZ$22,281: the
+income is taxed here, and the Australian withholding comes off that.
+
+### The cap is worked out differently in each country
+
+- **New Zealand** segments foreign income by country and source and allows the
+  NZ tax attributable to each segment — in practice the effective rate on your
+  whole income, applied to that segment (IR461).
+- **Australia** works the foreign income tax offset limit out *incrementally*:
+  tax with the foreign income, less tax recalculated with that income
+  disregarded, Medicare levy included on both sides (ITAA 1997 s 770-75).
+
+On a progressive scale the incremental method is the more generous of the two,
+because it sits at the margin rather than at the average. The engine uses
+whichever one belongs to your country of residence.
+
+### Levies follow the income, not the tax
+
+- **ACC earner levy** is not charged on overseas earnings, so foreign income
+  enters the NZ calculation as other income and never reaches the levy base.
+- **NZ student loan** repayment income does include overseas income for a
+  NZ-based borrower, so it does pick it up.
+- **Medicare levy and HELP** are worked out on Australian taxable income, which
+  includes foreign income, so an AU resident's New Zealand earnings attract
+  both.
+
+### Periods, not year labels
+
+The NZ tax year (1 April – 31 March) and the AU financial year (1 July –
+30 June) are three months out of step. A period of work that sits inside one
+straddles the other, and a fortnight ending in early April belongs to two NZ
+years at once. Income is therefore recorded against the **period it was earned
+over** and apportioned across the years it overlaps, weighted by days. A period
+falling wholly inside one year is not apportioned at all, so the ordinary case
+stays exact.
+
+### Currency
+
+An amount in AUD is not an amount in NZD. Each income record carries the rate
+that converts it into your residence currency, stored against the record
+because the rate that applied when the money was earned is the one the return
+uses — not today's rate. A foreign-currency record left at a rate of 1 is
+flagged in the UI rather than silently believed, because NZD and AUD are never
+at par.
 
 **If you have income on both sides of the Tasman, get the residence position
 confirmed by an accountant before relying on any number this app produces.** It

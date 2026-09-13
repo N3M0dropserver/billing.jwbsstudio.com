@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react';
 import { EXPENSE_GUIDANCE, type ExpenseCategory } from '~/lib/tax/deductions';
+import type { ReceiptReading } from '~/lib/ai/receipt';
 
 /**
  * Expense entry.
@@ -8,13 +9,27 @@ import { EXPENSE_GUIDANCE, type ExpenseCategory } from '~/lib/tax/deductions';
  * category in both jurisdictions, pre-fills a sensible business-use split,
  * and — where the two countries disagree — says so before you claim
  * something you cannot.
+ *
+ * A photographed receipt fills it in. The reading is a proposal, never a
+ * saved record: every figure lands in a field you can see and correct, and
+ * anything the model could not make out is named rather than guessed.
  */
 
 interface Props {
   clients: Array<{ id: string; name: string }>;
   defaultJurisdiction: 'NZ' | 'AU';
   gstRegistered: boolean;
+  /** Currency the tax figures are kept in — follows tax residence. */
+  residenceCurrency: 'NZD' | 'AUD';
 }
+
+/** What the upload control is doing, and what came back. */
+type ReceiptState =
+  | { status: 'idle'; key?: undefined; name?: undefined; error?: undefined; unreadable?: undefined }
+  | { status: 'reading'; name: string; key?: undefined; error?: undefined; unreadable?: undefined }
+  | { status: 'read'; name: string; key: string; unreadable: string[]; error?: undefined }
+  | { status: 'stored'; name: string; key: string; error?: string; unreadable?: undefined }
+  | { status: 'failed'; error: string; key?: undefined; name?: undefined; unreadable?: undefined };
 
 const GST_RATES = { NZ: 0.15, AU: 0.10 };
 
@@ -23,8 +38,18 @@ const CAPITAL_THRESHOLDS = {
   AU: { limit: 20_000, label: 'AU$20,000' },
 };
 
-export default function ExpenseForm({ clients, defaultJurisdiction, gstRegistered }: Props) {
+export default function ExpenseForm({
+  clients,
+  defaultJurisdiction,
+  gstRegistered,
+  residenceCurrency,
+}: Props) {
   const [jurisdiction, setJurisdiction] = useState<'NZ' | 'AU'>(defaultJurisdiction);
+  const [fxRate, setFxRate] = useState('');
+  const [description, setDescription] = useState('');
+  const [vendor, setVendor] = useState('');
+  const [incurredOn, setIncurredOn] = useState(new Date().toISOString().slice(0, 10));
+  const [receipt, setReceipt] = useState<ReceiptState>({ status: 'idle' });
   const [category, setCategory] = useState<ExpenseCategory>('software');
   const [amount, setAmount] = useState('');
   const [businessUse, setBusinessUse] = useState('100');
@@ -54,6 +79,64 @@ export default function ExpenseForm({ clients, defaultJurisdiction, gstRegistere
       currency: jurisdiction === 'NZ' ? 'NZD' : 'AUD',
     }).format(cents / 100);
 
+  /**
+   * Take the reading and fill the form in, leaving anything the model could
+   * not make out alone rather than blanking what the user has already typed.
+   */
+  const applyReading = (reading: ReceiptReading) => {
+    if (reading.description) setDescription(reading.description);
+    else if (reading.vendor) setDescription(reading.vendor);
+    if (reading.vendor) setVendor(reading.vendor);
+    if (reading.incurredOn) setIncurredOn(reading.incurredOn);
+    if (reading.amountGross !== null) setAmount((reading.amountGross / 100).toFixed(2));
+    if (reading.currency) setJurisdiction(reading.currency === 'AUD' ? 'AU' : 'NZ');
+    if (reading.category) applyCategory(reading.category);
+    // A stated GST amount means the receipt is GST-inclusive.
+    if (reading.gstAmount !== null && reading.gstAmount > 0) setHasGst(true);
+  };
+
+  const upload = async (file: File) => {
+    setReceipt({ status: 'reading', name: file.name });
+
+    const body = new FormData();
+    body.append('receipt', file);
+
+    try {
+      const response = await fetch('/api/expenses/receipt', { method: 'POST', body });
+      const data = (await response.json()) as {
+        receiptKey?: string;
+        read?: boolean;
+        reading?: ReceiptReading;
+        error?: string;
+      };
+
+      if (!response.ok || !data.receiptKey) {
+        setReceipt({ status: 'failed', error: data.error ?? 'That upload did not work.' });
+        return;
+      }
+
+      if (data.read && data.reading) {
+        applyReading(data.reading);
+        setReceipt({
+          status: 'read',
+          name: file.name,
+          key: data.receiptKey,
+          unreadable: data.reading.unreadable,
+        });
+      } else {
+        // The image is stored either way — only the reading failed.
+        setReceipt({
+          status: 'stored',
+          name: file.name,
+          key: data.receiptKey,
+          error: data.error,
+        });
+      }
+    } catch (error) {
+      setReceipt({ status: 'failed', error: String(error) });
+    }
+  };
+
   const applyCategory = (next: ExpenseCategory) => {
     setCategory(next);
     const info = EXPENSE_GUIDANCE[next];
@@ -65,33 +148,85 @@ export default function ExpenseForm({ clients, defaultJurisdiction, gstRegistere
 
   return (
     <form method="post" action="/api/expenses" className="grid gap-4 lg:grid-cols-3">
-      <div className="card space-y-3.5 p-5 lg:col-span-2">
+      <div className="card space-y-3.5 p-4 sm:p-5 lg:col-span-2">
+        <div
+          className="rounded-lg border border-dashed p-4"
+          style={{ borderColor: 'var(--border)', background: 'var(--surface-sunken)' }}
+        >
+          <label htmlFor="receiptFile" className="label block">
+            Photograph the receipt
+          </label>
+          <p className="muted mt-0.5 mb-2.5 text-xs">
+            Optional, and it fills the form in for you. The image is kept with the expense —
+            which is the record IRD and the ATO expect you to hold, whatever the figures say.
+          </p>
+          <input
+            id="receiptFile" type="file" accept="image/*" capture="environment"
+            className="block w-full text-xs"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) void upload(file);
+            }}
+          />
+          {receipt.key && <input type="hidden" name="receiptKey" value={receipt.key} />}
+
+          {receipt.status === 'reading' && (
+            <p className="muted mt-2 text-xs" role="status">Reading {receipt.name}…</p>
+          )}
+          {receipt.status === 'read' && (
+            <p className="mt-2 text-xs" style={{ color: 'var(--color-paid)' }} role="status">
+              Read {receipt.name}. Check the figures below before saving
+              {receipt.unreadable && receipt.unreadable.length > 0
+                ? ` — the ${receipt.unreadable.join(' and ')} could not be made out.`
+                : '.'}
+            </p>
+          )}
+          {receipt.status === 'stored' && (
+            <p className="muted mt-2 text-xs" role="status">
+              {receipt.name} is saved with this expense, but could not be read
+              {receipt.error ? `: ${receipt.error}` : '.'} Type the figures in below.
+            </p>
+          )}
+          {receipt.status === 'failed' && (
+            <p className="mt-2 text-xs" style={{ color: 'var(--color-overdue)' }} role="alert">
+              {receipt.error}
+            </p>
+          )}
+        </div>
+
         <div className="grid gap-3.5 sm:grid-cols-2">
           <div className="sm:col-span-2">
-            <label htmlFor="description" className="mb-1.5 block text-sm font-medium">
+            <label htmlFor="description" className="label muted mb-1.5 block">
               What was it
             </label>
             <input
               id="description" name="description" required
+              value={description} onChange={(e) => setDescription(e.target.value)}
               placeholder="Adobe Creative Cloud annual subscription" className="field"
             />
           </div>
 
           <div>
-            <label htmlFor="vendor" className="mb-1.5 block text-sm font-medium">Vendor</label>
-            <input id="vendor" name="vendor" placeholder="Adobe" className="field" />
-          </div>
-
-          <div>
-            <label htmlFor="incurredOn" className="mb-1.5 block text-sm font-medium">Date</label>
+            <label htmlFor="vendor" className="label muted mb-1.5 block">Vendor</label>
+            {/* Controlled: reading a receipt fills this in. */}
             <input
-              id="incurredOn" name="incurredOn" type="date"
-              defaultValue={new Date().toISOString().slice(0, 10)} className="field"
+              id="vendor" name="vendor" value={vendor}
+              onChange={(e) => setVendor(e.target.value)}
+              placeholder="Adobe" className="field"
             />
           </div>
 
           <div>
-            <label htmlFor="amount" className="mb-1.5 block text-sm font-medium">
+            <label htmlFor="incurredOn" className="label muted mb-1.5 block">Date</label>
+            <input
+              id="incurredOn" name="incurredOn" type="date"
+              value={incurredOn} onChange={(e) => setIncurredOn(e.target.value)}
+              className="field"
+            />
+          </div>
+
+          <div>
+            <label htmlFor="amount" className="label muted mb-1.5 block">
               Amount {gstRegistered && <span className="muted font-normal">(as on the receipt)</span>}
             </label>
             <input
@@ -101,7 +236,7 @@ export default function ExpenseForm({ clients, defaultJurisdiction, gstRegistere
           </div>
 
           <div>
-            <label htmlFor="category" className="mb-1.5 block text-sm font-medium">Category</label>
+            <label htmlFor="category" className="label muted mb-1.5 block">Category</label>
             <select
               id="category" name="category" value={category}
               onChange={(e) => applyCategory(e.target.value as ExpenseCategory)} className="field"
@@ -113,7 +248,7 @@ export default function ExpenseForm({ clients, defaultJurisdiction, gstRegistere
           </div>
 
           <div>
-            <label htmlFor="jurisdiction" className="mb-1.5 block text-sm font-medium">Jurisdiction</label>
+            <label htmlFor="jurisdiction" className="label muted mb-1.5 block">Jurisdiction</label>
             <select
               id="jurisdiction" name="jurisdiction" value={jurisdiction}
               onChange={(e) => setJurisdiction(e.target.value as 'NZ' | 'AU')} className="field"
@@ -123,8 +258,25 @@ export default function ExpenseForm({ clients, defaultJurisdiction, gstRegistere
             </select>
           </div>
 
+          {(jurisdiction === 'NZ' ? 'NZD' : 'AUD') !== residenceCurrency && (
+            <div>
+              <label htmlFor="fxRateToResidence" className="label muted mb-1.5 block">
+                Rate to {residenceCurrency}
+              </label>
+              <input
+                id="fxRateToResidence" name="fxRateToResidence" className="field tabular"
+                inputMode="decimal" placeholder="1.0900"
+                value={fxRate} onChange={(e) => setFxRate(e.target.value)}
+              />
+              <p className="muted mt-1 text-xs">
+                Your tax figures are kept in {residenceCurrency}. Without a rate this is deducted
+                at face value. Use the rate on the day you paid it.
+              </p>
+            </div>
+          )}
+
           <div>
-            <label htmlFor="businessUsePercent" className="mb-1.5 block text-sm font-medium">
+            <label htmlFor="businessUsePercent" className="label muted mb-1.5 block">
               Business use
             </label>
             <div className="flex items-center gap-2">
@@ -137,7 +289,7 @@ export default function ExpenseForm({ clients, defaultJurisdiction, gstRegistere
           </div>
 
           <div>
-            <label htmlFor="clientId" className="mb-1.5 block text-sm font-medium">
+            <label htmlFor="clientId" className="label muted mb-1.5 block">
               Client <span className="muted font-normal">(optional)</span>
             </label>
             <select id="clientId" name="clientId" className="field">
@@ -179,7 +331,7 @@ export default function ExpenseForm({ clients, defaultJurisdiction, gstRegistere
           {isCapital && (
             <div className="grid gap-3 pl-7 sm:grid-cols-2">
               <div>
-                <label htmlFor="depreciationRate" className="muted mb-1 block text-xs font-medium">
+                <label htmlFor="depreciationRate" className="label muted mb-1.5 block">
                   Depreciation rate %
                 </label>
                 <input
@@ -189,7 +341,7 @@ export default function ExpenseForm({ clients, defaultJurisdiction, gstRegistere
                 />
               </div>
               <div>
-                <label htmlFor="depreciationMethod" className="muted mb-1 block text-xs font-medium">
+                <label htmlFor="depreciationMethod" className="label muted mb-1.5 block">
                   Method
                 </label>
                 <select id="depreciationMethod" name="depreciationMethod" className="field">
@@ -210,7 +362,7 @@ export default function ExpenseForm({ clients, defaultJurisdiction, gstRegistere
         </div>
 
         <div>
-          <label htmlFor="notes" className="mb-1.5 block text-sm font-medium">
+          <label htmlFor="notes" className="label muted mb-1.5 block">
             Notes <span className="muted font-normal">(what it was for)</span>
           </label>
           <textarea
@@ -221,7 +373,7 @@ export default function ExpenseForm({ clients, defaultJurisdiction, gstRegistere
       </div>
 
       <div className="space-y-4">
-        <div className="card p-5">
+        <div className="card p-4 sm:p-5">
           <h2 className="mb-3 text-sm font-semibold">What you can claim</h2>
           <dl className="space-y-2 text-sm">
             <div className="flex justify-between gap-3">
@@ -256,8 +408,12 @@ export default function ExpenseForm({ clients, defaultJurisdiction, gstRegistere
           )}
           {!isCapital && looksCapital && (
             <p
-              className="mt-3 rounded-md px-3 py-2 text-xs leading-relaxed"
-              style={{ background: 'color-mix(in oklch, var(--color-owing) 12%, transparent)', color: 'var(--color-owing)' }}
+              className="mt-3 px-3 py-2 text-xs leading-relaxed"
+              style={{
+                background: 'color-mix(in oklch, var(--color-owing) 12%, transparent)',
+                color: 'var(--color-owing)',
+                borderRadius: 'var(--radius-ctl)',
+              }}
             >
               This is over {threshold.label}. If it lasts beyond this year it is probably a
               capital asset and has to be depreciated, not deducted in one go.
@@ -265,15 +421,18 @@ export default function ExpenseForm({ clients, defaultJurisdiction, gstRegistere
           )}
         </div>
 
-        <div className="card p-5">
-          <h2 className="mb-2 text-sm font-semibold">{guidance.label}</h2>
+        <div className="card p-4 sm:p-5">
+          <h2 className="label mb-2.5">{guidance.label}</h2>
           <div className="muted space-y-2 text-xs leading-relaxed">
             <p><strong style={{ color: 'var(--text)' }}>NZ:</strong> {guidance.nz}</p>
             <p><strong style={{ color: 'var(--text)' }}>AU:</strong> {guidance.au}</p>
             {guidance.watchOut && (
               <p
-                className="rounded-md px-2.5 py-2"
-                style={{ background: 'color-mix(in oklch, var(--color-owing) 10%, transparent)' }}
+                className="px-2.5 py-2"
+                style={{
+                  background: 'color-mix(in oklch, var(--color-owing) 10%, transparent)',
+                  borderRadius: 'var(--radius-ctl)',
+                }}
               >
                 <strong style={{ color: 'var(--color-owing)' }}>Watch out.</strong> {guidance.watchOut}
               </p>
@@ -283,8 +442,7 @@ export default function ExpenseForm({ clients, defaultJurisdiction, gstRegistere
 
         <button
           type="submit"
-          className="w-full rounded-lg px-4 py-2.5 text-sm font-medium text-white"
-          style={{ background: 'var(--color-brand-600)' }}
+          className="btn btn-primary w-full"
         >Save expense</button>
       </div>
     </form>

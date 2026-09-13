@@ -1,4 +1,4 @@
-CREATE TABLE `ai_cache` (
+CREATE TABLE IF NOT EXISTS `ai_cache` (
 	`hash` text PRIMARY KEY NOT NULL,
 	`user_id` text NOT NULL,
 	`model` text DEFAULT '' NOT NULL,
@@ -13,8 +13,8 @@ CREATE TABLE `ai_cache` (
 	FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE cascade
 );
 --> statement-breakpoint
-CREATE INDEX `ai_cache_expiry_idx` ON `ai_cache` (`expires_at`);--> statement-breakpoint
-CREATE TABLE `ai_calls` (
+CREATE INDEX IF NOT EXISTS `ai_cache_expiry_idx` ON `ai_cache` (`expires_at`);--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS `ai_calls` (
 	`id` text PRIMARY KEY NOT NULL,
 	`user_id` text NOT NULL,
 	`campaign_id` text,
@@ -38,9 +38,9 @@ CREATE TABLE `ai_calls` (
 	FOREIGN KEY (`campaign_id`) REFERENCES `campaigns`(`id`) ON UPDATE no action ON DELETE cascade
 );
 --> statement-breakpoint
-CREATE INDEX `ai_calls_user_idx` ON `ai_calls` (`user_id`,`created_at`);--> statement-breakpoint
-CREATE INDEX `ai_calls_campaign_idx` ON `ai_calls` (`campaign_id`);--> statement-breakpoint
-CREATE INDEX `ai_calls_operation_idx` ON `ai_calls` (`user_id`,`operation`);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `ai_calls_user_idx` ON `ai_calls` (`user_id`,`created_at`);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `ai_calls_campaign_idx` ON `ai_calls` (`campaign_id`);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `ai_calls_operation_idx` ON `ai_calls` (`user_id`,`operation`);--> statement-breakpoint
 ALTER TABLE `campaigns` ADD `scale_ceiling` integer DEFAULT 60 NOT NULL;--> statement-breakpoint
 ALTER TABLE `demo_sites` ADD `public_url` text DEFAULT '' NOT NULL;--> statement-breakpoint
 ALTER TABLE `prospects` ADD `scale_score` integer DEFAULT 0 NOT NULL;--> statement-breakpoint

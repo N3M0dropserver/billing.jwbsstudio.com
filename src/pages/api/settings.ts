@@ -4,6 +4,7 @@ import { db } from '~/lib/env';
 import { getSettings } from '~/lib/queries/settings';
 import { settings } from '~/lib/db/schema';
 import { parseAmount } from '~/lib/tax/money';
+import { parseDaysAfter } from '~/lib/invoices/reminders';
 
 export const prerender = false;
 
@@ -14,6 +15,12 @@ function parseRate(value: string): number | null {
   const parsed = Number.parseFloat(trimmed.replace(/[^0-9.]/g, ''));
   if (!Number.isFinite(parsed)) return null;
   return Math.min(Math.max(parsed / 100, 0), 1);
+}
+
+function clampInt(raw: string, min: number, max: number, fallback: number): number {
+  const parsed = Number.parseInt(raw.trim(), 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(Math.max(parsed, min), max);
 }
 
 export const POST: APIRoute = async ({ request, locals, redirect }) => {
@@ -87,6 +94,28 @@ export const POST: APIRoute = async ({ request, locals, redirect }) => {
       bankSwift: text('bankSwift', 20),
 
       stripeEnabled: flag('stripeEnabled'),
+
+      remindersEnabled: flag('remindersEnabled'),
+      reminderDaysBefore: clampInt(String(form.get('reminderDaysBefore') ?? ''), 0, 60, 3),
+      /**
+       * Typed as "7, 14, 30" and stored as JSON. Round-tripped through the
+       * same parser the sweep uses, so what is saved is exactly what will be
+       * acted on — a ladder that silently differs from what the settings page
+       * shows would be very hard to debug from the outside.
+       */
+      reminderDaysAfter: JSON.stringify(
+        parseDaysAfter(
+          JSON.stringify(
+            String(form.get('reminderDaysAfter') ?? '')
+              .split(/[,\s]+/)
+              .map((part) => Number.parseInt(part, 10))
+              .filter((n) => Number.isFinite(n)),
+          ),
+        ),
+      ),
+      reminderMaxCount: clampInt(String(form.get('reminderMaxCount') ?? ''), 0, 20, 4),
+      reminderSkipWeekends: flag('reminderSkipWeekends'),
+      trackEmailOpens: flag('trackEmailOpens'),
       taxReserveRate: parseRate(String(form.get('taxReserveRate') ?? '')) ?? current.taxReserveRate,
 
       updatedAt: new Date().toISOString(),

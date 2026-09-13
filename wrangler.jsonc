@@ -10,6 +10,21 @@
     "observability": {
         "enabled": true
     },
+    // Scheduled work. Cron Triggers invoke the Worker's scheduled() handler,
+    // which the Astro adapter does not emit — scripts/wrap-worker.mjs adds it
+    // at build time and maps each expression to a task. Keep these in step
+    // with the SCHEDULE map in that script.
+    //
+    // Times are UTC. 08:00 UTC is 20:00/21:00 NZ and 18:00/19:00 AEST, so a
+    // reminder is written overnight and lands first thing in the morning.
+    // Nothing is sent until reminders are switched on in Settings AND
+    // CRON_SECRET is set.
+    "triggers": {
+        "crons": [
+            "0 8 * * *",
+            "0 3 * * 0"
+        ]
+    },
     "d1_databases": [
         {
             "binding": "DB",

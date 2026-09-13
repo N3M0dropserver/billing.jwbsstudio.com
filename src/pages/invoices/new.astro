@@ -46,6 +46,7 @@ const jurisdiction = settings.taxResidence;
     unbilled={unbilledRows}
     defaults={{
       currency: settings.defaultCurrency,
+      residenceCurrency: settings.taxResidence === 'NZ' ? 'NZD' : 'AUD',
       jurisdiction,
       paymentTermsDays: settings.defaultPaymentTermsDays,
       hourlyRate: settings.defaultHourlyRate,

@@ -1,0 +1,321 @@
+---
+import AppLayout from '~/layouts/AppLayout.astro';
+import Card from '~/components/ui/Card.astro';
+import EmptyState from '~/components/ui/EmptyState.astro';
+import { and, desc, eq, ne, sql } from 'drizzle-orm';
+import { db } from '~/lib/env';
+import { getSettings } from '~/lib/queries/settings';
+import { bankTransactions, invoices, clients } from '~/lib/db/schema';
+import { proposeMatches, CONFIDENT, type MatchableInvoice } from '~/lib/bank/match';
+import type { BankRow } from '~/lib/bank/csv';
+import { formatMoney } from '~/lib/tax/money';
+
+const user = Astro.locals.user!;
+const database = db();
+const settings = await getSettings(database, user.id);
+
+const showIgnored = Astro.url.searchParams.get('show') === 'all';
+
+const transactions = await database
+  .select()
+  .from(bankTransactions)
+  .where(
+    showIgnored
+      ? eq(bankTransactions.userId, user.id)
+      : and(eq(bankTransactions.userId, user.id), ne(bankTransactions.status, 'ignored')),
+  )
+  .orderBy(desc(bankTransactions.occurredOn))
+  .limit(300);
+
+const outstandingRows = await database
+  .select({
+    id: invoices.id,
+    number: invoices.number,
+    reference: invoices.reference,
+    currency: invoices.currency,
+    total: invoices.total,
+    amountPaid: invoices.amountPaid,
+    issuedOn: invoices.issuedOn,
+    dueOn: invoices.dueOn,
+    clientName: clients.name,
+  })
+  .from(invoices)
+  .leftJoin(clients, eq(invoices.clientId, clients.id))
+  .where(
+    and(
+      eq(invoices.userId, user.id),
+      ne(invoices.status, 'draft'),
+      ne(invoices.status, 'void'),
+      ne(invoices.status, 'written-off'),
+      sql`${invoices.total} > ${invoices.amountPaid}`,
+    ),
+  );
+
+const candidates: MatchableInvoice[] = outstandingRows.map((row) => ({
+  id: row.id,
+  number: row.number,
+  reference: row.reference,
+  clientName: row.clientName,
+  currency: row.currency,
+  outstanding: row.total - row.amountPaid,
+  issuedOn: row.issuedOn,
+  dueOn: row.dueOn,
+}));
+
+const unmatched = transactions.filter((t) => t.status === 'unmatched' && t.amount > 0);
+
+const rows: BankRow[] = unmatched.map((t) => ({
+  date: t.occurredOn,
+  amount: t.amount,
+  description: t.description,
+  reference: t.reference,
+  fingerprint: t.fingerprint,
+}));
+
+const matches = proposeMatches(rows, candidates, settings.defaultCurrency);
+const byFingerprint = new Map(matches.map((m) => [m.row.fingerprint, m.proposals]));
+
+const confident = matches.filter(
+  (m) => m.proposals.length > 0 && m.proposals[0]!.confidence >= CONFIDENT,
+);
+
+const debits = transactions.filter((t) => t.amount < 0 && t.status === 'unmatched');
+const matched = transactions.filter((t) => t.status === 'matched');
+
+const q = Astro.url.searchParams;
+const imported = q.get('imported');
+const error = q.get('error');
+const warning = q.get('warning');
+
+const formatDate = (iso: string) =>
+  new Date(`${iso}T00:00:00Z`).toLocaleDateString('en-NZ', {
+    day: 'numeric', month: 'short', timeZone: 'UTC',
+  });
+---
+
+<AppLayout
+  title="Bank reconciliation"
+  subtitle="Match what landed in the account against what you invoiced"
+  width="wide"
+>
+  {error && (
+    <p class="card mb-4 px-4 py-3 text-sm" style="color: var(--color-overdue)">{error}</p>
+  )}
+  {imported && (
+    <p class="card mb-4 px-4 py-3 text-sm" style="color: var(--color-paid)">
+      Imported {imported} transaction{imported === '1' ? '' : 's'}.
+      {q.get('skipped') !== '0' && ` ${q.get('skipped')} were already here.`}
+      {q.get('rejected') && ` ${q.get('rejected')} lines could not be read.`}
+    </p>
+  )}
+  {warning && <p class="card mb-4 px-4 py-3 text-sm muted">{warning}</p>}
+  {q.get('matched') && (
+    <p class="card mb-4 px-4 py-3 text-sm" style="color: var(--color-paid)">
+      Payment recorded against {q.get('matched')}.
+    </p>
+  )}
+  {q.get('ignored') && <p class="card mb-4 px-4 py-3 text-sm muted">Transaction set aside.</p>}
+  {q.get('unmatched') && (
+    <p class="card mb-4 px-4 py-3 text-sm muted">
+      Match removed. The payment itself is still on the invoice — remove it there if it was wrong.
+    </p>
+  )}
+
+  <div class="grid gap-4 lg:grid-cols-3">
+    <div class="space-y-4 lg:col-span-2">
+      {unmatched.length === 0 ? (
+        <Card>
+          <EmptyState
+            title="Nothing waiting to be matched"
+            description="Import a CSV from your bank and any credits that look like invoice payments will be listed here with a proposed match."
+          />
+        </Card>
+      ) : (
+        <Card
+          title={`${unmatched.length} credit${unmatched.length === 1 ? '' : 's'} to review`}
+          subtitle={confident.length > 0
+            ? `${confident.length} look certain enough to accept without reading closely`
+            : 'None are certain enough to accept without reading — check each one'}
+        >
+          <div class="space-y-3">
+            {unmatched.map((transaction) => {
+              const proposals = byFingerprint.get(transaction.fingerprint) ?? [];
+              return (
+                <div class="rounded-lg border p-3.5" style="border-color: var(--border)">
+                  <div class="mb-2.5 flex flex-wrap items-baseline justify-between gap-2">
+                    <div class="min-w-0">
+                      <p class="truncate text-sm font-medium">
+                        {transaction.description || <span class="muted">No description</span>}
+                      </p>
+                      <p class="muted text-xs">
+                        {formatDate(transaction.occurredOn)}
+                        {transaction.reference && ` · ${transaction.reference}`}
+                        {transaction.source && ` · ${transaction.source}`}
+                      </p>
+                    </div>
+                    <p class="tabular shrink-0 text-sm font-semibold" style="color: var(--color-paid)">
+                      {formatMoney(transaction.amount, transaction.currency)}
+                    </p>
+                  </div>
+
+                  {proposals.length === 0 ? (
+                    <div class="flex flex-wrap items-center gap-2">
+                      <p class="muted flex-1 text-xs">
+                        No outstanding invoice matches this. It may be income billed another way,
+                        or not income at all.
+                      </p>
+                      <form method="post" action="/api/bank/reconcile">
+                        <input type="hidden" name="action" value="ignore" />
+                        <input type="hidden" name="transactionId" value={transaction.id} />
+                        <button
+                          class="muted rounded-md border px-2.5 py-1.5 text-xs hover:opacity-80"
+                          style="border-color: var(--border)"
+                        >Set aside</button>
+                      </form>
+                    </div>
+                  ) : (
+                    <div class="space-y-2">
+                      {proposals.slice(0, 3).map((proposal) => (
+                        <form
+                          method="post"
+                          action="/api/bank/reconcile"
+                          class="flex flex-wrap items-center gap-2 rounded-md px-2.5 py-2"
+                          style={`background: ${proposal.confidence >= CONFIDENT
+                            ? 'color-mix(in oklch, var(--color-paid) 10%, transparent)'
+                            : 'var(--surface-sunken)'}`}
+                        >
+                          <input type="hidden" name="action" value="confirm" />
+                          <input type="hidden" name="transactionId" value={transaction.id} />
+                          <input type="hidden" name="invoiceId" value={proposal.invoiceId} />
+                          <input type="hidden" name="reason" value={proposal.reason} />
+                          <div class="min-w-0 flex-1">
+                            <p class="text-sm font-medium">
+                              {proposal.invoiceNumber}
+                              {proposal.partial && <span class="muted font-normal"> · part payment</span>}
+                            </p>
+                            <p class="muted text-xs">{proposal.reason}</p>
+                          </div>
+                          <span
+                            class="tabular shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium"
+                            style="background: var(--surface-raised); color: var(--text-muted)"
+                            title="How sure the match is"
+                          >{Math.round(proposal.confidence * 100)}%</span>
+                          <button
+                            class="btn btn-primary shrink-0"
+                          >Record payment</button>
+                        </form>
+                      ))}
+                      <form method="post" action="/api/bank/reconcile" class="pt-0.5">
+                        <input type="hidden" name="action" value="ignore" />
+                        <input type="hidden" name="transactionId" value={transaction.id} />
+                        <button class="muted text-xs underline hover:opacity-80">
+                          None of these — set aside
+                        </button>
+                      </form>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      )}
+
+      {matched.length > 0 && (
+        <Card title="Reconciled" subtitle={`${matched.length} matched to an invoice`}>
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+              <tbody>
+                {matched.slice(0, 30).map((transaction) => (
+                  <tr class="border-b last:border-0" style="border-color: var(--border)">
+                    <td class="muted py-2 pr-3 whitespace-nowrap">{formatDate(transaction.occurredOn)}</td>
+                    <td class="py-2 pr-3">
+                      <span class="block truncate">{transaction.description}</span>
+                      {transaction.matchReason && (
+                        <span class="muted text-xs">{transaction.matchReason}</span>
+                      )}
+                    </td>
+                    <td class="tabular py-2 pr-3 text-right whitespace-nowrap">
+                      {formatMoney(transaction.amount, transaction.currency)}
+                    </td>
+                    <td class="py-2 text-right">
+                      <form method="post" action="/api/bank/reconcile">
+                        <input type="hidden" name="action" value="unmatch" />
+                        <input type="hidden" name="transactionId" value={transaction.id} />
+                        <button class="muted text-xs underline hover:opacity-80">Undo</button>
+                      </form>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+    </div>
+
+    <div class="space-y-4">
+      <Card title="Import a statement">
+        <form method="post" action="/api/bank/import" enctype="multipart/form-data" class="space-y-3">
+          <div>
+            <label for="statement" class="muted mb-1 block text-xs font-medium">CSV from your bank</label>
+            <input
+              id="statement" name="statement" type="file" accept=".csv,text/csv"
+              required class="block w-full text-xs"
+            />
+          </div>
+          <div>
+            <label for="source" class="muted mb-1 block text-xs font-medium">Label (optional)</label>
+            <input id="source" name="source" class="field text-sm" placeholder="ASB business account" />
+          </div>
+          <button
+            class="btn btn-primary w-full"
+          >Import</button>
+          <p class="muted text-xs leading-relaxed">
+            Export with headers turned on. Columns are detected by name, so ANZ, ASB, BNZ,
+            Westpac, CBA and NAB exports all work without rearranging anything. Re-importing
+            an overlapping period is safe — rows already here are left alone, matches and
+            all — so you can just export the last 90 days each time.
+          </p>
+        </form>
+      </Card>
+
+      {debits.length > 0 && (
+        <Card title="Money out" subtitle={`${debits.length} debits, not yet expenses`}>
+          <p class="muted mb-3 text-xs">
+            Payments out are listed for completeness. Turning one into a claimable expense
+            needs its receipt and a business-use split, so it goes through the expense form.
+          </p>
+          <ul class="space-y-1.5 text-sm">
+            {debits.slice(0, 8).map((transaction) => (
+              <li class="flex justify-between gap-3">
+                <span class="truncate">{transaction.description || 'No description'}</span>
+                <span class="tabular muted shrink-0">
+                  {formatMoney(Math.abs(transaction.amount), transaction.currency)}
+                </span>
+              </li>
+            ))}
+          </ul>
+          <a
+            href="/tax/expenses/new"
+            class="muted mt-3 block rounded-md border px-2 py-1.5 text-center text-xs hover:opacity-80"
+            style="border-color: var(--border)"
+          >Log an expense</a>
+        </Card>
+      )}
+
+      <Card title="How matching decides">
+        <p class="muted text-xs leading-relaxed">
+          A credit is proposed against an invoice when the amount fits and something else
+          corroborates it — the invoice number in the reference, your reference, or the client's
+          name in the statement text. An exact amount on its own is never treated as certain:
+          two invoices for the same round figure are exactly where a silent mis-match happens.
+          When two invoices fit equally well, both are shown and neither is marked certain.
+        </p>
+        {!showIgnored && (
+          <a href="/bank?show=all" class="muted mt-3 block text-xs underline">Show set-aside transactions</a>
+        )}
+      </Card>
+    </div>
+  </div>
+</AppLayout>

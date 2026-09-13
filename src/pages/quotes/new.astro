@@ -1,0 +1,50 @@
+---
+import AppLayout from '~/layouts/AppLayout.astro';
+import QuoteEditor from '~/components/quotes/QuoteEditor.tsx';
+import { and, eq, or } from 'drizzle-orm';
+import { db } from '~/lib/env';
+import { getSettings } from '~/lib/queries/settings';
+import { clients } from '~/lib/db/schema';
+
+const user = Astro.locals.user!;
+const database = db();
+const settings = await getSettings(database, user.id);
+
+const clientRows = await database
+  .select({
+    id: clients.id, name: clients.name, country: clients.country,
+    currency: clients.currency, gstTreatment: clients.gstTreatment,
+  })
+  .from(clients)
+  .where(and(eq(clients.userId, user.id), or(eq(clients.status, 'active'), eq(clients.status, 'lead'))))
+  .orderBy(clients.name);
+
+const jurisdiction = settings.taxResidence;
+const error = Astro.url.searchParams.get('error');
+---
+
+<AppLayout title="New quote" subtitle="Agree the work and the price before it starts" width="wide">
+  {error === 'no-lines' && (
+    <p class="card mb-4 px-4 py-3 text-sm" style="color: var(--color-overdue)">
+      A quote needs at least one line with a price on it.
+    </p>
+  )}
+  {error === 'title' && (
+    <p class="card mb-4 px-4 py-3 text-sm" style="color: var(--color-overdue)">
+      Give the quote a title — it is what the client sees first.
+    </p>
+  )}
+
+  <QuoteEditor
+    client:load
+    clients={clientRows}
+    defaults={{
+      currency: settings.defaultCurrency,
+      residenceCurrency: settings.taxResidence === 'NZ' ? 'NZD' : 'AUD',
+      jurisdiction,
+      gstRegistered: jurisdiction === 'NZ' ? settings.nzGstRegistered : settings.auGstRegistered,
+      validDays: settings.quoteValidDays,
+      terms: settings.invoiceFooter,
+    }}
+  />
+</AppLayout>

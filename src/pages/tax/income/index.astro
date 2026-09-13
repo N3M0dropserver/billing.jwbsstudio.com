@@ -1,0 +1,378 @@
+---
+import AppLayout from '~/layouts/AppLayout.astro';
+import Card from '~/components/ui/Card.astro';
+import { desc, eq } from 'drizzle-orm';
+import { db } from '~/lib/env';
+import { getSettings } from '~/lib/queries/settings';
+import { currentTaxYear, getIncomeForYear } from '~/lib/queries/dashboard';
+import { incomeSources } from '~/lib/db/schema';
+import { formatMoney, formatMoneyWithCode } from '~/lib/tax/money';
+import { apportion, overlapDays, straddles, toResidenceCurrency, yearRangeFor } from '~/lib/tax/period';
+import { NZ_YEARS, AU_YEARS } from '~/lib/tax/rates';
+
+const user = Astro.locals.user!;
+const database = db();
+const settings = await getSettings(database, user.id);
+
+const isNz = settings.taxResidence === 'NZ';
+// Follows tax residence rather than the invoicing default: these figures feed
+// the tax engine, whose output is in the residence country's currency.
+const residenceCurrency = isNz ? 'NZD' : 'AUD';
+const years = isNz ? NZ_YEARS : AU_YEARS;
+
+const requestedYear = Astro.url.searchParams.get('year') ?? undefined;
+const range = requestedYear
+  ? {
+      year: requestedYear,
+      jurisdiction: settings.taxResidence,
+      ...yearRangeFor(settings.taxResidence, requestedYear),
+    }
+  : currentTaxYear(settings.taxResidence);
+
+const totals = await getIncomeForYear(database, user.id, range, residenceCurrency);
+
+const rows = await database
+  .select()
+  .from(incomeSources)
+  .where(eq(incomeSources.userId, user.id))
+  .orderBy(desc(incomeSources.earnedFrom), desc(incomeSources.id))
+  .limit(500);
+
+const window = { startsOn: range.startsOn, endsOn: range.endsOn };
+// Must match periodFor() in the query: a row with no period falls back to the
+// whole of its OWN jurisdiction's year, which is not the year being viewed
+// when the two countries' years are out of step.
+const periodOf = (r: (typeof rows)[number]) =>
+  r.earnedFrom && r.earnedTo
+    ? { startsOn: r.earnedFrom, endsOn: r.earnedTo }
+    : r.earnedFrom
+      ? { startsOn: r.earnedFrom, endsOn: r.earnedFrom }
+      : yearRangeFor(r.jurisdiction, r.taxYear);
+
+const visible = rows
+  .map((r) => {
+    const period = periodOf(r);
+    return {
+      row: r,
+      period,
+      inYear: overlapDays(period, window) > 0,
+      split: straddles(period, window),
+      countedGross: apportion(r.grossAmount, period, window),
+      countedWithheld: apportion(r.taxWithheld, period, window),
+      foreign: r.jurisdiction !== range.jurisdiction,
+    };
+  })
+  .filter((r) => r.inYear);
+
+const today = new Date().toISOString().slice(0, 10);
+const otherJurisdiction = isNz ? 'AU' : 'NZ';
+const otherCurrency = isNz ? 'AUD' : 'NZD';
+
+const error = Astro.url.searchParams.get('error');
+const ERRORS: Record<string, string> = {
+  period: 'Enter both a start and an end date for the period.',
+  'period-order': 'The period ends before it starts.',
+  amount: 'Enter a gross amount greater than zero.',
+  withheld: 'Tax withheld cannot be more than the gross amount.',
+  fx: 'Enter the exchange rate that applied over the period. NZD and AUD are never at par, so this cannot be left at 1.',
+  missing: 'That record could not be found.',
+};
+
+const yearLabel = isNz
+  ? `1 April ${range.startsOn.slice(0, 4)} – 31 March ${range.endsOn.slice(0, 4)}`
+  : `1 July ${range.startsOn.slice(0, 4)} – 30 June ${range.endsOn.slice(0, 4)}`;
+
+const formatDate = (iso: string) =>
+  new Date(`${iso}T00:00:00Z`).toLocaleDateString('en-NZ', {
+    day: 'numeric', month: 'short', year: '2-digit', timeZone: 'UTC',
+  });
+
+const KIND_LABELS: Record<string, string> = {
+  employment: 'Salary or wages',
+  interest: 'Interest',
+  dividends: 'Dividends',
+  rental: 'Rent',
+  foreign: 'Foreign',
+  other: 'Other',
+};
+---
+
+<AppLayout title="Other income" subtitle={yearLabel} width="wide">
+  <form slot="actions" method="get" class="flex gap-2">
+    <select name="year" class="field w-auto text-sm" onchange="this.form.submit()">
+      {years.map((y) => <option value={y} selected={y === range.year}>{y}</option>)}
+    </select>
+  </form>
+
+  {error && (
+    <p class="card mb-4 px-4 py-3 text-sm" style="color: var(--color-overdue)">
+      {ERRORS[error] ?? 'That could not be saved.'}
+    </p>
+  )}
+  {Astro.url.searchParams.get('added') === '1' && (
+    <p class="card mb-4 px-4 py-3 text-sm" style="color: var(--color-paid)">
+      Income recorded. Your tax position has been recalculated.
+    </p>
+  )}
+  {Astro.url.searchParams.get('deleted') === '1' && (
+    <p class="card mb-4 px-4 py-3 text-sm">Income removed.</p>
+  )}
+
+  <div class="grid gap-4 lg:grid-cols-3">
+    <!-- Add -->
+    <div class="lg:col-span-1">
+      <Card
+        title="Record a pay period"
+        subtitle={`A part-time job, a contract, interest or rent — anything that does not come through an invoice`}
+      >
+        <form method="post" action="/api/income" class="space-y-3">
+          <div>
+            <label class="mb-1 block text-xs font-medium" for="label">Description</label>
+            <input id="label" name="label" class="field" required placeholder="Part-time — studio work" />
+          </div>
+
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="mb-1 block text-xs font-medium" for="kind">Type</label>
+              <select id="kind" name="kind" class="field" data-kind>
+                <option value="employment">Salary or wages</option>
+                <option value="interest">Interest</option>
+                <option value="dividends">Dividends</option>
+                <option value="rental">Rent</option>
+                <option value="other">Other</option>
+              </select>
+            </div>
+            <div>
+              <label class="mb-1 block text-xs font-medium" for="jurisdiction">Earned in</label>
+              <select id="jurisdiction" name="jurisdiction" class="field" data-jurisdiction>
+                <option value="NZ" selected={isNz}>New Zealand</option>
+                <option value="AU" selected={!isNz}>Australia</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="mb-1 block text-xs font-medium" for="earnedFrom">Period from</label>
+              <input id="earnedFrom" name="earnedFrom" type="date" class="field" required value={today} />
+            </div>
+            <div>
+              <label class="mb-1 block text-xs font-medium" for="earnedTo">Period to</label>
+              <input id="earnedTo" name="earnedTo" type="date" class="field" required value={today} />
+            </div>
+          </div>
+          <p class="muted text-xs leading-relaxed">
+            The dates the work was done, not the date you were paid. A period crossing
+            {isNz ? ' 31 March' : ' 30 June'} is split across both tax years by days.
+          </p>
+
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="mb-1 block text-xs font-medium" for="grossAmount">Gross</label>
+              <input id="grossAmount" name="grossAmount" class="field tabular" required inputmode="decimal" placeholder="0.00" />
+            </div>
+            <div>
+              <label class="mb-1 block text-xs font-medium" for="taxWithheld">Tax withheld</label>
+              <input id="taxWithheld" name="taxWithheld" class="field tabular" inputmode="decimal" placeholder="0.00" />
+            </div>
+          </div>
+
+          <div data-acc-row>
+            <label class="mb-1 block text-xs font-medium" for="accLevyWithheld">ACC earner levy withheld</label>
+            <input id="accLevyWithheld" name="accLevyWithheld" class="field tabular" inputmode="decimal" placeholder="0.00" />
+            <p class="muted mt-1 text-xs">From your payslip. Recorded for your reference — ACC is not charged twice on earnings already levied through PAYE.</p>
+          </div>
+
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="mb-1 block text-xs font-medium" for="currency">Paid in</label>
+              <select id="currency" name="currency" class="field" data-currency>
+                <option value="NZD" selected={isNz}>NZD</option>
+                <option value="AUD" selected={!isNz}>AUD</option>
+              </select>
+            </div>
+            <div data-fx-row hidden>
+              <label class="mb-1 block text-xs font-medium" for="fxRateToResidence">
+                Rate to {residenceCurrency}
+              </label>
+              <input id="fxRateToResidence" name="fxRateToResidence" class="field tabular" inputmode="decimal" placeholder="1.0900" />
+            </div>
+          </div>
+          <p class="muted text-xs leading-relaxed" data-fx-help hidden>
+            The average rate over the period, or the rate on the day you were paid. It is
+            stored against this record, so changing it later does not rewrite a return you
+            have already filed.
+          </p>
+
+          <div>
+            <label class="mb-1 block text-xs font-medium" for="notes">Notes</label>
+            <textarea id="notes" name="notes" class="field" rows="2"></textarea>
+          </div>
+
+          <button class="btn btn-primary w-full">
+            Record it
+          </button>
+        </form>
+      </Card>
+    </div>
+
+    <!-- Recorded -->
+    <div class="lg:col-span-2 space-y-4">
+      <Card title="Counted in this year" subtitle="Converted into your residence currency and apportioned to the period">
+        <dl class="space-y-2 text-sm">
+          <div class="flex justify-between gap-3">
+            <dt class="muted">{isNz ? 'New Zealand' : 'Australian'} salary or wages</dt>
+            <dd class="tabular">{formatMoney(totals.domesticEmployment.grossIncome, residenceCurrency)}</dd>
+          </div>
+          {totals.domesticEmployment.taxWithheld > 0 && (
+            <div class="flex justify-between gap-3">
+              <dt class="muted">— {isNz ? 'PAYE' : 'PAYG'} withheld</dt>
+              <dd class="tabular">{formatMoney(totals.domesticEmployment.taxWithheld, residenceCurrency)}</dd>
+            </div>
+          )}
+          <div class="flex justify-between gap-3">
+            <dt class="muted">{isNz ? 'Australian' : 'New Zealand'} salary or wages</dt>
+            <dd class="tabular">{formatMoney(totals.foreignEmployment.grossIncome, residenceCurrency)}</dd>
+          </div>
+          {totals.foreignEmployment.taxWithheld > 0 && (
+            <div class="flex justify-between gap-3">
+              <dt class="muted">— tax withheld there, credited here</dt>
+              <dd class="tabular">{formatMoney(totals.foreignEmployment.taxWithheld, residenceCurrency)}</dd>
+            </div>
+          )}
+          {(totals.domesticOther.grossIncome > 0 || totals.foreignOther.grossIncome > 0) && (
+            <div class="flex justify-between gap-3">
+              <dt class="muted">Interest, dividends, rent and other</dt>
+              <dd class="tabular">
+                {formatMoney(totals.domesticOther.grossIncome + totals.foreignOther.grossIncome, residenceCurrency)}
+              </dd>
+            </div>
+          )}
+        </dl>
+
+        {totals.foreignEmployment.grossIncome + totals.foreignOther.grossIncome > 0 && (
+          <p class="muted mt-3 border-t pt-3 text-xs leading-relaxed" style="border-color: var(--border)">
+            Your {otherJurisdiction} earnings are taxed here too, because {isNz ? 'New Zealand' : 'Australia'} taxes
+            worldwide income where you are resident. The tax withheld there is credited back,
+            but only up to the {residenceCurrency === 'NZD' ? 'NZ' : 'AU'} tax on that same income.
+            <a href="/tax" class="underline underline-offset-2"> See the effect on your position →</a>
+          </p>
+        )}
+        {totals.unconvertedForeignCurrencyRowCount > 0 && (
+          <p class="mt-3 rounded-md px-3 py-2 text-xs leading-relaxed" style="background: color-mix(in oklch, var(--color-owing) 10%, transparent); color: var(--color-owing)">
+            {totals.unconvertedForeignCurrencyRowCount} record{totals.unconvertedForeignCurrencyRowCount === 1 ? ' is' : 's are'} in
+            {' '}{otherCurrency} at a rate of 1. NZD and AUD are never at par, so that figure is wrong by
+            whatever the real rate was. Fix the rate on those records.
+          </p>
+        )}
+        {totals.apportionedRowCount > 0 && (
+          <p class="muted mt-3 text-xs leading-relaxed">
+            {totals.apportionedRowCount} period{totals.apportionedRowCount === 1 ? '' : 's'} cross the year
+            boundary, so only the days falling inside {range.year} are counted above.
+          </p>
+        )}
+      </Card>
+
+      <Card title="Records" subtitle="Everything overlapping this tax year">
+        {visible.length === 0 ? (
+          <p class="muted text-sm leading-relaxed">
+            Nothing recorded for this year. If you have a part-time job alongside the
+            studio work, record each pay period here — it changes the bracket your
+            self-employed income is taxed in, and therefore what you should be setting aside.
+          </p>
+        ) : (
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+              <thead>
+                <tr class="muted border-b text-left text-xs" style="border-color: var(--border)">
+                  <th scope="col" class="py-2 font-medium">Period</th>
+                  <th scope="col" class="py-2 font-medium">Description</th>
+                  <th scope="col" class="py-2 text-right font-medium">Gross</th>
+                  <th scope="col" class="py-2 text-right font-medium">Counted</th>
+                  <th scope="col" class="py-2"><span class="sr-only">Remove</span></th>
+                </tr>
+              </thead>
+              <tbody>
+                {visible.map(({ row, period, split, countedGross, countedWithheld, foreign }) => (
+                  <tr class="border-b last:border-0" style="border-color: var(--border)">
+                    <td class="muted py-2 whitespace-nowrap">
+                      {formatDate(period.startsOn)} – {formatDate(period.endsOn)}
+                      {split && <span class="ml-1 text-xs" style="color: var(--color-owing)">split</span>}
+                    </td>
+                    <td class="py-2">
+                      {row.label}
+                      <span class="muted"> · {KIND_LABELS[row.kind] ?? row.kind}</span>
+                      {foreign && (
+                        <span class="muted"> · {row.jurisdiction}, credited</span>
+                      )}
+                    </td>
+                    <td class="tabular py-2 text-right whitespace-nowrap">
+                      {formatMoneyWithCode(row.grossAmount, row.currency)}
+                      {row.taxWithheld > 0 && (
+                        <span class="muted block text-xs">
+                          less {formatMoneyWithCode(row.taxWithheld, row.currency)} tax
+                        </span>
+                      )}
+                    </td>
+                    <td class="tabular py-2 text-right whitespace-nowrap font-medium">
+                      {formatMoney(toResidenceCurrency(countedGross, row.fxRateToResidence), residenceCurrency)}
+                      {(row.currency !== residenceCurrency || countedWithheld > 0) && (
+                        <span class="muted block text-xs font-normal">
+                          {row.currency !== residenceCurrency ? `at ${row.fxRateToResidence}` : ''}
+                        </span>
+                      )}
+                    </td>
+                    <td class="py-2 text-right">
+                      <form method="post" action="/api/income">
+                        <input type="hidden" name="_action" value="delete" />
+                        <input type="hidden" name="id" value={row.id} />
+                        <button class="muted text-xs underline underline-offset-2 hover:opacity-70" aria-label={`Remove ${row.label}`}>
+                          Remove
+                        </button>
+                      </form>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+    </div>
+  </div>
+</AppLayout>
+
+<script is:inline define:vars={{ residenceCurrency }}>
+  (() => {
+    const form = document.querySelector('form[action="/api/income"]');
+    if (!form) return;
+    const kind = form.querySelector('[data-kind]');
+    const jurisdiction = form.querySelector('[data-jurisdiction]');
+    const currency = form.querySelector('[data-currency]');
+    const fxRow = form.querySelector('[data-fx-row]');
+    const fxHelp = form.querySelector('[data-fx-help]');
+    const fxInput = form.querySelector('#fxRateToResidence');
+    const accRow = form.querySelector('[data-acc-row]');
+
+    const sync = () => {
+      // The ACC earner levy line only means anything on NZ salary or wages.
+      accRow.hidden = !(jurisdiction.value === 'NZ' && kind.value === 'employment');
+      // A rate is only needed, and only accepted, when the currencies differ.
+      const needsFx = currency.value !== residenceCurrency;
+      fxRow.hidden = !needsFx;
+      fxHelp.hidden = !needsFx;
+      fxInput.required = needsFx;
+      if (!needsFx) fxInput.value = '';
+    };
+
+    // Money follows the place of work far more often than not, so default the
+    // currency to match — while leaving it changeable for the cases it does not.
+    jurisdiction.addEventListener('change', () => {
+      currency.value = jurisdiction.value === 'NZ' ? 'NZD' : 'AUD';
+      sync();
+    });
+    kind.addEventListener('change', sync);
+    currency.addEventListener('change', sync);
+    sync();
+  })();
+</script>
