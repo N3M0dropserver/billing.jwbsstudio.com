@@ -62,6 +62,15 @@ export const POST: APIRoute = async ({ request, locals, redirect }) => {
     ? Math.min(Math.max(rawUse / 100, 0), 1)
     : (guidance?.defaultBusinessUse ?? 1);
 
+  /**
+   * A receipt key only counts if it sits under this user's own prefix. The
+   * field is a plain hidden input, so it is as forgeable as anything else on
+   * the form — without this check a key from another account could be pinned
+   * to a record here and its image read back through /api/expenses/:id/receipt.
+   */
+  const claimedKey = String(form.get('receiptKey') ?? '');
+  const receiptKey = claimedKey.startsWith(`receipts/${user.id}/`) ? claimedKey : null;
+
   const isCapital = form.get('isCapital') === 'yes';
   const now = new Date().toISOString();
   const expenseId = newId();
@@ -135,6 +144,7 @@ export const POST: APIRoute = async ({ request, locals, redirect }) => {
     claimableAmount: isCapital ? 0 : Math.round(amountNet * businessUsePercent),
     isCapital,
     assetId,
+    receiptKey,
     isBillable: form.get('isBillable') === 'yes',
     notes: String(form.get('notes') ?? ''),
     createdAt: now,

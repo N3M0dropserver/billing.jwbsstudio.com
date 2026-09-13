@@ -43,6 +43,13 @@
       "when": 1789264308211,
       "tag": "0005_payment_reminders",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1789264705202,
+      "tag": "0006_receipt_extraction",
+      "breakpoints": true
     }
   ]
 }

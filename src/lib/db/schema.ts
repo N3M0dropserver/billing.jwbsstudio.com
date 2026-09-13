@@ -503,6 +503,13 @@ export const expenses = sqliteTable(
     }),
 
     receiptKey: text('receipt_key'),
+    /**
+     * What the vision model read off the receipt, as JSON, alongside what was
+     * actually saved. Kept so a figure that turns out wrong can be traced to
+     * a misread rather than a typo — and so the picture, the reading and the
+     * record stay together for as long as the records must be retained.
+     */
+    receiptExtraction: text('receipt_extraction'),
     notes: text('notes').notNull().default(''),
     createdAt: createdAt(),
     updatedAt: updatedAt(),

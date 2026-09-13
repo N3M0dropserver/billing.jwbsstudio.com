@@ -12,6 +12,8 @@ export const MODELS = {
   text: '@cf/meta/llama-3.3-70b-instruct-fp8-fast',
   /** Cheaper, for classification and scoring. */
   fast: '@cf/meta/llama-3.1-8b-instruct',
+  /** Reads images — receipts, at present. */
+  vision: '@cf/meta/llama-3.2-11b-vision-instruct',
 } as const;
 
 export type AiResult<T> =

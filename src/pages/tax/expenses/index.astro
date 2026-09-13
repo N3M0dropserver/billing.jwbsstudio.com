@@ -93,6 +93,15 @@ const formatDate = (iso: string) =>
                     {expense.isCapital && (
                       <span class="muted ml-1.5 text-xs">capital</span>
                     )}
+                    {expense.receiptKey && (
+                      <a
+                        href={`/api/expenses/${expense.id}/receipt`}
+                        target="_blank" rel="noopener"
+                        class="ml-1.5 text-xs underline"
+                        style="color: var(--color-brand-600)"
+                        title="The receipt as photographed"
+                      >receipt</a>
+                    )}
                   </td>
                   <td class="muted px-4 py-2.5">
                     {EXPENSE_GUIDANCE[expense.category as keyof typeof EXPENSE_GUIDANCE]?.label ?? expense.category}
