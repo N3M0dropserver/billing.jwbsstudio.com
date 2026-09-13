@@ -29,6 +29,8 @@ const TYPE_LABELS: Record<SearchHit['type'], string> = {
 const ACTIONS: SearchHit[] = [
   { type: 'action', id: 'new-invoice', title: 'New invoice', subtitle: 'Bill for work done', href: '/invoices/new' },
   { type: 'action', id: 'new-client', title: 'Add client', subtitle: 'Record a new customer', href: '/clients/new' },
+  { type: 'action', id: 'new-quote', title: 'New quote', subtitle: 'Agree work before you do it', href: '/quotes/new' },
+  { type: 'action', id: 'bank', title: 'Reconcile bank', subtitle: 'Match credits to invoices', href: '/bank' },
   { type: 'action', id: 'new-expense', title: 'Log expense', subtitle: 'Capture a deduction', href: '/tax/expenses/new' },
   { type: 'action', id: 'new-income', title: 'Record other income', subtitle: 'Part-time work, interest, rent — in NZD or AUD', href: '/tax/income' },
   { type: 'action', id: 'tax', title: 'Tax position', subtitle: 'What you owe and when', href: '/tax' },

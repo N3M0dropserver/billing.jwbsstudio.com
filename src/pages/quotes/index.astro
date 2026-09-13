@@ -1,0 +1,104 @@
+---
+import AppLayout from '~/layouts/AppLayout.astro';
+import Card from '~/components/ui/Card.astro';
+import EmptyState from '~/components/ui/EmptyState.astro';
+import { db } from '~/lib/env';
+import { listQuotes, hasLapsed } from '~/lib/quotes/service';
+import { formatMoney } from '~/lib/tax/money';
+
+const user = Astro.locals.user!;
+const rows = await listQuotes(db(), user.id);
+
+const today = new Date().toISOString().slice(0, 10);
+
+/** Accepted and not yet invoiced is the pile that matters — work you have won. */
+const won = rows.filter((r) => r.quote.status === 'accepted' && !r.quote.convertedInvoiceId);
+const open = rows.filter(
+  (r) => ['sent', 'viewed'].includes(r.quote.status) && !hasLapsed(r.quote, today),
+);
+
+const label = (status: string, quote: (typeof rows)[number]['quote']) => {
+  if (quote.convertedInvoiceId) return 'invoiced';
+  if (hasLapsed(quote, today)) return 'expired';
+  return status;
+};
+
+const formatDate = (iso: string) =>
+  new Date(`${iso.slice(0, 10)}T00:00:00Z`).toLocaleDateString('en-NZ', {
+    day: 'numeric', month: 'short', timeZone: 'UTC',
+  });
+---
+
+<AppLayout title="Quotes" subtitle="Agree the work before you do it" width="wide">
+  <a
+    slot="actions"
+    href="/quotes/new"
+    class="rounded-lg px-3.5 py-2 text-sm font-medium text-white"
+    style="background: var(--color-brand-600)"
+  >New quote</a>
+
+  {won.length > 0 && (
+    <Card
+      title={`${won.length} accepted, not yet invoiced`}
+      subtitle="Work you have won and not yet billed for"
+      class="mb-4"
+    >
+      <ul class="space-y-2">
+        {won.map(({ quote, clientName }) => (
+          <li class="flex flex-wrap items-center justify-between gap-2">
+            <a href={`/quotes/${quote.id}`} class="text-sm font-medium hover:underline">
+              {quote.number} · {quote.title}
+              {clientName && <span class="muted font-normal"> · {clientName}</span>}
+            </a>
+            <span class="tabular text-sm font-medium">{formatMoney(quote.total, quote.currency)}</span>
+          </li>
+        ))}
+      </ul>
+    </Card>
+  )}
+
+  {rows.length === 0 ? (
+    <EmptyState
+      title="No quotes yet"
+      description="A quote agrees the work and the price up front, and turns into an invoice in one click once the client accepts it."
+      actionHref="/quotes/new"
+      actionLabel="Write one"
+    />
+  ) : (
+    <Card title="All quotes" subtitle={`${open.length} still open`}>
+      <div class="overflow-x-auto">
+        <table class="w-full text-left text-sm">
+          <thead>
+            <tr class="muted border-b text-xs" style="border-color: var(--border)">
+              <th scope="col" class="py-2.5 pr-3 font-medium">Number</th>
+              <th scope="col" class="py-2.5 pr-3 font-medium">Title</th>
+              <th scope="col" class="py-2.5 pr-3 font-medium">Client</th>
+              <th scope="col" class="py-2.5 pr-3 font-medium">Status</th>
+              <th scope="col" class="py-2.5 text-right font-medium">Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(({ quote, clientName }) => (
+              <tr class="border-b last:border-0" style="border-color: var(--border)">
+                <td class="py-2.5 pr-3 whitespace-nowrap">
+                  <a href={`/quotes/${quote.id}`} class="font-medium hover:underline">{quote.number}</a>
+                </td>
+                <td class="py-2.5 pr-3">{quote.title}</td>
+                <td class="muted py-2.5 pr-3">{clientName ?? '—'}</td>
+                <td class="muted py-2.5 pr-3 whitespace-nowrap">
+                  {label(quote.status, quote)}
+                  {quote.expiresOn && !quote.convertedInvoiceId && (
+                    <span class="muted text-xs"> · {formatDate(quote.expiresOn)}</span>
+                  )}
+                </td>
+                <td class="tabular py-2.5 text-right font-medium">
+                  {formatMoney(quote.total, quote.currency)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Card>
+  )}
+</AppLayout>

@@ -57,6 +57,13 @@
       "when": 1789265014438,
       "tag": "0007_bank_transactions",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1789265361949,
+      "tag": "0008_quotes",
+      "breakpoints": true
     }
   ]
 }

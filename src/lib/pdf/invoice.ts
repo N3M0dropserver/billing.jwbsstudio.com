@@ -14,8 +14,15 @@ import { PdfDocument, wrapText, measureText, type FontName } from './writer';
 import { formatMoneyWithCode, type Cents, type Currency } from '~/lib/tax/money';
 
 export interface InvoicePdfData {
+  /**
+   * What kind of document this is. A quote uses the same layout, the same
+   * arithmetic and the same GST engine as an invoice — it differs in what it
+   * is called and in what the second date means, and nothing else.
+   */
+  kind?: 'invoice' | 'quote';
   number: string;
   issuedOn: string;
+  /** Payment due, on an invoice. The date a quote lapses, on a quote. */
   dueOn: string;
   currency: Currency;
   jurisdiction: 'NZ' | 'AU';
@@ -89,6 +96,9 @@ function formatDate(iso: string): string {
  * supplier. When not registered, calling it a tax invoice is wrong.
  */
 function documentTitle(data: InvoicePdfData): string {
+  if (data.kind === 'quote') return 'QUOTE';
+  // A business that is not GST registered must not issue a "tax invoice" —
+  // the term means a document that supports a GST input claim.
   if (data.gstTreatment === 'not-registered') return 'INVOICE';
   return 'TAX INVOICE';
 }
@@ -166,7 +176,7 @@ export function renderInvoicePdf(data: InvoicePdfData): Uint8Array {
 
   const detailRows: Array<[string, string]> = [
     ['Issued', formatDate(data.issuedOn)],
-    ['Due', formatDate(data.dueOn)],
+    [data.kind === 'quote' ? 'Valid until' : 'Due', formatDate(data.dueOn)],
   ];
   if (data.reference) detailRows.push(['Reference', data.reference]);
 
@@ -332,7 +342,10 @@ export function renderInvoicePdf(data: InvoicePdfData): Uint8Array {
     }
   }
 
-  return doc.build({ title: `Invoice ${data.number}`, author: data.from.businessName });
+  return doc.build({
+    title: `${data.kind === 'quote' ? 'Quote' : 'Invoice'} ${data.number}`,
+    author: data.from.businessName,
+  });
 }
 
 export { measureText };

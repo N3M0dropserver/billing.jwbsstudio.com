@@ -164,3 +164,88 @@ function escapeHtml(value: string): string {
 function escapeAttr(value: string): string {
   return escapeHtml(value).replace(/'/g, '&#39;');
 }
+
+/* ------------------------------------------------------------------ */
+/* Quotes                                                              */
+/* ------------------------------------------------------------------ */
+
+export interface QuoteEmailData {
+  quoteNumber: string;
+  title: string;
+  clientName: string;
+  businessName: string;
+  senderName: string;
+  total: Cents;
+  currency: Currency;
+  /** ISO date the quote lapses, or null when it does not. */
+  expiresOn: string | null;
+  viewUrl: string;
+  customMessage?: string;
+}
+
+/**
+ * A quote, not an invoice.
+ *
+ * The wording is careful about that: nothing here asks for money or mentions
+ * bank details, and the call to action is to read and decide rather than to
+ * pay. A quote that reads like an invoice gets paid by mistake, and that is a
+ * worse problem than one that gets ignored.
+ */
+export function quoteEmail(data: QuoteEmailData): { subject: string; text: string; html: string } {
+  const amount = formatMoneyWithCode(data.total, data.currency);
+  const subject = `Quote ${data.quoteNumber} from ${data.businessName} — ${data.title}`;
+
+  const validity = data.expiresOn
+    ? `This quote holds until ${formatDate(data.expiresOn)}.`
+    : 'This quote does not have an expiry date.';
+
+  const intro =
+    data.customMessage?.trim() ||
+    `Here is a quote for ${data.title}, at ${amount} including any GST. ${validity}`;
+
+  const text = [
+    `Kia ora ${data.clientName},`,
+    '',
+    intro,
+    '',
+    `Quote:  ${data.quoteNumber}`,
+    `Amount: ${amount}`,
+    data.expiresOn ? `Holds until: ${formatDate(data.expiresOn)}` : '',
+    '',
+    `Read it and accept or decline here: ${data.viewUrl}`,
+    '',
+    'The PDF is attached. Nothing is payable until the work is agreed and invoiced.',
+    '',
+    'Ngā mihi,',
+    data.senderName,
+    data.businessName,
+  ]
+    .filter((line) => line !== undefined)
+    .join('\n');
+
+  const html = `<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"></head>
+<body style="margin:0;padding:24px;background:#f6f6f4;font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;color:#1a1a1a;">
+  <div style="max-width:520px;margin:0 auto;background:#ffffff;border:1px solid #e5e5e2;border-radius:12px;padding:28px;">
+    <p style="margin:0 0 16px;font-size:15px;">Kia ora ${escapeHtml(data.clientName)},</p>
+    <p style="margin:0 0 20px;font-size:15px;line-height:1.55;">${escapeHtml(intro)}</p>
+
+    <div style="background:#f6f6f4;border-radius:8px;padding:16px;margin:0 0 20px;">
+      <p style="margin:0 0 6px;font-size:13px;color:#666;">Quote ${escapeHtml(data.quoteNumber)} · ${escapeHtml(data.title)}</p>
+      <p style="margin:0 0 4px;font-size:26px;font-weight:600;">${escapeHtml(amount)}</p>
+      ${data.expiresOn ? `<p style="margin:0;font-size:13px;color:#666;">Holds until ${escapeHtml(formatDate(data.expiresOn))}</p>` : ''}
+    </div>
+
+    <p style="margin:0 0 20px;">
+      <a href="${escapeAttr(data.viewUrl)}" style="display:inline-block;background:#1f5c4d;color:#ffffff;text-decoration:none;padding:11px 20px;border-radius:8px;font-size:14px;font-weight:500;">Read the quote</a>
+    </p>
+
+    <p style="margin:0 0 20px;font-size:14px;color:#666;line-height:1.55;">The PDF is attached. Nothing is payable until the work is agreed and invoiced.</p>
+
+    <p style="margin:0;font-size:15px;">Ngā mihi,<br>${escapeHtml(data.senderName)}<br>
+      <span style="color:#666;">${escapeHtml(data.businessName)}</span></p>
+  </div>
+</body></html>`;
+
+  return { subject, text, html };
+}

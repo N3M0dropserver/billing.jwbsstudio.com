@@ -165,6 +165,12 @@ export const settings = sqliteTable('settings', {
   invoiceNextNumber: integer('invoice_next_number').notNull().default(1),
   invoiceFooter: text('invoice_footer').notNull().default(''),
 
+  /** Quotes have their own series — see proposals.number for why. */
+  quoteNumberPrefix: text('quote_number_prefix').notNull().default('QUO-'),
+  quoteNextNumber: integer('quote_next_number').notNull().default(1),
+  /** Days a quote stays open before it lapses. */
+  quoteValidDays: integer('quote_valid_days').notNull().default(30),
+
   bankAccountName: text('bank_account_name').notNull().default(''),
   bankAccountNumber: text('bank_account_number').notNull().default(''),
   bankName: text('bank_name').notNull().default(''),
@@ -785,6 +791,42 @@ export const proposals = sqliteTable(
     convertedInvoiceId: text('converted_invoice_id').references(() => invoices.id, {
       onDelete: 'set null',
     }),
+
+    /* ---------------- Quoting ---------------- */
+
+    /**
+     * Its own number series, separate from invoices. A quote is not an
+     * invoice and must not consume an invoice number — a gap in the invoice
+     * sequence is the first thing an auditor asks about, and every quote that
+     * was never accepted would leave one.
+     */
+    number: text('number').notNull().default(''),
+
+    /** Priced the same way an invoice is, through the same GST engine. */
+    jurisdiction: text('jurisdiction', { enum: ['NZ', 'AU'] }).notNull().default('NZ'),
+    gstTreatment: text('gst_treatment', {
+      enum: ['standard', 'zero-rated-export', 'exempt', 'not-registered'],
+    })
+      .notNull()
+      .default('standard'),
+    subtotal: integer('subtotal').notNull().default(0),
+    gstAmount: integer('gst_amount').notNull().default(0),
+    total: integer('total').notNull().default(0),
+    fxRateToResidence: real('fx_rate_to_residence').notNull().default(1),
+
+    reference: text('reference').notNull().default(''),
+    notes: text('notes').notNull().default(''),
+    terms: text('terms').notNull().default(''),
+
+    /**
+     * Who accepted it and from where. A quote accepted in a browser is the
+     * agreement the invoice rests on, so the record of that acceptance is
+     * worth as much as the figures.
+     */
+    acceptedName: text('accepted_name').notNull().default(''),
+    acceptedIp: text('accepted_ip'),
+    declineReason: text('decline_reason').notNull().default(''),
+
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -793,6 +835,29 @@ export const proposals = sqliteTable(
     uniqueIndex('proposals_public_token_idx').on(t.publicToken),
   ],
 );
+
+/** Line items on a quote. Mirrors invoice_lines so conversion is a copy. */
+export const proposalLines = sqliteTable(
+  'proposal_lines',
+  {
+    id: id(),
+    proposalId: text('proposal_id')
+      .notNull()
+      .references(() => proposals.id, { onDelete: 'cascade' }),
+    position: integer('position').notNull().default(0),
+    description: text('description').notNull(),
+    /** Thousandths, as on an invoice. 1500 == 1.5 */
+    quantity: integer('quantity').notNull().default(1000),
+    unit: text('unit').notNull().default('hours'),
+    unitPrice: integer('unit_price').notNull().default(0),
+    discount: real('discount').notNull().default(0),
+    lineTotal: integer('line_total').notNull().default(0),
+    taxable: integer('taxable', { mode: 'boolean' }).notNull().default(true),
+  },
+  (t) => [index('proposal_lines_proposal_idx').on(t.proposalId, t.position)],
+);
+
+export type ProposalLine = typeof proposalLines.$inferSelect;
 
 /**
  * Businesses surfaced by the AI prospecting mode — a niche in a region with

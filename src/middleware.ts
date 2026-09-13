@@ -20,7 +20,8 @@ const PUBLIC_PREFIXES = [
   // does not already show.
   '/api/stripe/checkout',
   '/pay/', // public invoice view + payment page
-  '/proposal/', // public proposal view
+  '/proposal/', // public quote view + PDF
+  '/api/quotes/respond', // accept or decline, from that page
   '/_astro/',
   '/favicon',
   '/robots.txt',
