@@ -18,13 +18,35 @@ position, and quick actions.
 handled automatically based on where the client is. Generates a real PDF,
 emails it with the PDF attached, and gives the client a public link to view and
 pay. Bank transfer always; Stripe card payment optionally, with a webhook that
-marks the invoice paid.
+marks the invoice paid. Correctable until money is recorded against them, after
+which the remedy is a credit note rather than a quiet amendment; voidable and
+write-off-able after that, both reversible, neither deleting the number.
+
+**Quotes** — agree the work and the price before it starts. Priced through the
+same GST engine as the invoice it becomes, sent as a PDF, read and accepted by
+the client on a public link. Accepting records who agreed and when; turning it
+into an invoice stays your decision, and copies the lines exactly as they were
+quoted. Quotes number separately from invoices, so one that comes to nothing
+leaves no gap in the invoice sequence.
+
+**Chasing** — payment reminders on a schedule you set: a courtesy note before
+the due date, then a ladder of chases after it. Off until you switch it on, and
+switchable off again for one client or one invoice. Runs on a Cloudflare Cron
+Trigger.
+
+**Bank reconciliation** — import a CSV from any NZ or AU bank and credits are
+matched against outstanding invoices, with a stated confidence and a stated
+reason for each. Re-importing an overlapping period is safe. An exact amount on
+its own is never treated as certain, because two invoices for the same round
+figure are exactly where a silent mis-match happens.
 
 **Tax & accounting** — a proper tax engine for both countries. Progressive
 brackets, ACC levies, student loan, Medicare levy, HELP, GST/BAS, provisional
 tax and PAYG instalments. Expense tracking with business-use apportionment,
 depreciation schedules, and guidance on what is actually claimable — including
-the rules that differ between NZ and AU.
+the rules that differ between NZ and AU. Photograph a receipt and a vision
+model fills the expense form in; the image is kept with the record, which is
+what both revenue authorities expect you to retain.
 
 **Other income** — a part-time job, interest, dividends or rent, recorded per
 pay period in either currency. Employment income changes the bracket your
@@ -43,10 +65,16 @@ conversion of unbilled time into an invoice.
 **Omni search** — ⌘K from anywhere, across invoices, clients, expenses, time
 and projects, with the quick actions exposed as commands.
 
+**Money is one currency.** Invoices, expenses and payments each carry the rate
+that applied on their own date, and every total, chart and tax figure is
+converted into the currency of your tax residence before anything is added up.
+Anything left without a rate is reported on the dashboard rather than counted
+at face value.
+
 ## The tax engine
 
 This is the part that has to be right, so it is a pure, dependency-free module
-with **251 tests** covering both jurisdictions.
+with **381 tests** across the suite, most of them here.
 
 - `src/lib/tax/rates.ts` — versioned rate tables. Every figure carries a source
   URL and a confidence marker. Figures marked `verify` are surfaced in the UI
@@ -117,7 +145,13 @@ npx wrangler secret put SESSION_SECRET
 npx wrangler secret put RESEND_API_KEY        # if sending email via Resend
 npx wrangler secret put STRIPE_SECRET_KEY     # optional
 npx wrangler secret put STRIPE_WEBHOOK_SECRET # optional
+npx wrangler secret put CRON_SECRET           # for automatic reminders
 ```
+
+`CRON_SECRET` is what the scheduled job authenticates with. Without it the
+reminder and housekeeping endpoints refuse everything and nothing is sent —
+which is the right failure for an endpoint that emails your clients. Generate
+it the same way as the session secret.
 
 ### 3. Migrate and create your user
 
@@ -345,6 +379,35 @@ npm run db:migrate:remote # apply migrations to the deployed database
 npm run user:add         # create or reset a user
 ```
 
+The package manager is **bun** (`packageManager` in package.json pins it, and
+`bun.lock` needs bun 1.4 or newer to read). `npm` works for everything above;
+use `bun run <script>` if you would rather not mix them.
+
+### Scheduled work
+
+Two Cron Triggers, declared in `wrangler.jsonc`:
+
+| Schedule (UTC) | Task | What it does |
+| --- | --- | --- |
+| `0 8 * * *` | `reminders` | Sends payment reminders that are due |
+| `0 3 * * 0` | `housekeeping` | Purges expired sessions and spent sign-in links |
+
+Cron Triggers invoke a Worker's `scheduled()` handler, which the Astro
+Cloudflare adapter does not emit. `scripts/wrap-worker.mjs` runs after
+`astro build` and adds one that calls back into the app's own `fetch`, so the
+job runs inside the real application rather than as a second, half-wired copy
+of it. If the adapter ever changes the shape of its entrypoint, that script
+fails the build rather than deploying something that silently never fires.
+
+To see what tonight's run would do without sending anything:
+
+```bash
+curl -X POST -H "Authorization: Bearer $CRON_SECRET" \
+  "https://billing.jwbsstudio.com/api/cron/reminders?dryRun=1"
+```
+
+Add `&today=2026-12-24` to ask the same question about a future date.
+
 ---
 
 ## Known limitations
@@ -373,8 +436,12 @@ npm run user:add         # create or reset a user
    countries could claim you, the DTA tie-breaker decides, and that is a
    facts-and-circumstances question for an accountant.
 
-4. **Multi-currency is simplistic.** Invoices carry a currency and an FX rate
-   field, but there is no automatic rate lookup and no FX gain/loss tracking.
+4. **Exchange rates are entered by hand.** Every invoice, expense, payment and
+   pay period carries the rate that applied on its own date, and every total is
+   converted through it — but you type the rate, there is no automatic lookup,
+   and FX gain or loss between invoicing and payment is not tracked. Records
+   left without a rate are counted at face value and reported as such on the
+   dashboard.
 
 5. **Estimates, not returns.** The tax figures are for setting money aside.
    Filing is a job for your accountant.
@@ -405,6 +472,6 @@ src/
   pages/          Astro routes and API endpoints
   components/     Astro components and React islands
 migrations/       D1 migrations
-tests/            185 tests, mostly the tax engine
+tests/            381 tests, mostly the tax engine
 docs/             the tax research
 ```
