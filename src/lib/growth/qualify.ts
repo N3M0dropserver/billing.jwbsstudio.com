@@ -16,9 +16,13 @@
  *     their customers; it is not an instruction to us.
  */
 
-import { generateJson, MODELS, type AiResult } from '../ai/index';
+import { MODELS, type AiResult } from '../ai/index';
+import { trackedGenerateJson, type AiUsageContext } from '../ai/usage';
 import type { SiteAudit } from './assess';
 import { renderAudit } from './assess';
+import type { ScaleAssessment } from './scale';
+import { renderScale } from './scale';
+import { renderProminence, type ProminenceResult } from './search';
 import type { Brief } from './brief';
 import { renderBriefPrompt } from './brief';
 
@@ -29,10 +33,16 @@ export interface QualifyInput {
   idealClient: string;
   region: string;
   audit: SiteAudit;
+  /** How large the business already is. Measured, not judged. */
+  scale: ScaleAssessment;
+  /** What a lookup outside their own site found. May be empty. */
+  prominence?: ProminenceResult;
   /** What the site says about itself. Untrusted. */
   siteSummary: string;
   /** What discovery knew: category, rating, review count. */
   context: string;
+  /** Where to book the cost of this call. */
+  usage: AiUsageContext;
 }
 
 export interface Qualification {
@@ -45,18 +55,30 @@ export interface Qualification {
   objective: 'conversion' | 'awareness' | 'credibility';
   /** True when the model thinks this one is not worth approaching. */
   skip: boolean;
+  /** Skipped specifically for being beyond a freelancer's cold approach. */
+  tooBig: boolean;
 }
 
-const QUALIFY_SYSTEM = `You assess small businesses as prospects for a freelance brand and web designer working across New Zealand and Australia.
+const QUALIFY_SYSTEM = `You assess small businesses as prospects for a FREELANCE brand and web designer working across New Zealand and Australia.
 
-You are given a MEASURED audit of the state of their website. Reason from it. Do not invent problems it does not list, and do not repeat a problem it lists as if you found it yourself.
+The designer's approach is to build a business a concept site they did not ask for, then email it to them cold. Everything below follows from that. It works on an owner-operated business where the owner reads their own email and can say yes on the spot. It does not work on anyone larger, no matter how much they could afford it.
 
-fit_score (0-100) answers one question: would this be a good client? Weigh
-  - can they plausibly pay for design work (a trading business with staff and stock, not a dormant hobby)
-  - is there enough of a business here for a site to matter
-  - is what they do something a designer can represent well
+You are given a MEASURED audit of their website and a MEASURED assessment of how large the business already is. Reason from both. Do not invent problems or facts neither one lists.
 
-fit_score is NOT how broken their site is. That is already measured. A business with an atrocious site and no money is a low fit_score.
+fit_score (0-100) answers ONE question: would an unsolicited concept site from a freelancer land well here?
+
+Score HIGH for:
+  - owner-operated, one location, the owner is plausibly the person reading the email
+  - clearly trading and taking money, but with nobody whose job is design
+  - work that photographs and presents well
+
+Score LOW for — and this matters more than anything else:
+  - ANY sign of an established operation: multiple branches, a recognised brand, a careers page, a press page, a franchise, a marketing stack, an agency credit in the footer
+  - a business that already has an agency or an in-house designer, who will not welcome a stranger's redesign
+  - a chain branch with no authority to commission anything
+  - dormant, closing, or too small to pay for anything
+
+ABILITY TO PAY IS NOT THE QUESTION. A national brand can obviously pay and is a BAD prospect — they have a brand guide, an agency and no interest in a concept from someone they have never met. If scale_score is above 60, fit_score must be below 30 and you should almost always set skip.
 
 objective: what a new site should do for THEM.
   conversion  - they need enquiries, bookings or sales
@@ -65,17 +87,21 @@ objective: what a new site should do for THEM.
 
 angle: ONE concrete sentence naming what you would pitch, specific to this business. Not "improve their online presence". Something you could say out loud on a phone call.
 
-skip: true when you would not write to them at all — dormant, closing, a chain branch with no local say, or a site already good enough that there is no honest case to make.
+skip: true when you would not write to them at all — too large, already well served, dormant, a chain branch, or a site already good enough that there is no honest case to make.
+
+too_big: true when the reason to skip is specifically that they are beyond a freelancer's cold approach.
 
 Be honest and be willing to say no. A list of forty prospects where thirty are bad is worse than a list of ten.
 
 Return ONLY JSON:
-{"fit_score":0,"reasoning":"...","angle":"...","objective":"conversion","skip":false}`;
+{"fit_score":0,"reasoning":"...","angle":"...","objective":"conversion","skip":false,"too_big":false}`;
 
 export async function qualifyProspect(
   ai: Ai,
   input: QualifyInput,
 ): Promise<AiResult<Qualification>> {
+  const prominence = input.prominence ? renderProminence(input.prominence) : '';
+
   const prompt = [
     `Business: ${input.businessName}`,
     `Trade: ${input.niche}`,
@@ -85,6 +111,10 @@ export async function qualifyProspect(
     'Measured audit of their current site:',
     renderAudit(input.audit),
     '',
+    'Measured assessment of how large they already are:',
+    renderScale(input.scale),
+    '',
+    prominence ? `What a lookup outside their own site found:\n${prominence}\n` : '',
     input.context ? `What the directory knows: ${input.context}` : '',
     '',
     input.siteSummary
@@ -101,39 +131,73 @@ export async function qualifyProspect(
     .filter(Boolean)
     .join('\n');
 
-  const result = await generateJson<{
+  const result = await trackedGenerateJson<{
     fit_score?: unknown;
     reasoning?: unknown;
     angle?: unknown;
     objective?: unknown;
     skip?: unknown;
-  }>(ai, {
-    system: QUALIFY_SYSTEM,
-    prompt,
-    model: MODELS.text,
-    maxTokens: 700,
-    temperature: 0.3,
-  });
+    too_big?: unknown;
+  }>(
+    ai,
+    { system: QUALIFY_SYSTEM, prompt, model: MODELS.text, maxTokens: 700, temperature: 0.3 },
+    input.usage,
+  );
 
   if (!result.ok) return result;
 
   const raw = Number(result.data.fit_score);
   const objective = String(result.data.objective ?? 'conversion');
+  const modelFit = Number.isFinite(raw) ? Math.min(Math.max(Math.round(raw), 0), 100) : 0;
+
+  /**
+   * The model is told that scale caps fit, and mostly respects it — but
+   * "mostly" is not good enough for the one rule that decides whether a
+   * national brand ends up in somebody's outbox. Enforce it here, where it
+   * cannot be talked out of.
+   */
+  const capped = capFitToScale(modelFit, input.scale);
+  const tooBig = result.data.too_big === true || input.scale.decisive;
 
   return {
     ok: true,
     data: {
-      fitScore: Number.isFinite(raw) ? Math.min(Math.max(Math.round(raw), 0), 100) : 0,
-      reasoning: String(result.data.reasoning ?? '').slice(0, 1200),
+      fitScore: capped,
+      reasoning: [
+        String(result.data.reasoning ?? '').slice(0, 1200),
+        capped < modelFit
+          ? `(The model scored fit ${modelFit}; capped to ${capped} because ${input.scale.summary.toLowerCase()})`
+          : '',
+      ]
+        .filter(Boolean)
+        .join(' '),
       angle: String(result.data.angle ?? '').slice(0, 400),
       objective: (['conversion', 'awareness', 'credibility'] as const).includes(
         objective as 'conversion',
       )
         ? (objective as Qualification['objective'])
         : 'conversion',
-      skip: result.data.skip === true,
+      skip: result.data.skip === true || input.scale.decisive,
+      tooBig,
     },
   };
+}
+
+/**
+ * Scale is a ceiling on fit, applied in code.
+ *
+ * Conclusive evidence — a Wikidata-catalogued brand, three or more branches —
+ * puts fit on the floor outright. Otherwise the ceiling falls away smoothly
+ * above a scale of 45, so an established-but-independent business is
+ * penalised rather than eliminated.
+ */
+export function capFitToScale(fit: number, scale: ScaleAssessment): number {
+  if (scale.decisive) return Math.min(fit, 5);
+  if (scale.score <= 45) return fit;
+
+  // 45 → no cap, 100 → hard floor. Linear between.
+  const ceiling = Math.round(100 - (scale.score - 45) * (95 / 55));
+  return Math.min(fit, Math.max(0, ceiling));
 }
 
 /* ------------------------------------------------------------------ */
@@ -146,6 +210,8 @@ export interface ShortlistCandidate {
   score: number;
   presenceScore: number;
   fitScore: number;
+  /** 0..100, measured. High means too established for a cold concept site. */
+  scaleScore: number;
   signal: string;
   angle: string;
 }
@@ -155,9 +221,16 @@ export interface ShortlistDecision {
   reasoning: string;
 }
 
-const SHORTLIST_SYSTEM = `You are choosing which prospects a designer should spend the next few hours on.
+const SHORTLIST_SYSTEM = `You are choosing which prospects a FREELANCE designer should spend the next few hours on. Each one selected gets a concept site built for them and a cold email.
 
-You are given a scored list. score is a blend of measured need and judged fit. Pick the ones worth pursuing, up to the limit given.
+You are given a scored list.
+  need  - measured, how bad the state of their website is
+  fit   - judged, how well a cold concept site would land
+  scale - measured, how large the business already is
+
+Pick the ones worth pursuing, up to the limit given.
+
+Never select anything with scale above 60. Those are established operations with an agency or an in-house designer; a stranger's concept site is an imposition, not an opportunity, and it costs the designer their credibility to send one.
 
 Pick FEWER than the limit when fewer deserve it. An unfilled shortlist is a perfectly good answer; padding it wastes the designer's afternoon and puts a bad email in a stranger's inbox.
 
@@ -170,39 +243,49 @@ export async function shortlistProspects(
   candidates: ShortlistCandidate[],
   limit: number,
   idealClient: string,
+  usage: AiUsageContext,
 ): Promise<AiResult<ShortlistDecision>> {
   if (candidates.length === 0) return { ok: true, data: { selectedIds: [], reasoning: 'Nothing to choose from.' } };
 
   const described = candidates
     .map(
       (c) =>
-        `${c.id} | ${c.businessName} | score ${c.score} (need ${c.presenceScore}, fit ${c.fitScore}) | ${c.signal} | ${c.angle}`,
+        `${c.id} | ${c.businessName} | score ${c.score} (need ${c.presenceScore}, fit ${c.fitScore}, scale ${c.scaleScore}) | ${c.signal} | ${c.angle}`,
     )
     .join('\n');
 
-  const result = await generateJson<{ selected?: unknown; reasoning?: unknown }>(ai, {
-    system: SHORTLIST_SYSTEM,
-    prompt: [
-      idealClient ? `The client I am after: ${idealClient}` : '',
-      `Pick at most ${limit}.`,
-      '',
-      'id | business | score | signal | angle',
-      described,
-    ]
-      .filter(Boolean)
-      .join('\n'),
-    maxTokens: 900,
-    temperature: 0.2,
-  });
+  const result = await trackedGenerateJson<{ selected?: unknown; reasoning?: unknown }>(
+    ai,
+    {
+      system: SHORTLIST_SYSTEM,
+      prompt: [
+        idealClient ? `The client I am after: ${idealClient}` : '',
+        `Pick at most ${limit}.`,
+        '',
+        'id | business | score (need, fit, scale) | signal | angle',
+        described,
+      ]
+        .filter(Boolean)
+        .join('\n'),
+      maxTokens: 900,
+      temperature: 0.2,
+    },
+    usage,
+  );
 
   if (!result.ok) return result;
 
   // Only ids we actually offered. A hallucinated id must not enter the run.
-  const known = new Set(candidates.map((c) => c.id));
+  // Only ids we actually offered, and never one the scale rule rules out —
+  // the instruction is in the prompt, but this is the line that holds.
+  const known = new Map(candidates.map((c) => [c.id, c]));
   const selected = Array.isArray(result.data.selected)
     ? result.data.selected
         .map((value) => String(value))
-        .filter((value) => known.has(value))
+        .filter((value) => {
+          const candidate = known.get(value);
+          return Boolean(candidate) && candidate!.scaleScore <= 60;
+        })
         .slice(0, limit)
     : [];
 
@@ -275,6 +358,8 @@ export interface PlanInput {
   /** Their existing copy. Untrusted. */
   siteContent: string;
   contact: { email: string; phone: string; address: string };
+  /** Where to book the cost of this call. */
+  usage: AiUsageContext;
 }
 
 export async function draftDesignPlan(
@@ -306,13 +391,11 @@ export async function draftDesignPlan(
     '</their-copy>',
   ].join('\n');
 
-  const result = await generateJson<Record<string, unknown>>(ai, {
-    system: PLAN_SYSTEM,
-    prompt,
-    model: MODELS.text,
-    maxTokens: 3000,
-    temperature: 0.6,
-  });
+  const result = await trackedGenerateJson<Record<string, unknown>>(
+    ai,
+    { system: PLAN_SYSTEM, prompt, model: MODELS.text, maxTokens: 3000, temperature: 0.6 },
+    input.usage,
+  );
 
   if (!result.ok) return result;
   return { ok: true, data: normalisePlan(result.data, input) };

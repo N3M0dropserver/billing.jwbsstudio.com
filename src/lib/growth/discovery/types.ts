@@ -37,6 +37,22 @@ export interface DiscoveredBusiness {
   sourceRef: string;
   rating?: number;
   reviewCount?: number;
+
+  /**
+   * Chain membership, where the source knows it.
+   *
+   * OpenStreetMap tags a branch of a chain with `brand`, and a recognised
+   * brand with `brand:wikidata`. Both are strong, free evidence that a
+   * business is too large for an unsolicited spec redesign — throwing them
+   * away is how a national roaster ends up on a freelancer's prospect list.
+   */
+  brand?: string;
+  /** Wikidata id of the brand. Its presence alone means a known chain. */
+  brandWikidata?: string;
+  /** Who runs it, when that differs from the name. Franchise marker. */
+  operator?: string;
+  /** How many branches the search found in this region. */
+  branchCount?: number;
 }
 
 export interface DiscoveryOutcome {

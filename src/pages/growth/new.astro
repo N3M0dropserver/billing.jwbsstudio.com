@@ -108,7 +108,7 @@ const hasPlacesKey = Boolean(bindings().GOOGLE_PLACES_API_KEY);
             ))}
           </select>
         </div>
-        <div class="grid grid-cols-2 gap-3.5">
+        <div class="grid grid-cols-3 gap-3.5">
           <div>
             <label for="targetCount" class="mb-1.5 block text-sm font-medium">Carry forward</label>
             <input id="targetCount" name="targetCount" type="number" min="1" max="50" value="10" class="field" />
@@ -116,6 +116,10 @@ const hasPlacesKey = Boolean(bindings().GOOGLE_PLACES_API_KEY);
           <div>
             <label for="scoreFloor" class="mb-1.5 block text-sm font-medium">Score floor</label>
             <input id="scoreFloor" name="scoreFloor" type="number" min="0" max="100" value="55" class="field" />
+          </div>
+          <div>
+            <label for="scaleCeiling" class="mb-1.5 block text-sm font-medium">Size ceiling</label>
+            <input id="scaleCeiling" name="scaleCeiling" type="number" min="0" max="100" value="60" class="field" />
           </div>
         </div>
       </div>
@@ -146,6 +150,13 @@ const hasPlacesKey = Boolean(bindings().GOOGLE_PLACES_API_KEY);
           </div>
         </div>
       </details>
+
+      <p class="muted mt-3 border-t pt-3 text-xs leading-relaxed" style="border-color: var(--border)">
+        <strong style="color: var(--text)">Size ceiling</strong> is the one that keeps recognised
+        brands off the list. Businesses measured above it are dropped no matter how well they
+        score — a cold concept site works on an owner-operator and reads as an imposition to a
+        chain with an agency. Raise it only if you want to approach them anyway.
+      </p>
     </Card>
 
     <Card title="How much happens without you" subtitle="Starts from your saved defaults">

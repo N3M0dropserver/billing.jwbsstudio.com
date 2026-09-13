@@ -27,3 +27,10 @@ GOOGLE_PLACES_API_KEY=""
 # nothing else. With a wildcard record in place, leave both blank.
 CLOUDFLARE_API_TOKEN=""
 CLOUDFLARE_ZONE_ID=""
+
+# Web search for checking how well known a business already is, so a
+# recognised chain never ends up on a prospect list. The Wikidata lookup runs
+# without any of this and catches most of them; a search provider adds press
+# coverage on top. "brave" or "serper".
+SEARCH_PROVIDER="none"
+SEARCH_API_KEY=""

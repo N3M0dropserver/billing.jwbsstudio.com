@@ -326,6 +326,9 @@ export function elementToBusiness(element: OverpassElement): DiscoveredBusiness 
 
   return {
     name,
+    brand: (tags.brand ?? '').trim() || undefined,
+    brandWikidata: (tags['brand:wikidata'] ?? '').trim() || undefined,
+    operator: (tags.operator ?? '').trim() || undefined,
     website: website || undefined,
     email: (tags.email ?? tags['contact:email'] ?? '').trim() || undefined,
     phone: (tags.phone ?? tags['contact:phone'] ?? '').trim() || undefined,
@@ -370,16 +373,35 @@ export const overpassProvider: DiscoveryProvider = {
       );
     }
 
-    const seen = new Set<string>();
-    const businesses: DiscoveredBusiness[] = [];
+    /**
+     * Chains map one POI per branch. We still want one row per business — but
+     * the number of branches is itself the most useful thing OpenStreetMap
+     * knows about size, so the duplicates are counted rather than discarded.
+     */
+    const byKey = new Map<string, DiscoveredBusiness>();
+    const branchCounts = new Map<string, number>();
+
     for (const element of result.elements) {
       const business = elementToBusiness(element);
       if (!business) continue;
-      // Chains map one POI per branch; one row per name is enough to judge.
-      const key = business.name.toLowerCase();
-      if (seen.has(key)) continue;
-      seen.add(key);
-      businesses.push(business);
+
+      // Group on the brand where there is one, so branches trading under
+      // slightly different names still count together.
+      const key = (business.brand || business.name).toLowerCase().trim();
+      branchCounts.set(key, (branchCounts.get(key) ?? 0) + 1);
+
+      const existing = byKey.get(key);
+      if (!existing) {
+        byKey.set(key, business);
+      } else if (!existing.website && business.website) {
+        // Keep the branch that actually knows the website.
+        byKey.set(key, { ...business });
+      }
+    }
+
+    const businesses: DiscoveredBusiness[] = [];
+    for (const [key, business] of byKey) {
+      businesses.push({ ...business, branchCount: branchCounts.get(key) ?? 1 });
       if (businesses.length >= request.limit) break;
     }
 

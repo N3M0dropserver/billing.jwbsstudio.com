@@ -91,6 +91,7 @@ export const POST: APIRoute = async ({ request, locals, redirect }) => {
     status: 'draft',
     targetCount: int(form.get('targetCount'), 10, 1, 50),
     scoreFloor: int(form.get('scoreFloor'), 55, 0, 100),
+    scaleCeiling: int(form.get('scaleCeiling'), 60, 0, 100),
     createdAt: now,
     updatedAt: now,
   });

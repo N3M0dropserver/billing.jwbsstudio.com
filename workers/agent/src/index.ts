@@ -27,7 +27,9 @@
  */
 
 import { Agent, getAgentByName, routeAgentRequest } from 'agents';
+import { eq } from 'drizzle-orm';
 import { getDb } from '../../../src/lib/db/index';
+import { settings } from '../../../src/lib/db/schema';
 import {
   decideGate,
   loadCampaign,
@@ -76,14 +78,36 @@ export class CampaignAgent extends Agent<Env, CampaignState> {
     error: '',
   };
 
-  private context(): EngineContext {
+  private context(cacheTtlHours?: number): EngineContext {
     return {
       db: getDb(this.env.DB),
       bucket: this.env.FILES,
       ai: this.env.AI,
       env: this.env,
       appUrl: this.env.APP_URL || 'https://billing.jwbsstudio.com',
+      aiCacheTtlHours: cacheTtlHours,
     };
+  }
+
+  /**
+   * The user's AI cache setting, read once per tick rather than per call.
+   *
+   * A tick makes several model calls and they all want the same number; a
+   * read each time would be a D1 round trip for a value that cannot change
+   * mid-tick.
+   */
+  private async cacheTtl(): Promise<number> {
+    if (!this.state.userId) return 0;
+    try {
+      const rows = await getDb(this.env.DB)
+        .select({ hours: settings.aiCacheTtlHours })
+        .from(settings)
+        .where(eq(settings.userId, this.state.userId))
+        .limit(1);
+      return rows[0]?.hours ?? 0;
+    } catch {
+      return 0;
+    }
   }
 
   private note(message: string): Array<{ at: string; message: string }> {
@@ -129,7 +153,7 @@ export class CampaignAgent extends Agent<Env, CampaignState> {
     const campaignId = payload?.campaignId || this.state.campaignId;
     if (!campaignId) return;
 
-    const ctx = this.context();
+    const ctx = this.context(await this.cacheTtl());
     let result: StepResult;
 
     try {

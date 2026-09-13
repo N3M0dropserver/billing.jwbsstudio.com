@@ -98,8 +98,6 @@ const env = bindings();
         <input id="demoHost" name="demoHost" value={settings.demoHost} class="field font-mono text-sm" />
         <p class="muted mt-2 text-xs leading-relaxed">
           Each demo gets its own label, so a run produces <code>wells-coffee.{settings.demoHost}</code>.
-          Point a proxied wildcard <code>*.{settings.demoHost}</code> at this app and add a matching
-          Worker route, and every demo is live the moment it is built with nothing further to set up.
           {env.DEMO_HOST && env.DEMO_HOST !== settings.demoHost && (
             <span style="color: var(--color-owing)">
               {' '}The Worker is configured to serve <code>{env.DEMO_HOST}</code>, so demos on
@@ -107,6 +105,77 @@ const env = bindings();
             </span>
           )}
         </p>
+      </div>
+    </Card>
+
+    <Card
+      title="Is demo hosting working?"
+      subtitle={settings.demoHostVerified ? 'Yes — demos are linked on their own subdomain' : 'Not yet — demos are linked on this app instead'}
+    >
+      <div
+        class="rounded-lg px-3.5 py-3 text-sm leading-relaxed"
+        style={`background: color-mix(in oklch, ${settings.demoHostVerified ? 'var(--color-paid)' : 'var(--color-owing)'} 10%, transparent)`}
+      >
+        <p class="font-medium" style={`color: ${settings.demoHostVerified ? 'var(--color-paid)' : 'var(--color-owing)'}`}>
+          {settings.demoHostVerified
+            ? `Subdomains on ${settings.demoHost} resolve.`
+            : 'Subdomains have not been verified.'}
+        </p>
+        <p class="muted mt-1 text-xs">
+          {settings.demoHostCheckResult || 'Not checked yet.'}
+          {settings.demoHostCheckedAt && ` (${settings.demoHostCheckedAt.slice(0, 16).replace('T', ' ')})`}
+        </p>
+      </div>
+
+      {!settings.demoHostVerified && (
+        <div class="muted mt-3 space-y-2 text-xs leading-relaxed">
+          <p>
+            <strong style="color: var(--text)">Demos still work.</strong> Until the wildcard is
+            verified they are linked at <code>{`${env.APP_URL ?? ''}/d/&lt;host&gt;/`}</code> on this
+            app, which needs no DNS — so a run always produces something openable and a proposal
+            never contains a dead link.
+          </p>
+          <p>To move them onto their own subdomain, add both of these once:</p>
+          <pre class="overflow-x-auto rounded-lg p-3 text-[11px]" style="background: var(--surface-sunken)">{`DNS:    *.${settings.demoHost}   CNAME   ${new URL(env.APP_URL ?? 'https://billing.jwbsstudio.com').hostname}   (proxied)
+Route:  *.${settings.demoHost}/*   ->   this Worker`}</pre>
+          <p>Then build at least one demo and run the check — it needs a real page to fetch.</p>
+        </div>
+      )}
+
+      <button
+        type="submit"
+        formmethod="post"
+        formaction="/api/growth-hosting-check"
+        class="muted mt-3 rounded-lg border px-3 py-2 text-sm"
+        style="border-color: var(--border)"
+      >Check hosting now</button>
+    </Card>
+
+    <Card title="AI" subtitle="Caching and what the pipeline is allowed to look up">
+      <div class="grid gap-3.5 sm:grid-cols-2">
+        <div>
+          <label for="aiCacheTtlHours" class="mb-1.5 block text-sm font-medium">Reuse identical requests for</label>
+          <div class="flex items-center gap-2">
+            <input id="aiCacheTtlHours" name="aiCacheTtlHours" type="number" min="0" max="720" value={settings.aiCacheTtlHours} class="field max-w-28" />
+            <span class="muted text-sm">hours</span>
+          </div>
+          <p class="muted mt-1 text-xs leading-relaxed">
+            A re-run of the same stage costs nothing the second time. Keyed on the model, the
+            prompt and the parameters, so a changed brief is a fresh call rather than a stale
+            answer. Zero turns it off.
+          </p>
+        </div>
+        <div>
+          <p class="mb-1.5 block text-sm font-medium">Looking businesses up</p>
+          <p class="muted text-xs leading-relaxed">
+            Wikidata is checked on every prospect — free, no key, and it catches the recognised
+            brands that should never be approached cold.
+            {env.SEARCH_PROVIDER && env.SEARCH_PROVIDER !== 'none' && env.SEARCH_API_KEY
+              ? ` Web search is also on, via ${env.SEARCH_PROVIDER}.`
+              : ' Set SEARCH_PROVIDER to "brave" or "serper" with SEARCH_API_KEY to add web search on top.'}
+          </p>
+          <a href="/growth/ai" class="mt-2 inline-block text-sm" style="color: var(--color-brand-600)">See what it is costing →</a>
+        </div>
       </div>
     </Card>
 

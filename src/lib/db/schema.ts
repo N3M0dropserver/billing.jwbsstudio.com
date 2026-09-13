@@ -190,6 +190,18 @@ export const settings = sqliteTable('settings', {
   /** Apex the generated demos are published under. */
   demoHost: text('demo_host').notNull().default('demo.jwbsstudio.com'),
   /**
+   * Whether a demo subdomain has actually been seen to resolve.
+   *
+   * Until it has, demos are linked on the app's own origin instead. Wildcard
+   * DNS and a matching Worker route are a manual setup step, and a proposal
+   * email containing a link that does not load is worse than an ugly one.
+   */
+  demoHostVerified: integer('demo_host_verified', { mode: 'boolean' }).notNull().default(false),
+  demoHostCheckedAt: text('demo_host_checked_at'),
+  demoHostCheckResult: text('demo_host_check_result').notNull().default(''),
+  /** Hours an identical AI request may be served from cache. 0 disables it. */
+  aiCacheTtlHours: integer('ai_cache_ttl_hours').notNull().default(72),
+  /**
    * Hard ceiling on outreach emails sent by unattended runs in any rolling
    * 24 hours. An automated pipeline that can mail strangers needs a number
    * it cannot talk itself past; zero blocks unattended sending entirely.
@@ -784,6 +796,12 @@ export const campaigns = sqliteTable(
     targetCount: integer('target_count').notNull().default(10),
     /** Prospects below this score are never carried forward, in any mode. */
     scoreFloor: integer('score_floor').notNull().default(55),
+    /**
+     * Prospects whose measured scale is above this are never carried forward.
+     * The default rules out recognised brands and multi-site operators, who
+     * do not respond to an unsolicited spec redesign from a freelancer.
+     */
+    scaleCeiling: integer('scale_ceiling').notNull().default(60),
 
     discoveredCount: integer('discovered_count').notNull().default(0),
     shortlistedCount: integer('shortlisted_count').notNull().default(0),
@@ -888,6 +906,23 @@ export const prospects = sqliteTable(
     presenceScore: integer('presence_score').notNull().default(0),
     /** 0..100 from the model: how good a client they would actually be. */
     fitScore: integer('fit_score').notNull().default(0),
+    /**
+     * 0..100, measured: how large and well-resourced the business already is.
+     *
+     * A speculative redesign from a freelancer is a plausible approach to an
+     * owner-operated shop and an imposition on a national brand with an
+     * in-house design team. Kept apart from `fitScore` because it is derived
+     * from signals rather than judged, and because it is a *ceiling* — past a
+     * point it disqualifies regardless of how good a fit the model thinks
+     * they are.
+     */
+    scaleScore: integer('scale_score').notNull().default(0),
+    /** JSON — the signals behind `scaleScore`. */
+    scale: text('scale').notNull().default('{}'),
+    /** Chain or franchise name, when the business is a branch of one. */
+    brand: text('brand').notNull().default(''),
+    /** Branches found in the searched region. More than one means a chain. */
+    branchCount: integer('branch_count').notNull().default(1),
     /** The ranking number the UI sorts on. Weighted blend of the two above. */
     score: integer('score').notNull().default(0),
     /** JSON — the deterministic audit behind `presenceScore`. */
@@ -1030,6 +1065,14 @@ export const demoSites = sqliteTable(
     subdomain: text('subdomain').notNull(),
     /** The full host it is served on. */
     host: text('host').notNull(),
+    /**
+     * The URL handed to the prospect.
+     *
+     * The subdomain when the wildcard has been verified as reachable, and the
+     * path-based mount on the app's own origin otherwise — so a demo is
+     * always openable even before DNS is arranged.
+     */
+    publicUrl: text('public_url').notNull().default(''),
 
     status: text('status', { enum: ['building', 'live', 'failed', 'archived'] })
       .notNull()
@@ -1107,6 +1150,101 @@ export const proposals = sqliteTable(
 
 
 /* ------------------------------------------------------------------ */
+/* AI observability                                                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * One row per model call.
+ *
+ * A pipeline that makes dozens of model calls per run, unattended, is
+ * otherwise a black box with a bill attached. This records what was asked,
+ * what it cost, how long it took and whether it was served from cache — by
+ * stage and by operation, so an expensive stage is visible rather than
+ * inferred.
+ *
+ * Prompts and responses are deliberately NOT stored: they contain crawled
+ * third-party content, and the useful questions here are all about shape and
+ * cost rather than text. A truncated prompt digest is kept for grouping.
+ */
+export const aiCalls = sqliteTable(
+  'ai_calls',
+  {
+    id: id(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    campaignId: text('campaign_id').references(() => campaigns.id, { onDelete: 'cascade' }),
+    prospectId: text('prospect_id'),
+
+    /** Which pipeline stage asked. */
+    stage: text('stage').notNull().default(''),
+    /** What it was asked for: qualify, shortlist, plan, proposal, brief. */
+    operation: text('operation').notNull().default(''),
+    model: text('model').notNull().default(''),
+
+    promptTokens: integer('prompt_tokens').notNull().default(0),
+    completionTokens: integer('completion_tokens').notNull().default(0),
+    totalTokens: integer('total_tokens').notNull().default(0),
+    /**
+     * True when the counts came from the provider rather than being estimated
+     * from character length. An estimate is useful; pretending it is a
+     * measurement is not.
+     */
+    tokensMeasured: integer('tokens_measured', { mode: 'boolean' }).notNull().default(false),
+
+    /** Estimated cost in millionths of a cent, to stay in integers. */
+    costMicrocents: integer('cost_microcents').notNull().default(0),
+    /** Whether the model's price is confirmed or a placeholder. */
+    costConfident: integer('cost_confident', { mode: 'boolean' }).notNull().default(false),
+
+    durationMs: integer('duration_ms').notNull().default(0),
+    /** Served from the prompt cache, so it cost nothing and took no time. */
+    cached: integer('cached', { mode: 'boolean' }).notNull().default(false),
+    ok: integer('ok', { mode: 'boolean' }).notNull().default(true),
+    error: text('error').notNull().default(''),
+    /** SHA-256 prefix of the request, for grouping repeats. */
+    requestHash: text('request_hash').notNull().default(''),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index('ai_calls_user_idx').on(t.userId, t.createdAt),
+    index('ai_calls_campaign_idx').on(t.campaignId),
+    index('ai_calls_operation_idx').on(t.userId, t.operation),
+  ],
+);
+
+/**
+ * The prompt cache.
+ *
+ * Runs repeat themselves constantly — the same shortlist re-run after a
+ * change, the same brief adapted for the same trade, a stage retried after a
+ * failure downstream. Keyed on everything that affects the answer, so a
+ * changed prompt or temperature is a different entry rather than a stale hit.
+ *
+ * In D1 rather than KV so it needs no binding anyone has to create first.
+ */
+export const aiCache = sqliteTable(
+  'ai_cache',
+  {
+    /** SHA-256 of model, system, prompt and parameters. */
+    hash: text('hash').primaryKey(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    model: text('model').notNull().default(''),
+    operation: text('operation').notNull().default(''),
+    response: text('response').notNull(),
+    promptTokens: integer('prompt_tokens').notNull().default(0),
+    completionTokens: integer('completion_tokens').notNull().default(0),
+    hits: integer('hits').notNull().default(0),
+    lastHitAt: text('last_hit_at'),
+    expiresAt: text('expires_at').notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [index('ai_cache_expiry_idx').on(t.expiresAt)],
+);
+
+/* ------------------------------------------------------------------ */
 /* Audit                                                               */
 /* ------------------------------------------------------------------ */
 
@@ -1151,3 +1289,5 @@ export type ProspectArtifact = typeof prospectArtifacts.$inferSelect;
 export type DesignPlan = typeof designPlans.$inferSelect;
 export type DemoSite = typeof demoSites.$inferSelect;
 export type ActivityLogEntry = typeof activityLog.$inferSelect;
+export type AiCall = typeof aiCalls.$inferSelect;
+export type AiCacheEntry = typeof aiCache.$inferSelect;

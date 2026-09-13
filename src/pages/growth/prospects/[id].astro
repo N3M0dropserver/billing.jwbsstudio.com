@@ -8,6 +8,7 @@ import { demoSites, designPlans, proposals, prospectArtifacts, prospects } from 
 import { parseJson, readAudit, readFindings } from '~/lib/growth/engine';
 import type { SocialLink } from '~/lib/growth/html';
 import type { PlanSection } from '~/lib/growth/qualify';
+import type { ScaleAssessment } from '~/lib/growth/scale';
 
 const user = Astro.locals.user!;
 const id = Astro.params.id!;
@@ -39,6 +40,9 @@ const sections = plan ? parseJson<PlanSection[]>(plan.sections, []) : [];
 const pages = artifacts.filter((a) => a.kind === 'page');
 const images = artifacts.filter((a) => a.kind === 'image');
 const failing = audit.checks.filter((check) => check.failed);
+const scale = parseJson<ScaleAssessment | null>(prospect.scale, null);
+const scaleHits = scale?.signals.filter((signal) => signal.hit && signal.weight > 0) ?? [];
+const tooBig = findings.tooBig === true;
 ---
 
 <AppLayout title={prospect.businessName} subtitle={`${prospect.niche} · ${prospect.region}`} width="wide">
@@ -131,15 +135,52 @@ const failing = audit.checks.filter((check) => check.failed);
 
     <div class="space-y-4">
       <Card title="Score">
-        <ScoreBar score={prospect.score} presenceScore={prospect.presenceScore} fitScore={prospect.fitScore} />
+        <ScoreBar score={prospect.score} presenceScore={prospect.presenceScore} fitScore={prospect.fitScore} scaleScore={prospect.scaleScore} />
         <dl class="mt-4 space-y-2 text-sm">
           <div class="flex justify-between"><dt class="muted">Need (measured)</dt><dd class="tabular">{prospect.presenceScore}</dd></div>
           <div class="flex justify-between"><dt class="muted">Fit (judged)</dt><dd class="tabular">{prospect.fitScore}</dd></div>
+          <div class="flex justify-between">
+            <dt class="muted">Size (measured)</dt>
+            <dd class="tabular" style={tooBig ? 'color: var(--color-overdue)' : ''}>{prospect.scaleScore}</dd>
+          </div>
         </dl>
         {findings.reasoning && (
           <p class="muted mt-3 border-t pt-3 text-xs leading-relaxed" style="border-color: var(--border)">
             {String(findings.reasoning)}
           </p>
+        )}
+      </Card>
+
+      <Card title="How big are they" subtitle={scale?.summary ?? 'Not assessed'}>
+        {tooBig && (
+          <p class="mb-3 rounded-lg px-3 py-2 text-xs leading-relaxed" style="background: color-mix(in oklch, var(--color-overdue) 12%, transparent); color: var(--color-overdue)">
+            Ruled out on size. A speculative redesign from a freelancer lands well with an
+            owner-operator and reads as an imposition to an established operation with an agency.
+          </p>
+        )}
+        {prospect.brand && (
+          <p class="muted mb-2 text-xs">Trades under <strong style="color: var(--text)">{prospect.brand}</strong></p>
+        )}
+        {prospect.branchCount > 1 && (
+          <p class="muted mb-2 text-xs">{prospect.branchCount} branches found in this region</p>
+        )}
+        {scaleHits.length === 0 ? (
+          <p class="muted text-sm leading-relaxed">
+            Nothing suggests this is more than a single independent business — which is exactly
+            what the approach is for.
+          </p>
+        ) : (
+          <ul class="space-y-1.5">
+            {scaleHits.map((signal) => (
+              <li class="flex items-start justify-between gap-3 text-sm">
+                <span>
+                  {signal.label}
+                  {signal.detail && <span class="muted block text-xs">{signal.detail}</span>}
+                </span>
+                <span class="muted tabular shrink-0 text-xs">+{signal.weight}</span>
+              </li>
+            ))}
+          </ul>
         )}
       </Card>
 

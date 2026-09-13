@@ -1,29 +1,46 @@
 ---
 /**
- * A score with its two halves shown.
+ * A score with its parts shown.
  *
  * The combined number is what the list sorts on, but need and fit are
  * different kinds of claim — one measured, one judged — and collapsing them
  * into a single bar hides which is which.
+ *
+ * Scale is not part of the bar at all. It is a ceiling rather than a
+ * contribution: past the campaign's threshold a prospect is out regardless of
+ * how well they score, so showing it as a third segment would imply it adds
+ * up with the others.
  */
 interface Props {
   score: number;
   presenceScore: number;
   fitScore: number;
+  scaleScore?: number;
+  /** The campaign's ceiling, so "too big" can be shown rather than inferred. */
+  scaleCeiling?: number;
 }
 
-const { score, presenceScore, fitScore } = Astro.props;
+const { score, presenceScore, fitScore, scaleScore, scaleCeiling = 60 } = Astro.props;
+const tooBig = typeof scaleScore === 'number' && scaleScore > scaleCeiling;
 ---
 
 <div class="flex items-center gap-2.5">
   <span class="tabular w-9 text-right text-sm font-semibold">{score}</span>
-  <div class="flex-1" title={`Need ${presenceScore}, fit ${fitScore}`}>
+  <div class="flex-1" title={`Need ${presenceScore}, fit ${fitScore}${typeof scaleScore === 'number' ? `, scale ${scaleScore}` : ''}`}>
     <div class="flex h-1.5 overflow-hidden rounded-full" style="background: var(--surface-sunken)">
       <div style={`width: ${presenceScore / 2}%; background: var(--color-owing)`}></div>
       <div style={`width: ${fitScore / 2}%; background: var(--color-brand-500)`}></div>
     </div>
   </div>
-  <span class="muted tabular hidden text-[11px] sm:inline">
-    {presenceScore}<span class="opacity-50">/</span>{fitScore}
-  </span>
+  {tooBig ? (
+    <span
+      class="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide"
+      style="background: color-mix(in oklch, var(--color-overdue) 14%, transparent); color: var(--color-overdue)"
+      title={`Scale ${scaleScore}, above this run's ceiling of ${scaleCeiling}`}
+    >too big</span>
+  ) : (
+    <span class="muted tabular hidden text-[11px] sm:inline">
+      {presenceScore}<span class="opacity-50">/</span>{fitScore}
+    </span>
+  )}
 </div>

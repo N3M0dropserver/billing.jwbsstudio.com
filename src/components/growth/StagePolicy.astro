@@ -2,6 +2,10 @@
 /**
  * The autonomy control.
  *
+ * The highlight is CSS-driven (`.segmented__option:has(input:checked)`), not a
+ * server-rendered style. An inline style computed from the saved policy could
+ * not move until the form round-tripped, so every click looked ignored.
+ *
  * Every stage, every mode, on one screen. This is the most important control
  * in the feature and it earns the space: someone setting a run to send email
  * without looking at it first should have seen the word "propose" next to the
@@ -50,12 +54,9 @@ const CONSEQUENTIAL: Record<string, string> = {
             <p class="muted mt-0.5 text-xs leading-relaxed">{STAGE_DESCRIPTIONS[stage]}</p>
           </div>
 
-          <div class="flex gap-1 rounded-lg p-0.5" style="background: var(--surface-sunken)">
+          <div class="segmented">
             {STAGE_MODES.map((mode) => (
-              <label
-                class="cursor-pointer rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors has-[:checked]:text-white"
-                style={policy[stage] === mode ? 'background: var(--color-brand-600); color: white' : ''}
-              >
+              <label class="segmented__option">
                 <input
                   type="radio"
                   class="sr-only"

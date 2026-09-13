@@ -34,12 +34,15 @@ import {
   type Prospect,
 } from '../db/schema';
 import { newId, newToken } from '../id';
+import { trackedGenerate, type AiUsageContext } from '../ai/usage';
 import { applyOverrides, briefFromKit, type Brief } from './brief';
 import { auditSite, combineScores, type SiteAudit } from './assess';
 import { crawlSite } from './crawl';
 import { discover, discoveryUserAgent, type DiscoveredBusiness } from './discovery/index';
 import { enrichProspect } from './enrich';
 import { normaliseDomain } from './html';
+import { assessScale, type ScaleAssessment } from './scale';
+import { checkProminence, EMPTY_PROMINENCE, type SearchProviderName } from './search';
 import { nextStage, resolvePolicy, type StageMode, type StagePolicy } from './policy';
 import {
   draftDesignPlan,
@@ -52,7 +55,7 @@ import {
 import { draftProposal, sendOutreach } from './proposal';
 import { renderDemoFiles, type DemoContext } from './render';
 import { renderAstroProject } from './project';
-import { allocateSubdomain, createDnsRecord, publishDemo } from './publish';
+import { allocateSubdomain, createDnsRecord, demoPublicUrl, publishDemo } from './publish';
 import { prospectPrefix, putObject } from './storage';
 
 /* ------------------------------------------------------------------ */
@@ -66,6 +69,11 @@ export interface EngineContext {
   env: Env;
   /** Where this app lives, for building links and identifying the crawler. */
   appUrl: string;
+  /**
+   * Hours an identical model request may be reused. Read from settings by the
+   * caller so a stage does not have to fetch it on every call.
+   */
+  aiCacheTtlHours?: number;
 }
 
 export interface StepResult {
@@ -81,6 +89,30 @@ export interface StepResult {
 
 /** How long one tick may spend before handing control back. */
 export const TICK_BUDGET_MS = 15_000;
+
+/**
+ * Where a model call's cost is booked.
+ *
+ * Built per call rather than held on the context, because the useful grouping
+ * is by stage, operation and prospect — and those change within a single tick.
+ */
+function usageFor(
+  ctx: EngineContext,
+  campaign: Campaign,
+  operation: string,
+  stage: string,
+  prospectId?: string,
+): AiUsageContext {
+  return {
+    db: ctx.db,
+    userId: campaign.userId,
+    operation,
+    stage,
+    campaignId: campaign.id,
+    prospectId: prospectId ?? null,
+    cacheTtlHours: ctx.aiCacheTtlHours,
+  };
+}
 
 /* ------------------------------------------------------------------ */
 /* Logging                                                             */
@@ -294,17 +326,20 @@ async function stageBrief(
   if (policy.brief === 'ai') {
     // Let the model adapt the direction to the trade, without letting it
     // replace the designer's rules — it may only add a sentence of context.
-    const { generate } = await import('../ai/index');
-    const result = await generate(ctx.ai, {
-      system:
-        'You adapt a designer\'s existing art direction to one trade. Add at most two sentences ' +
-        'of specific guidance for this trade: what the photography should show, what a customer ' +
-        'is looking for when they land. Never contradict or replace the direction you are given. ' +
-        'Return the sentences only, no preamble.',
-      prompt: `Direction: ${brief.direction}\n\nTrade: ${campaign.niche}\nRegion: ${campaign.region}`,
-      maxTokens: 250,
-      temperature: 0.6,
-    });
+    const result = await trackedGenerate(
+      ctx.ai,
+      {
+        system:
+          'You adapt a designer\'s existing art direction to one trade. Add at most two sentences ' +
+          'of specific guidance for this trade: what the photography should show, what a customer ' +
+          'is looking for when they land. Never contradict or replace the direction you are given. ' +
+          'Return the sentences only, no preamble.',
+        prompt: `Direction: ${brief.direction}\n\nTrade: ${campaign.niche}\nRegion: ${campaign.region}`,
+        maxTokens: 250,
+        temperature: 0.6,
+      },
+      usageFor(ctx, campaign, 'brief', 'brief'),
+    );
 
     if (result.ok) {
       const merged = { ...JSON.parse(campaign.briefOverrides || '{}') } as Record<string, unknown>;
@@ -394,7 +429,13 @@ async function stageDiscover(
       sourceRef: business.sourceRef.slice(0, 200),
       rating: business.rating ?? null,
       reviewCount: business.reviewCount ?? 0,
-      findings: JSON.stringify({ context: business.context ?? '' }),
+      brand: (business.brand ?? '').slice(0, 200),
+      branchCount: Math.max(1, business.branchCount ?? 1),
+      findings: JSON.stringify({
+        context: business.context ?? '',
+        brandWikidata: business.brandWikidata ?? '',
+        operator: business.operator ?? '',
+      }),
       stage: 'discover',
       status: 'new',
       createdAt: now,
@@ -461,7 +502,12 @@ async function stageShortlist(
     .where(and(eq(prospects.campaignId, campaign.id), eq(prospects.stage, 'shortlist')))
     .orderBy(desc(prospects.score));
 
-  const eligible = assessed.filter((p) => p.score >= campaign.scoreFloor);
+  // The ceiling is enforced here as well as at assessment: a prospect whose
+  // scale was raised by a later lookup must not survive on a stale score.
+  const eligible = assessed.filter(
+    (p) => p.score >= campaign.scoreFloor && p.scaleScore <= campaign.scaleCeiling,
+  );
+  const ruledOutOnSize = assessed.filter((p) => p.scaleScore > campaign.scaleCeiling).length;
   const mode = policy.shortlist;
 
   let chosen: Prospect[] = [];
@@ -476,11 +522,13 @@ async function stageShortlist(
         score: p.score,
         presenceScore: p.presenceScore,
         fitScore: p.fitScore,
+        scaleScore: p.scaleScore,
         signal: p.signal,
         angle: String(readFindings(p).angle ?? ''),
       })),
       campaign.targetCount,
       campaign.idealClient,
+      usageFor(ctx, campaign, 'shortlist', 'shortlist'),
     );
 
     if (decision.ok && decision.data.selectedIds.length) {
@@ -524,8 +572,9 @@ async function stageShortlist(
     campaign,
     'shortlist',
     mode === 'ai' ? 'decision' : 'info',
-    `Shortlisted ${chosen.length} of ${assessed.length}.`,
-    { reasoning, selected: chosen.map((p) => p.businessName) },
+    `Shortlisted ${chosen.length} of ${assessed.length}` +
+      (ruledOutOnSize ? `, with ${ruledOutOnSize} ruled out on size.` : '.'),
+    { reasoning, selected: chosen.map((p) => p.businessName), ruledOutOnSize },
   );
 
   if (chosen.length === 0) {
@@ -539,7 +588,9 @@ async function stageShortlist(
       campaign,
       'shortlist',
       'warn',
-      `Nothing cleared the score floor of ${campaign.scoreFloor}. Lower it, or try another niche.`,
+      ruledOutOnSize === assessed.length
+        ? `Every business found was too large (scale ceiling ${campaign.scaleCeiling}). This niche in this region is chains. Try a smaller town, or raise the ceiling if you want to approach them anyway.`
+        : `Nothing cleared the score floor of ${campaign.scoreFloor}. Lower it, or try another niche.`,
     );
     return { more: false, waitingOn: null, finished: true, message: 'Nothing worth pursuing.' };
   }
@@ -573,20 +624,84 @@ async function assessProspect(
     crawl,
   );
 
+  /**
+   * How large are they already? Measured before the model is asked anything,
+   * because this is the question the model was worst at and the one that
+   * decides whether a cold concept site is welcome or an imposition.
+   */
+  const scale = assessScale(
+    {
+      name: prospect.businessName,
+      brand: prospect.brand || undefined,
+      brandWikidata: String(findings.brandWikidata ?? '') || undefined,
+      operator: String(findings.operator ?? '') || undefined,
+      branchCount: prospect.branchCount,
+      reviewCount: prospect.reviewCount,
+    },
+    crawl,
+  );
+
+  /**
+   * Look them up outside their own site — but only when the measured signals
+   * have not already settled it. A lookup on a business we have conclusive
+   * evidence about is a request nobody needed to make.
+   */
+  const prominence = scale.decisive
+    ? EMPTY_PROMINENCE
+    : await checkProminence(prospect.businessName, {
+        userAgent: discoveryUserAgent(ctx.appUrl),
+        region: campaign.region,
+        provider: (ctx.env.SEARCH_PROVIDER as SearchProviderName) ?? 'none',
+        apiKey: ctx.env.SEARCH_API_KEY,
+      });
+
+  // A catalogued entity is the same class of evidence as a brand:wikidata tag.
+  if (prominence.wikidataId) {
+    scale.score = Math.min(100, scale.score + 45);
+    scale.decisive = true;
+    scale.signals.push({
+      id: 'wikidata',
+      label: 'Catalogued on Wikidata — a business somebody thought notable',
+      weight: 45,
+      hit: true,
+      detail: `${prominence.wikidataId}: ${prominence.wikidataDescription}`,
+    });
+    scale.summary = `${prospect.businessName} has a Wikidata entry (${prominence.wikidataDescription || 'catalogued entity'}). Too well known for a cold concept site.`;
+  }
+
   const siteSummary = crawl?.pages[0]?.extracted.text.slice(0, 3000) ?? '';
 
-  const qualification = await qualifyProspect(ctx.ai, {
-    businessName: prospect.businessName,
-    niche: campaign.niche,
-    idealClient: campaign.idealClient,
-    region: campaign.region,
-    audit,
-    siteSummary,
-    context: String(findings.context ?? ''),
-  });
+  const overCeiling = scale.score > campaign.scaleCeiling;
 
-  const fitScore = qualification.ok ? qualification.data.fitScore : 0;
-  const skip = qualification.ok && qualification.data.skip;
+  /**
+   * Do not spend a model call on a business the measurements have already
+   * ruled out. This is the single largest saving in the stage — a run over a
+   * high street full of chain branches used to pay to be told so one at a
+   * time.
+   */
+  const qualification = overCeiling
+    ? null
+    : await qualifyProspect(ctx.ai, {
+        businessName: prospect.businessName,
+        niche: campaign.niche,
+        idealClient: campaign.idealClient,
+        region: campaign.region,
+        audit,
+        scale,
+        prominence,
+        siteSummary,
+        context: String(findings.context ?? ''),
+        usage: usageFor(ctx, campaign, 'qualify', 'shortlist', prospect.id),
+      });
+
+  const fitScore = qualification?.ok ? qualification.data.fitScore : 0;
+  const skip = overCeiling || (qualification?.ok === true && qualification.data.skip);
+
+  const reasoning = overCeiling
+    ? scale.summary
+    : qualification?.ok
+      ? qualification.data.reasoning
+      : (qualification?.error ?? '');
 
   await ctx.db
     .update(prospects)
@@ -595,18 +710,24 @@ async function assessProspect(
       signal: audit.signal,
       presenceScore: audit.presenceScore,
       fitScore,
-      // A prospect the model says to skip is ranked out rather than deleted,
-      // so the decision stays visible and can be overridden.
+      scaleScore: scale.score,
+      scale: JSON.stringify(scale).slice(0, 20_000),
+      brand: scale.brand.slice(0, 200),
+      // A prospect the measurements or the model rule out is ranked to the
+      // bottom rather than deleted, so the decision stays visible and can be
+      // overridden from the shortlist gate.
       score: skip ? 0 : combineScores(audit.presenceScore, fitScore),
       audit: JSON.stringify(audit).slice(0, 20_000),
       findings: JSON.stringify({
         ...findings,
-        angle: qualification.ok ? qualification.data.angle : '',
-        reasoning: qualification.ok ? qualification.data.reasoning : qualification.error,
-        objective: qualification.ok ? qualification.data.objective : 'conversion',
+        angle: qualification?.ok ? qualification.data.angle : '',
+        reasoning,
+        objective: qualification?.ok ? qualification.data.objective : 'conversion',
         skip,
+        tooBig: overCeiling || (qualification?.ok === true && qualification.data.tooBig),
+        prominence: prominence.checked.length ? prominence : undefined,
       }).slice(0, 20_000),
-      notes: qualification.ok ? qualification.data.angle : '',
+      notes: overCeiling ? scale.summary : qualification?.ok ? qualification.data.angle : '',
       domain: prospect.domain || normaliseDomain(prospect.website),
       socialLinks: JSON.stringify(crawl?.socials ?? []),
       email: prospect.email || crawl?.emails[0] || '',
@@ -618,9 +739,11 @@ async function assessProspect(
     ctx,
     campaign,
     'shortlist',
-    'info',
-    `${prospect.businessName}: need ${audit.presenceScore}, fit ${fitScore}${skip ? ' — model says skip' : ''}.`,
-    { summary: audit.summary },
+    overCeiling ? 'decision' : 'info',
+    overCeiling
+      ? `${prospect.businessName}: ruled out on size (scale ${scale.score}, ceiling ${campaign.scaleCeiling}). ${scale.summary}`
+      : `${prospect.businessName}: need ${audit.presenceScore}, fit ${fitScore}, scale ${scale.score}${skip ? ' — skip' : ''}.`,
+    { summary: audit.summary, scale: scale.summary, modelCalled: !overCeiling },
     prospect.id,
   );
 }
@@ -786,6 +909,7 @@ async function stagePlan(
     angle: String(findings.angle ?? ''),
     siteContent: String(findings.siteContent ?? ''),
     contact: { email: prospect.email, phone: prospect.phone, address: prospect.address },
+    usage: usageFor(ctx, campaign, 'plan', 'plan', prospect.id),
   };
 
   let draft: DesignPlanDraft;
@@ -1007,7 +1131,7 @@ async function stageBuild(
     region: campaign.region,
     contact: { email: prospect.email, phone: prospect.phone, address: prospect.address },
     socials: parseJson<Array<{ platform: string; url: string }>>(prospect.socialLinks, []),
-    images: images.map((image) => `/${image.path}`),
+    images: images.map((image) => image.path),
     openingHours: parseJson<string[]>(
       JSON.stringify(readFindings(prospect).openingHours ?? []),
       [],
@@ -1060,12 +1184,22 @@ async function stageBuild(
       else await logEvent(ctx, campaign, 'build', 'warn', `DNS record not created: ${dns.error}`, {}, prospect.id);
     }
 
+    /**
+     * Record the address that actually works.
+     *
+     * The subdomain only once the wildcard has been seen to serve a demo; the
+     * path mount on this app's own origin otherwise. Written at build time so
+     * a proposal drafted later cannot pick up a link that never resolved.
+     */
+    const publicUrl = demoPublicUrl(ctx.appUrl, host, settingsRow.demoHostVerified);
+
     await ctx.db
       .update(demoSites)
       .set({
         status: 'live',
         r2Prefix: published.prefix,
         sourcePrefix: published.sourcePrefix,
+        publicUrl,
         fileCount: published.fileCount,
         bytes: published.bytes,
         dnsRecordId,
@@ -1084,10 +1218,29 @@ async function stageBuild(
       campaign,
       'build',
       'info',
-      `Published a demo for ${prospect.businessName} at ${host}.`,
-      { host, files: published.fileCount, bytes: published.bytes },
+      `Published a demo for ${prospect.businessName} at ${publicUrl}`,
+      {
+        host,
+        publicUrl,
+        files: published.fileCount,
+        bytes: published.bytes,
+        servedFrom: settingsRow.demoHostVerified ? 'subdomain' : 'app origin',
+      },
       prospect.id,
     );
+
+    if (!settingsRow.demoHostVerified) {
+      await logEvent(
+        ctx,
+        campaign,
+        'build',
+        'warn',
+        'Demo subdomains have not been verified as reachable, so this is linked on the app itself. ' +
+          'Run the hosting check in Growth settings once the wildcard DNS record and Worker route are in place.',
+        {},
+        prospect.id,
+      );
+    }
   } catch (error) {
     await ctx.db
       .update(demoSites)
@@ -1146,7 +1299,8 @@ async function stagePropose(
   }
 
   const token = newToken(24);
-  const demoUrl = `https://${demo.host}`;
+  // The URL recorded at build time, which is the one known to resolve.
+  const demoUrl = demo.publicUrl || `https://${demo.host}`;
   const proposalUrl = `${ctx.appUrl}/proposal/${token}`;
 
   const draft = await draftProposal(ctx.ai, {
@@ -1167,6 +1321,7 @@ async function stagePropose(
     senderBio: settingsRow.outreachBio,
     signature: settingsRow.outreachSignature,
     capabilities: brief.capabilities,
+    usage: usageFor(ctx, campaign, 'proposal', 'propose', prospect.id),
   });
 
   if (!draft.ok) {

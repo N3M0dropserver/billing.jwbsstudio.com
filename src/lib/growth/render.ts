@@ -41,7 +41,13 @@ export interface DemoContext {
   region: string;
   contact: { email: string; phone: string; address: string };
   socials: Array<{ platform: string; url: string }>;
-  /** Public paths of their own photography, in preference order. */
+  /**
+   * Their photography, as paths RELATIVE to the page.
+   *
+   * Relative rather than root-absolute so one set of files serves both the
+   * subdomain (`wells.demo.example/`) and the path mount on the app's own
+   * origin (`billing.example/d/wells.demo.example/`) without rewriting.
+   */
   images: string[];
   openingHours: string[];
   /** Who to credit, shown in the demo ribbon. */
@@ -534,7 +540,7 @@ export function renderDemoPage(
     <meta property="og:description" content="${escape(plan.meta.description)}" />
     <meta property="og:type" content="website" />
 ${fonts ? `    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />\n${fonts}` : ''}
-    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
     <a class="skip" href="#main">Skip to content</a>

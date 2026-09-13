@@ -18,6 +18,7 @@ const PUBLIC_PREFIXES = [
   '/pay/', // public invoice view + payment page
   '/proposal/', // public proposal view
   '/api/proposals/', // public accept/decline, token-authenticated
+  '/d/', // generated demo sites, served on this origin as well as their subdomain
   '/_astro/',
   '/favicon',
   '/robots.txt',

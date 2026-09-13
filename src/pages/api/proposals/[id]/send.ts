@@ -66,7 +66,7 @@ export const POST: APIRoute = async ({ request, params, locals, redirect }) => {
       toName: prospect?.contactName || prospect?.businessName || '',
       subject,
       body,
-      demoUrl: demo ? `https://${demo.host}` : '',
+      demoUrl: demo?.publicUrl || (demo ? `https://${demo.host}` : ''),
       proposalUrl: `${appUrl()}/proposal/${proposal.publicToken}`,
       senderName: settings.outreachSenderName || settings.businessName || 'JWBS Studio',
       signature: settings.outreachSignature,

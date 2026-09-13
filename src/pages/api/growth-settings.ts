@@ -24,6 +24,7 @@ export const POST: APIRoute = async ({ request, locals, redirect }) => {
   const text = (key: string, max: number) => String(form.get(key) ?? '').trim().slice(0, max);
 
   const cap = Number.parseInt(String(form.get('outreachDailyCap') ?? ''), 10);
+  const cacheHours = Number.parseInt(String(form.get('aiCacheTtlHours') ?? ''), 10);
   const host = cleanHost(text('demoHost', 200));
   const provider =
     toProviderName(form.get('growthDiscoveryProvider')) ?? current.growthDiscoveryProvider;
@@ -42,6 +43,9 @@ export const POST: APIRoute = async ({ request, locals, redirect }) => {
       outreachBio: text('outreachBio', 2000),
       outreachSignature: text('outreachSignature', 1000),
       outreachReplyTo: text('outreachReplyTo', 320),
+      aiCacheTtlHours: Number.isFinite(cacheHours)
+        ? Math.min(Math.max(cacheHours, 0), 720)
+        : current.aiCacheTtlHours,
       updatedAt: new Date().toISOString(),
     })
     .where(eq(settings.id, current.id));

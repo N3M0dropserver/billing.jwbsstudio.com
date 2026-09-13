@@ -77,6 +77,14 @@ interface Env {
   /** Enables the Google Places discovery provider. Optional — see the README. */
   GOOGLE_PLACES_API_KEY?: string;
   /**
+   * Web search for checking how well known a business already is.
+   *
+   * Optional: the Wikidata lookup runs without it and catches the recognised
+   * brands, which is most of the value. "brave" or "serper".
+   */
+  SEARCH_PROVIDER?: 'none' | 'brave' | 'serper';
+  SEARCH_API_KEY?: string;
+  /**
    * Only needed when demo subdomains get their own DNS records rather than
    * being covered by a wildcard. The token needs Zone:DNS:Edit on that zone
    * and nothing else.

@@ -122,7 +122,9 @@ describe('the generated page', () => {
   it('loads only the fonts the brief names', () => {
     const links = [...renderDemoPage(PLAN, FALLBACK_BRIEF, CONTEXT).matchAll(/<link rel="stylesheet" href="([^"]+)"/g)];
     for (const [, href] of links) {
-      expect(href === '/styles.css' || href!.startsWith('https://fonts.googleapis.com/')).toBe(true);
+      // Relative, so the same files serve from the subdomain and the path
+      // mount on the app's own origin.
+      expect(href === 'styles.css' || href!.startsWith('https://fonts.googleapis.com/')).toBe(true);
     }
   });
 });
@@ -207,6 +209,8 @@ describe('plan normalisation', () => {
     businessName: 'Wells Coffee', niche: 'coffee roasters', region: 'Wellington',
     brief: FALLBACK_BRIEF, audit: AUDIT, objective: 'awareness', angle: '',
     siteContent: '', contact: { email: 'hello@wells.test', phone: '', address: '' },
+    // normalisePlan never calls the model, so the tracking context is unused.
+    usage: { db: null as never, userId: 'u1', operation: 'plan' },
   };
 
   it('drops section types the renderer does not know', () => {

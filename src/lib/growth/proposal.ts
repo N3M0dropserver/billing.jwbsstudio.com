@@ -18,7 +18,8 @@
  * published material.
  */
 
-import { generateJson, MODELS, type AiResult } from '../ai/index';
+import { MODELS, type AiResult } from '../ai/index';
+import { trackedGenerateJson, type AiUsageContext } from '../ai/usage';
 import { sendMail, type SendResult } from '../mail/index';
 import type { SiteAudit } from './assess';
 import type { DesignPlanDraft } from './qualify';
@@ -43,6 +44,8 @@ export interface ProposalInput {
   signature: string;
   /** What the designer can actually deliver, from the brief. */
   capabilities: string;
+  /** Where to book the cost of this call. */
+  usage: AiUsageContext;
 }
 
 const SYSTEM = `You write a short cold email from a freelance designer to a business they have never spoken to, about a concept site they have already built for them.
@@ -99,13 +102,11 @@ export async function draftProposal(
     .filter(Boolean)
     .join('\n');
 
-  const result = await generateJson<{ subject?: unknown; body?: unknown; page_body?: unknown }>(ai, {
-    system: SYSTEM,
-    prompt,
-    model: MODELS.text,
-    maxTokens: 1200,
-    temperature: 0.75,
-  });
+  const result = await trackedGenerateJson<{ subject?: unknown; body?: unknown; page_body?: unknown }>(
+    ai,
+    { system: SYSTEM, prompt, model: MODELS.text, maxTokens: 1200, temperature: 0.75 },
+    input.usage,
+  );
 
   if (!result.ok) return result;
 

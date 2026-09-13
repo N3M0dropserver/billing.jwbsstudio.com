@@ -105,7 +105,7 @@ const SIGNAL_LABELS: Record<string, string> = {
                         <span class="truncate text-sm font-medium">{prospect.businessName}</span>
                         <span class="muted shrink-0 text-xs">{SIGNAL_LABELS[prospect.signal] ?? prospect.signal}</span>
                       </span>
-                      <span class="mt-1.5 block"><ScoreBar score={prospect.score} presenceScore={prospect.presenceScore} fitScore={prospect.fitScore} /></span>
+                      <span class="mt-1.5 block"><ScoreBar score={prospect.score} presenceScore={prospect.presenceScore} fitScore={prospect.fitScore} scaleScore={prospect.scaleScore} scaleCeiling={campaign.scaleCeiling} /></span>
                       {prospect.notes && <span class="muted mt-1.5 block text-xs leading-relaxed">{prospect.notes}</span>}
                     </span>
                   </label>
@@ -173,7 +173,7 @@ const SIGNAL_LABELS: Record<string, string> = {
                       </div>
                     </div>
                     <div class="w-32 shrink-0 pt-1">
-                      <ScoreBar score={prospect.score} presenceScore={prospect.presenceScore} fitScore={prospect.fitScore} />
+                      <ScoreBar score={prospect.score} presenceScore={prospect.presenceScore} fitScore={prospect.fitScore} scaleScore={prospect.scaleScore} scaleCeiling={campaign.scaleCeiling} />
                     </div>
                   </div>
                 </li>
@@ -200,6 +200,7 @@ const SIGNAL_LABELS: Record<string, string> = {
           <div class="flex justify-between gap-3"><dt class="muted">Source</dt><dd class="text-right">{campaign.discoveryProvider}</dd></div>
           <div class="flex justify-between gap-3"><dt class="muted">Carry forward</dt><dd class="tabular">{campaign.targetCount}</dd></div>
           <div class="flex justify-between gap-3"><dt class="muted">Score floor</dt><dd class="tabular">{campaign.scoreFloor}</dd></div>
+          <div class="flex justify-between gap-3"><dt class="muted">Size ceiling</dt><dd class="tabular">{campaign.scaleCeiling}</dd></div>
         </dl>
         {campaign.idealClient && (
           <p class="muted mt-3 border-t pt-3 text-xs leading-relaxed" style="border-color: var(--border)">

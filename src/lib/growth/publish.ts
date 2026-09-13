@@ -124,6 +124,107 @@ export async function publishDemo(
 }
 
 /* ------------------------------------------------------------------ */
+/* Where a demo can be reached                                         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The path a demo is always reachable at, on the app's own origin.
+ *
+ * Wildcard DNS and a Worker route are a manual setup step that is easy to
+ * put off and easy to get wrong, and until they are done a subdomain link
+ * simply does not resolve. That was the whole of the "generated sites are not
+ * hosting" problem: the files were there and the link was unreachable.
+ *
+ * This mount needs no DNS at all. It is the same bytes from the same bucket,
+ * served on a host that definitely exists.
+ */
+export function demoPathUrl(appUrl: string, host: string): string {
+  return `${appUrl.replace(/\/+$/, '')}/d/${encodeURIComponent(host.toLowerCase())}/`;
+}
+
+export function demoSubdomainUrl(host: string): string {
+  return `https://${host.toLowerCase()}/`;
+}
+
+/**
+ * The URL to put in front of a prospect.
+ *
+ * The subdomain reads better and is what the feature is for — but only once
+ * it has been seen to resolve. A proposal email containing a link that does
+ * not load is worse than one with an ugly link that does.
+ */
+export function demoPublicUrl(appUrl: string, host: string, wildcardVerified: boolean): string {
+  return wildcardVerified ? demoSubdomainUrl(host) : demoPathUrl(appUrl, host);
+}
+
+/**
+ * Strip a `/d/<host>/` prefix off a request path.
+ *
+ * Returns the host and the remaining path, or null when this is not a demo
+ * mount request.
+ */
+export function parseDemoPath(pathname: string): { host: string; rest: string } | null {
+  const match = pathname.match(/^\/d\/([^/]+)(\/.*)?$/);
+  if (!match) return null;
+
+  let host: string;
+  try {
+    host = decodeURIComponent(match[1]!).toLowerCase();
+  } catch {
+    return null;
+  }
+
+  // A host is a host. Anything with a slash or a traversal segment in it is
+  // an attempt to reach outside the demo prefix.
+  if (!/^[a-z0-9.-]+$/.test(host) || host.includes('..')) return null;
+
+  return { host, rest: match[2] ?? '/' };
+}
+
+/**
+ * Does the wildcard actually resolve?
+ *
+ * Fetches a demo host from the Worker and reports what came back. A Worker
+ * calling its own zone is an ordinary subrequest; when the route is missing
+ * it fails or returns the app's own 404 instead of the demo, and either is a
+ * conclusive answer.
+ */
+export async function checkDemoHosting(
+  host: string,
+): Promise<{ ok: boolean; detail: string }> {
+  try {
+    const response = await fetch(demoSubdomainUrl(host), {
+      headers: { 'user-agent': 'JWBSStudioGrowth/1.0 (hosting self-check)' },
+      redirect: 'manual',
+      signal: AbortSignal.timeout(10_000),
+    });
+
+    if (!response.ok) {
+      return { ok: false, detail: `${host} answered ${response.status}.` };
+    }
+
+    const body = await response.text();
+    // The ribbon is on every generated demo and on nothing else we serve, so
+    // it is the cheapest proof that the demo — not the app — answered.
+    if (!body.includes('unsolicited concept')) {
+      return {
+        ok: false,
+        detail: `${host} answered, but with something other than the demo. The Worker route is probably missing.`,
+      };
+    }
+
+    return { ok: true, detail: `${host} served the demo.` };
+  } catch (error) {
+    return {
+      ok: false,
+      detail:
+        `${host} could not be reached (${error}). Add a proxied wildcard DNS record for ` +
+        `*.${host.split('.').slice(1).join('.')} and a matching Worker route.`,
+    };
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /* Serving                                                             */
 /* ------------------------------------------------------------------ */
 
