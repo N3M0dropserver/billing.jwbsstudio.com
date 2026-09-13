@@ -31,9 +31,13 @@ const messages: Record<string, string> = {
 <html lang="en-NZ" class="h-full">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="robots" content="noindex, nofollow" />
     <title>Sign in · JWBS Studio</title>
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0f0f0f" media="(prefers-color-scheme: dark)" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <script is:inline>
       try {
         const stored = localStorage.getItem('theme');
@@ -41,24 +45,24 @@ const messages: Record<string, string> = {
       } catch {}
     </script>
   </head>
-  <body class="grid h-full place-items-center px-4">
+  <body class="grid h-full place-items-center px-4 py-8">
     <main class="w-full max-w-sm">
       <div class="mb-8 flex flex-col items-center gap-3">
         <span
-          class="grid size-11 place-items-center rounded-xl text-lg font-bold text-white"
-          style="background: var(--color-brand-600)"
+          class="grid size-11 place-items-center text-lg font-bold"
+          style="background: var(--accent); color: var(--accent-ink); border-radius: 2px"
         >J</span>
         <div class="text-center">
           <h1 class="text-lg font-semibold tracking-tight">JWBS Studio</h1>
-          <p class="muted text-sm">Invoicing, billing and tax</p>
+          <p class="label muted mt-1">Invoicing, billing and tax</p>
         </div>
       </div>
 
       {
         sent && (
           <div
-            class="mb-4 rounded-lg border px-3 py-2.5 text-sm"
-            style="border-color: color-mix(in oklch, var(--color-paid) 40%, transparent); background: color-mix(in oklch, var(--color-paid) 10%, transparent); color: var(--color-paid)"
+            class="mb-4 border px-3.5 py-3 text-sm leading-relaxed"
+            style="border-color: color-mix(in oklch, var(--color-paid) 45%, transparent); background: color-mix(in oklch, var(--color-paid) 10%, transparent); color: var(--color-paid); border-radius: var(--radius-ctl)"
             role="status"
           >
             If that address has an account, a sign-in link is on its way. It
@@ -70,8 +74,8 @@ const messages: Record<string, string> = {
       {
         error && (
           <div
-            class="mb-4 rounded-lg border px-3 py-2.5 text-sm"
-            style="border-color: color-mix(in oklch, var(--color-overdue) 40%, transparent); background: color-mix(in oklch, var(--color-overdue) 10%, transparent); color: var(--color-overdue)"
+            class="mb-4 border px-3.5 py-3 text-sm leading-relaxed"
+            style="border-color: color-mix(in oklch, var(--color-overdue) 45%, transparent); background: color-mix(in oklch, var(--color-overdue) 10%, transparent); color: var(--color-overdue); border-radius: var(--radius-ctl)"
             role="alert"
           >
             {messages[error] ?? 'Something went wrong. Try again.'}
@@ -79,11 +83,11 @@ const messages: Record<string, string> = {
         )
       }
 
-      <form method="post" action="/api/auth/login" class="card space-y-4 p-6">
+      <form method="post" action="/api/auth/login" class="card space-y-4 p-5 sm:p-6">
         <input type="hidden" name="next" value={next} />
 
         <div>
-          <label for="email" class="mb-1.5 block text-sm font-medium">Email</label>
+          <label for="email" class="label muted mb-1.5 block">Email</label>
           <input
             id="email"
             name="email"
@@ -96,7 +100,7 @@ const messages: Record<string, string> = {
         </div>
 
         <div>
-          <label for="password" class="mb-1.5 block text-sm font-medium">Password</label>
+          <label for="password" class="label muted mb-1.5 block">Password</label>
           <input
             id="password"
             name="password"
@@ -109,8 +113,7 @@ const messages: Record<string, string> = {
 
         <button
           type="submit"
-          class="w-full rounded-lg px-4 py-2.5 text-sm font-medium text-white transition-opacity hover:opacity-90"
-          style="background: var(--color-brand-600)"
+          class="btn btn-primary w-full"
         >
           Sign in
         </button>
@@ -118,15 +121,15 @@ const messages: Record<string, string> = {
 
       <div class="my-5 flex items-center gap-3">
         <span class="h-px flex-1" style="background: var(--border)"></span>
-        <span class="muted text-xs uppercase tracking-wide">or</span>
+        <span class="label muted">or</span>
         <span class="h-px flex-1" style="background: var(--border)"></span>
       </div>
 
-      <form method="post" action="/api/auth/magic-link" class="card space-y-4 p-6">
+      <form method="post" action="/api/auth/magic-link" class="card space-y-4 p-5 sm:p-6">
         <input type="hidden" name="next" value={next} />
 
         <div>
-          <label for="magic-email" class="mb-1.5 block text-sm font-medium">
+          <label for="magic-email" class="label muted mb-1.5 block">
             Email me a sign-in link
           </label>
           <input
@@ -143,13 +146,7 @@ const messages: Record<string, string> = {
           </p>
         </div>
 
-        <button
-          type="submit"
-          class="w-full rounded-lg border px-4 py-2.5 text-sm font-medium transition-opacity hover:opacity-80"
-          style="border-color: var(--border)"
-        >
-          Send sign-in link
-        </button>
+        <button type="submit" class="btn btn-secondary w-full">Send sign-in link</button>
       </form>
 
       <p class="muted mt-5 text-center text-xs">

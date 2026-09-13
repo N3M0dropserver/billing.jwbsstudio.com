@@ -1,6 +1,8 @@
 ---
 import '~/styles/app.css';
-import Nav from '~/components/Nav.astro';
+import Sidebar from '~/components/nav/Sidebar.astro';
+import TopBar from '~/components/nav/TopBar.astro';
+import BottomTabs from '~/components/nav/BottomTabs.astro';
 import OmniSearch from '~/components/search/OmniSearch.tsx';
 
 interface Props {
@@ -24,8 +26,11 @@ const widths = {
 <html lang="en-NZ" class="h-full">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="robots" content="noindex, nofollow" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0f0f0f" media="(prefers-color-scheme: dark)" />
     <title>{title} · JWBS Studio</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <script is:inline>
@@ -37,15 +42,20 @@ const widths = {
     </script>
   </head>
   <body class="h-full">
-    <div class="flex min-h-full flex-col lg:flex-row">
-      <Nav user={user} />
+    <TopBar user={user} />
 
-      <main class="flex-1 min-w-0">
-        <div class={`mx-auto w-full px-4 py-6 sm:px-6 lg:px-8 lg:py-8 ${widths[width]}`}>
-          <header class="mb-6 flex flex-wrap items-start justify-between gap-4">
-            <div>
-              <h1 class="text-2xl font-semibold tracking-tight sm:text-3xl">{title}</h1>
-              {subtitle && <p class="muted mt-1 text-sm">{subtitle}</p>}
+    <div class="flex min-h-full flex-col lg:flex-row">
+      <Sidebar user={user} />
+
+      <main class="min-w-0 flex-1">
+        <div
+          class={`mx-auto w-full px-4 pt-5 sm:px-6 lg:px-8 lg:py-8 ${widths[width]}`}
+          style="padding-bottom: calc(6rem + env(safe-area-inset-bottom, 0px))"
+        >
+          <header class="mb-5 flex flex-wrap items-end justify-between gap-x-4 gap-y-3 lg:mb-6">
+            <div class="min-w-0">
+              <h1 class="truncate text-xl font-semibold tracking-tight sm:text-2xl">{title}</h1>
+              {subtitle && <p class="label muted mt-1.5">{subtitle}</p>}
             </div>
             <slot name="actions" />
           </header>
@@ -54,6 +64,8 @@ const widths = {
         </div>
       </main>
     </div>
+
+    <BottomTabs />
 
     <OmniSearch client:idle />
 
@@ -68,6 +80,14 @@ const widths = {
           const next = isDark ? 'light' : 'dark';
           root.dataset.theme = next;
           try { localStorage.setItem('theme', next); } catch {}
+          // Keep the browser chrome in step with the page.
+          for (const tag of document.querySelectorAll('meta[name="theme-color"]')) {
+            tag.remove();
+          }
+          const meta = document.createElement('meta');
+          meta.name = 'theme-color';
+          meta.content = next === 'dark' ? '#0f0f0f' : '#ffffff';
+          document.head.appendChild(meta);
         }
       });
     </script>

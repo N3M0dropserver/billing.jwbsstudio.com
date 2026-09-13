@@ -148,12 +148,12 @@ export default function ExpenseForm({
 
   return (
     <form method="post" action="/api/expenses" className="grid gap-4 lg:grid-cols-3">
-      <div className="card space-y-3.5 p-5 lg:col-span-2">
+      <div className="card space-y-3.5 p-4 sm:p-5 lg:col-span-2">
         <div
           className="rounded-lg border border-dashed p-4"
           style={{ borderColor: 'var(--border)', background: 'var(--surface-sunken)' }}
         >
-          <label htmlFor="receiptFile" className="block text-sm font-medium">
+          <label htmlFor="receiptFile" className="label block">
             Photograph the receipt
           </label>
           <p className="muted mt-0.5 mb-2.5 text-xs">
@@ -196,7 +196,7 @@ export default function ExpenseForm({
 
         <div className="grid gap-3.5 sm:grid-cols-2">
           <div className="sm:col-span-2">
-            <label htmlFor="description" className="mb-1.5 block text-sm font-medium">
+            <label htmlFor="description" className="label muted mb-1.5 block">
               What was it
             </label>
             <input
@@ -207,7 +207,8 @@ export default function ExpenseForm({
           </div>
 
           <div>
-            <label htmlFor="vendor" className="mb-1.5 block text-sm font-medium">Vendor</label>
+            <label htmlFor="vendor" className="label muted mb-1.5 block">Vendor</label>
+            {/* Controlled: reading a receipt fills this in. */}
             <input
               id="vendor" name="vendor" value={vendor}
               onChange={(e) => setVendor(e.target.value)}
@@ -216,7 +217,7 @@ export default function ExpenseForm({
           </div>
 
           <div>
-            <label htmlFor="incurredOn" className="mb-1.5 block text-sm font-medium">Date</label>
+            <label htmlFor="incurredOn" className="label muted mb-1.5 block">Date</label>
             <input
               id="incurredOn" name="incurredOn" type="date"
               value={incurredOn} onChange={(e) => setIncurredOn(e.target.value)}
@@ -225,7 +226,7 @@ export default function ExpenseForm({
           </div>
 
           <div>
-            <label htmlFor="amount" className="mb-1.5 block text-sm font-medium">
+            <label htmlFor="amount" className="label muted mb-1.5 block">
               Amount {gstRegistered && <span className="muted font-normal">(as on the receipt)</span>}
             </label>
             <input
@@ -235,7 +236,7 @@ export default function ExpenseForm({
           </div>
 
           <div>
-            <label htmlFor="category" className="mb-1.5 block text-sm font-medium">Category</label>
+            <label htmlFor="category" className="label muted mb-1.5 block">Category</label>
             <select
               id="category" name="category" value={category}
               onChange={(e) => applyCategory(e.target.value as ExpenseCategory)} className="field"
@@ -247,7 +248,7 @@ export default function ExpenseForm({
           </div>
 
           <div>
-            <label htmlFor="jurisdiction" className="mb-1.5 block text-sm font-medium">Jurisdiction</label>
+            <label htmlFor="jurisdiction" className="label muted mb-1.5 block">Jurisdiction</label>
             <select
               id="jurisdiction" name="jurisdiction" value={jurisdiction}
               onChange={(e) => setJurisdiction(e.target.value as 'NZ' | 'AU')} className="field"
@@ -259,7 +260,7 @@ export default function ExpenseForm({
 
           {(jurisdiction === 'NZ' ? 'NZD' : 'AUD') !== residenceCurrency && (
             <div>
-              <label htmlFor="fxRateToResidence" className="mb-1.5 block text-sm font-medium">
+              <label htmlFor="fxRateToResidence" className="label muted mb-1.5 block">
                 Rate to {residenceCurrency}
               </label>
               <input
@@ -275,7 +276,7 @@ export default function ExpenseForm({
           )}
 
           <div>
-            <label htmlFor="businessUsePercent" className="mb-1.5 block text-sm font-medium">
+            <label htmlFor="businessUsePercent" className="label muted mb-1.5 block">
               Business use
             </label>
             <div className="flex items-center gap-2">
@@ -288,7 +289,7 @@ export default function ExpenseForm({
           </div>
 
           <div>
-            <label htmlFor="clientId" className="mb-1.5 block text-sm font-medium">
+            <label htmlFor="clientId" className="label muted mb-1.5 block">
               Client <span className="muted font-normal">(optional)</span>
             </label>
             <select id="clientId" name="clientId" className="field">
@@ -330,7 +331,7 @@ export default function ExpenseForm({
           {isCapital && (
             <div className="grid gap-3 pl-7 sm:grid-cols-2">
               <div>
-                <label htmlFor="depreciationRate" className="muted mb-1 block text-xs font-medium">
+                <label htmlFor="depreciationRate" className="label muted mb-1.5 block">
                   Depreciation rate %
                 </label>
                 <input
@@ -340,7 +341,7 @@ export default function ExpenseForm({
                 />
               </div>
               <div>
-                <label htmlFor="depreciationMethod" className="muted mb-1 block text-xs font-medium">
+                <label htmlFor="depreciationMethod" className="label muted mb-1.5 block">
                   Method
                 </label>
                 <select id="depreciationMethod" name="depreciationMethod" className="field">
@@ -361,7 +362,7 @@ export default function ExpenseForm({
         </div>
 
         <div>
-          <label htmlFor="notes" className="mb-1.5 block text-sm font-medium">
+          <label htmlFor="notes" className="label muted mb-1.5 block">
             Notes <span className="muted font-normal">(what it was for)</span>
           </label>
           <textarea
@@ -372,7 +373,7 @@ export default function ExpenseForm({
       </div>
 
       <div className="space-y-4">
-        <div className="card p-5">
+        <div className="card p-4 sm:p-5">
           <h2 className="mb-3 text-sm font-semibold">What you can claim</h2>
           <dl className="space-y-2 text-sm">
             <div className="flex justify-between gap-3">
@@ -407,8 +408,12 @@ export default function ExpenseForm({
           )}
           {!isCapital && looksCapital && (
             <p
-              className="mt-3 rounded-md px-3 py-2 text-xs leading-relaxed"
-              style={{ background: 'color-mix(in oklch, var(--color-owing) 12%, transparent)', color: 'var(--color-owing)' }}
+              className="mt-3 px-3 py-2 text-xs leading-relaxed"
+              style={{
+                background: 'color-mix(in oklch, var(--color-owing) 12%, transparent)',
+                color: 'var(--color-owing)',
+                borderRadius: 'var(--radius-ctl)',
+              }}
             >
               This is over {threshold.label}. If it lasts beyond this year it is probably a
               capital asset and has to be depreciated, not deducted in one go.
@@ -416,15 +421,18 @@ export default function ExpenseForm({
           )}
         </div>
 
-        <div className="card p-5">
-          <h2 className="mb-2 text-sm font-semibold">{guidance.label}</h2>
+        <div className="card p-4 sm:p-5">
+          <h2 className="label mb-2.5">{guidance.label}</h2>
           <div className="muted space-y-2 text-xs leading-relaxed">
             <p><strong style={{ color: 'var(--text)' }}>NZ:</strong> {guidance.nz}</p>
             <p><strong style={{ color: 'var(--text)' }}>AU:</strong> {guidance.au}</p>
             {guidance.watchOut && (
               <p
-                className="rounded-md px-2.5 py-2"
-                style={{ background: 'color-mix(in oklch, var(--color-owing) 10%, transparent)' }}
+                className="px-2.5 py-2"
+                style={{
+                  background: 'color-mix(in oklch, var(--color-owing) 10%, transparent)',
+                  borderRadius: 'var(--radius-ctl)',
+                }}
               >
                 <strong style={{ color: 'var(--color-owing)' }}>Watch out.</strong> {guidance.watchOut}
               </p>
@@ -434,8 +442,7 @@ export default function ExpenseForm({
 
         <button
           type="submit"
-          className="w-full rounded-lg px-4 py-2.5 text-sm font-medium text-white"
-          style={{ background: 'var(--color-brand-600)' }}
+          className="btn btn-primary w-full"
         >Save expense</button>
       </div>
     </form>

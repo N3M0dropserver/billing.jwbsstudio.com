@@ -13,18 +13,20 @@ const actions = [
     actions.map((action) => (
       <a
         href={action.href}
-        class="card group flex flex-col gap-1.5 p-3.5 transition-opacity hover:opacity-80"
+        class="card group flex items-center gap-3 p-3 transition-colors hover:border-[var(--border-strong)]"
       >
         <span
-          class="grid size-8 place-items-center rounded-lg"
-          style="background: color-mix(in oklch, var(--color-brand-500) 14%, transparent); color: var(--color-brand-600)"
+          class="grid size-9 shrink-0 place-items-center border"
+          style="border-color: var(--border); color: var(--accent-text); border-radius: 2px"
         >
-          <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
             <path d={action.icon} />
           </svg>
         </span>
-        <span class="text-sm font-medium leading-tight">{action.label}</span>
-        <span class="muted text-xs leading-tight">{action.hint}</span>
+        <span class="min-w-0">
+          <span class="label block truncate">{action.label}</span>
+          <span class="muted mt-1 block truncate text-xs">{action.hint}</span>
+        </span>
       </a>
     ))
   }

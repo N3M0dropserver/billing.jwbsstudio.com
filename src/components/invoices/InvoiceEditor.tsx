@@ -220,10 +220,10 @@ export default function InvoiceEditor({ clients, unbilled, defaults, invoice }: 
       <input type="hidden" name="dueOn" value={dueOn} />
 
       <div className="grid gap-4 lg:grid-cols-3">
-        <div className="card space-y-3.5 p-5 lg:col-span-2">
+        <div className="card space-y-3.5 p-4 sm:p-5 lg:col-span-2">
           <div className="grid gap-3.5 sm:grid-cols-2">
             <div>
-              <label htmlFor="clientId" className="mb-1.5 block text-sm font-medium">Client</label>
+              <label htmlFor="clientId" className="label muted mb-1.5 block">Client</label>
               <select
                 id="clientId"
                 name="clientId"
@@ -246,7 +246,7 @@ export default function InvoiceEditor({ clients, unbilled, defaults, invoice }: 
             </div>
 
             <div>
-              <label htmlFor="reference" className="mb-1.5 block text-sm font-medium">Reference</label>
+              <label htmlFor="reference" className="label muted mb-1.5 block">Reference</label>
               <input
                 id="reference" name="reference" value={reference}
                 onChange={(e) => setReference(e.target.value)}
@@ -255,7 +255,7 @@ export default function InvoiceEditor({ clients, unbilled, defaults, invoice }: 
             </div>
 
             <div>
-              <label htmlFor="issuedOn" className="mb-1.5 block text-sm font-medium">Issue date</label>
+              <label htmlFor="issuedOn" className="label muted mb-1.5 block">Issue date</label>
               <input
                 id="issuedOn" name="issuedOn" type="date" value={issuedOn}
                 onChange={(e) => setIssuedOn(e.target.value)} className="field"
@@ -263,7 +263,7 @@ export default function InvoiceEditor({ clients, unbilled, defaults, invoice }: 
             </div>
 
             <div>
-              <label htmlFor="termsDays" className="mb-1.5 block text-sm font-medium">
+              <label htmlFor="termsDays" className="label muted mb-1.5 block">
                 Payment terms
               </label>
               <div className="flex items-center gap-2">
@@ -279,12 +279,11 @@ export default function InvoiceEditor({ clients, unbilled, defaults, invoice }: 
           {/* Line items */}
           <div className="pt-1">
             <div className="mb-2 flex items-center justify-between">
-              <h2 className="text-sm font-semibold">Line items</h2>
+              <h2 className="label">Line items</h2>
               {relevantUnbilled.length > 0 && (
                 <button
                   type="button" onClick={importTime}
-                  className="muted rounded-md border px-2 py-1 text-xs hover:opacity-80"
-                  style={{ borderColor: 'var(--border)' }}
+                  className="btn btn-secondary btn-sm"
                 >
                   Import {relevantUnbilled.length} unbilled entr{relevantUnbilled.length === 1 ? 'y' : 'ies'}
                 </button>
@@ -293,7 +292,11 @@ export default function InvoiceEditor({ clients, unbilled, defaults, invoice }: 
 
             <div className="space-y-2">
               {lines.map((line) => (
-                <div key={line.key} className="grid grid-cols-12 items-start gap-2">
+                <div
+                  key={line.key}
+                  className="grid grid-cols-12 items-start gap-2 border-b pb-3 last:border-b-0 last:pb-0 sm:border-b-0 sm:pb-0"
+                  style={{ borderColor: 'var(--border)' }}
+                >
                   <input
                     value={line.description}
                     onChange={(e) => update(line.key, { description: e.target.value })}
@@ -305,13 +308,13 @@ export default function InvoiceEditor({ clients, unbilled, defaults, invoice }: 
                     value={line.quantity}
                     onChange={(e) => update(line.key, { quantity: e.target.value })}
                     inputMode="decimal"
-                    className="field col-span-3 sm:col-span-2"
+                    className="field col-span-4 sm:col-span-2"
                     aria-label="Quantity"
                   />
                   <select
                     value={line.unit}
                     onChange={(e) => update(line.key, { unit: e.target.value })}
-                    className="field col-span-3 sm:col-span-1"
+                    className="field col-span-4 sm:col-span-1"
                     aria-label="Unit"
                   >
                     <option value="hours">hrs</option>
@@ -323,11 +326,11 @@ export default function InvoiceEditor({ clients, unbilled, defaults, invoice }: 
                     value={line.unitPrice}
                     onChange={(e) => update(line.key, { unitPrice: e.target.value })}
                     inputMode="decimal" placeholder="0.00"
-                    className="field col-span-3 sm:col-span-2"
+                    className="field col-span-4 sm:col-span-2"
                     aria-label="Unit price"
                   />
-                  <div className="col-span-2 flex items-center justify-end gap-1.5 pt-2 sm:col-span-2">
-                    <span className="tabular text-sm">
+                  <div className="col-span-12 flex items-center justify-end gap-2 sm:col-span-2 sm:pt-2">
+                    <span className="tabular text-sm font-medium">
                       {money(
                         Math.round((parseQuantity(line.quantity) / 1000) * parseAmount(line.unitPrice)),
                         currency,
@@ -337,7 +340,7 @@ export default function InvoiceEditor({ clients, unbilled, defaults, invoice }: 
                       <button
                         type="button"
                         onClick={() => setLines((c) => c.filter((l) => l.key !== line.key))}
-                        className="muted px-1 text-lg leading-none hover:opacity-70"
+                        className="btn btn-ghost btn-sm px-2 text-base leading-none"
                         aria-label="Remove line"
                       >×</button>
                     )}
@@ -349,21 +352,20 @@ export default function InvoiceEditor({ clients, unbilled, defaults, invoice }: 
             <button
               type="button"
               onClick={() => setLines((c) => [...c, newLine()])}
-              className="muted mt-2 rounded-md border px-2.5 py-1.5 text-xs hover:opacity-80"
-              style={{ borderColor: 'var(--border)' }}
+              className="btn btn-secondary btn-sm mt-2"
             >+ Add line</button>
           </div>
 
           <div className="grid gap-3.5 border-t pt-3.5 sm:grid-cols-2" style={{ borderColor: 'var(--border)' }}>
             <div>
-              <label htmlFor="notes" className="mb-1.5 block text-sm font-medium">Note to client</label>
+              <label htmlFor="notes" className="label muted mb-1.5 block">Note to client</label>
               <textarea
                 id="notes" name="notes" rows={2} value={notes}
                 onChange={(e) => setNotes(e.target.value)} className="field"
               />
             </div>
             <div>
-              <label htmlFor="terms" className="mb-1.5 block text-sm font-medium">Terms</label>
+              <label htmlFor="terms" className="label muted mb-1.5 block">Terms</label>
               <textarea
                 id="terms" name="terms" rows={2} value={terms}
                 onChange={(e) => setTerms(e.target.value)} className="field"
@@ -374,7 +376,7 @@ export default function InvoiceEditor({ clients, unbilled, defaults, invoice }: 
 
         {/* Summary */}
         <div className="space-y-4">
-          <div className="card p-5">
+          <div className="card p-4 sm:p-5">
             <h2 className="mb-3 text-sm font-semibold">Totals</h2>
             <dl className="space-y-2 text-sm">
               <div className="flex justify-between gap-3">
@@ -399,7 +401,7 @@ export default function InvoiceEditor({ clients, unbilled, defaults, invoice }: 
             <h2 className="text-sm font-semibold">Tax treatment</h2>
 
             <div>
-              <label htmlFor="jurisdiction" className="mb-1.5 block text-xs font-medium">Jurisdiction</label>
+              <label htmlFor="jurisdiction" className="label muted mb-1.5 block">Jurisdiction</label>
               <select
                 id="jurisdiction" name="jurisdiction" value={jurisdiction}
                 onChange={(e) => setJurisdiction(e.target.value as 'NZ' | 'AU')} className="field"
@@ -410,7 +412,7 @@ export default function InvoiceEditor({ clients, unbilled, defaults, invoice }: 
             </div>
 
             <div>
-              <label htmlFor="currency" className="mb-1.5 block text-xs font-medium">Currency</label>
+              <label htmlFor="currency" className="label muted mb-1.5 block">Currency</label>
               <select
                 id="currency" name="currency" value={currency}
                 onChange={(e) => setCurrency(e.target.value as 'NZD' | 'AUD')} className="field"
@@ -442,7 +444,7 @@ export default function InvoiceEditor({ clients, unbilled, defaults, invoice }: 
             )}
 
             <div>
-              <label htmlFor="gstTreatment" className="mb-1.5 block text-xs font-medium">GST</label>
+              <label htmlFor="gstTreatment" className="label muted mb-1.5 block">GST</label>
               <select
                 id="gstTreatment" name="gstTreatment" value={treatment}
                 onChange={(e) => setTreatment(e.target.value)} className="field"
@@ -466,13 +468,12 @@ export default function InvoiceEditor({ clients, unbilled, defaults, invoice }: 
           <div className="flex gap-2">
             <button
               type="submit" name="action" value="draft"
-              className="muted flex-1 rounded-lg border px-4 py-2.5 text-sm font-medium"
+              className="btn btn-secondary flex-1"
               style={{ borderColor: 'var(--border)' }}
             >Save draft</button>
             <button
               type="submit" name="action" value="finalise"
-              className="flex-1 rounded-lg px-4 py-2.5 text-sm font-medium text-white"
-              style={{ background: 'var(--color-brand-600)' }}
+              className="btn btn-primary flex-1"
             >{invoice ? 'Save' : 'Create'}</button>
           </div>
         </div>

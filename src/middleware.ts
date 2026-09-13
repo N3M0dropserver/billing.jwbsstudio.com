@@ -20,8 +20,10 @@ const PUBLIC_PREFIXES = [
   // does not already show.
   '/api/stripe/checkout',
   '/pay/', // public invoice view + payment page
-  '/proposal/', // public quote view + PDF
+  '/proposal/', // public quote/proposal view + PDF
   '/api/quotes/respond', // accept or decline, from that page
+  '/e/', // email open-tracking pixel — fetched by mail clients, never a session
+  '/email-assets/', // images embedded in sent email, likewise cookie-less
   '/_astro/',
   '/favicon',
   '/robots.txt',

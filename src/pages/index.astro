@@ -83,8 +83,7 @@ const today = new Date().toISOString().slice(0, 10);
   <div slot="actions" class="flex gap-2">
     <a
       href="/invoices/new"
-      class="rounded-lg px-3.5 py-2 text-sm font-medium text-white"
-      style="background: var(--color-brand-600)"
+      class="btn btn-primary"
     >New invoice</a>
   </div>
 
@@ -273,12 +272,12 @@ const today = new Date().toISOString().slice(0, 10);
                   </span>
                 </div>
                 <div
-                  class="mt-1 h-1 overflow-hidden rounded-full"
+                  class="mt-1.5 h-1 overflow-hidden"
                   style="background: var(--surface-sunken)"
                 >
                   <div
-                    class="h-full rounded-full"
-                    style={`width: ${Math.round((client.invoiced / byClient[0].invoiced) * 100)}%; background: var(--color-brand-500)`}
+                    class="h-full"
+                    style={`width: ${Math.round((client.invoiced / byClient[0].invoiced) * 100)}%; background: var(--accent)`}
                   />
                 </div>
               </li>

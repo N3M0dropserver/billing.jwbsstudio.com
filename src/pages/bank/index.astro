@@ -201,8 +201,7 @@ const formatDate = (iso: string) =>
                             title="How sure the match is"
                           >{Math.round(proposal.confidence * 100)}%</span>
                           <button
-                            class="shrink-0 rounded-md px-3 py-1.5 text-xs font-medium text-white"
-                            style="background: var(--color-brand-600)"
+                            class="btn btn-primary shrink-0"
                           >Record payment</button>
                         </form>
                       ))}
@@ -270,8 +269,7 @@ const formatDate = (iso: string) =>
             <input id="source" name="source" class="field text-sm" placeholder="ASB business account" />
           </div>
           <button
-            class="w-full rounded-lg px-4 py-2.5 text-sm font-medium text-white"
-            style="background: var(--color-brand-600)"
+            class="btn btn-primary w-full"
           >Import</button>
           <p class="muted text-xs leading-relaxed">
             Export with headers turned on. Columns are detected by name, so ANZ, ASB, BNZ,

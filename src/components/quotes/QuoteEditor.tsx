@@ -320,8 +320,7 @@ export default function QuoteEditor({ clients, defaults }: Props) {
 
         <button
           type="submit"
-          className="w-full rounded-lg px-4 py-2.5 text-sm font-medium text-white"
-          style={{ background: 'var(--color-brand-600)' }}
+          className="btn btn-primary w-full"
         >Save quote</button>
         <p className="muted text-center text-xs">
           Saved as a draft. Nothing reaches the client until you send it.

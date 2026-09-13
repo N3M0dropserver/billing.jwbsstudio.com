@@ -44,27 +44,23 @@ const formatDate = (iso: string | null) =>
 
 <AppLayout title="Clients" subtitle={`${rows.length} ${status === 'all' ? 'total' : status}`} width="wide">
   <div slot="actions" class="flex flex-wrap gap-2">
-    <a href="/clients/prospect" class="muted card px-3.5 py-2 text-sm font-medium hover:opacity-80">
-      Find prospects
-    </a>
-    <a href="/clients/new" class="rounded-lg px-3.5 py-2 text-sm font-medium text-white" style="background: var(--color-brand-600)">
-      Add client
-    </a>
+    <a href="/clients/prospect" class="btn btn-secondary">Find prospects</a>
+    <a href="/clients/new" class="btn btn-primary">Add client</a>
   </div>
 
-  <div class="mb-4 flex flex-wrap gap-1.5">
-    {
-      tabs.map((tab) => (
-        <a
-          href={`/clients?status=${tab.key}`}
-          class:list={[
-            'rounded-lg px-3 py-1.5 text-sm font-medium transition-colors',
-            status === tab.key ? 'text-white' : 'muted card hover:opacity-80',
-          ]}
-          style={status === tab.key ? 'background: var(--color-brand-600)' : ''}
-        >{tab.label}</a>
-      ))
-    }
+  <!-- Filters scroll sideways on a phone rather than wrapping into three rows. -->
+  <div class="-mx-4 mb-4 overflow-x-auto px-4 sm:mx-0 sm:px-0">
+    <div class="flex w-max gap-1.5 sm:w-auto sm:flex-wrap">
+      {
+        tabs.map((tab) => (
+          <a
+            href={`/clients?status=${tab.key}`}
+            class:list={['seg', status === tab.key && 'seg-on']}
+            aria-current={status === tab.key ? 'page' : undefined}
+          >{tab.label}</a>
+        ))
+      }
+    </div>
   </div>
 
   {
@@ -76,17 +72,46 @@ const formatDate = (iso: string | null) =>
         actionLabel="Add client"
       />
     ) : (
-      <div class="card overflow-hidden p-0">
-        <div class="overflow-x-auto">
+      <>
+        {/* Phones: one tappable row per client. */}
+        <div class="card divide-y overflow-hidden lg:hidden" style="border-color: var(--border)">
+          {rows.map(({ client, invoiced, outstanding, lastInvoice }) => (
+            <a href={`/clients/${client.id}`} class="block px-4 py-3.5" style="border-color: var(--border)">
+              <div class="flex items-start justify-between gap-3">
+                <div class="min-w-0">
+                  <p class="truncate text-sm font-medium">{client.name}</p>
+                  {client.email && <p class="muted mt-0.5 truncate text-xs">{client.email}</p>}
+                </div>
+                <StatusBadge status={client.status} />
+              </div>
+              <div class="mt-2.5 flex items-baseline justify-between gap-3">
+                <span class="label-xs muted">
+                  {client.country} · Last {formatDate(lastInvoice)}
+                </span>
+                <span
+                  class="tabular text-sm font-semibold"
+                  style={outstanding > 0 ? 'color: var(--color-owing)' : ''}
+                >
+                  {outstanding > 0
+                    ? `${formatMoney(outstanding, client.currency)} owing`
+                    : formatMoney(invoiced, client.currency)}
+                </span>
+              </div>
+            </a>
+          ))}
+        </div>
+
+        {/* Desktop: the full grid. */}
+        <div class="card hidden overflow-hidden lg:block">
           <table class="w-full text-sm">
             <thead>
-              <tr class="muted border-b text-left text-xs" style="border-color: var(--border)">
-                <th scope="col" class="px-4 py-2.5 font-medium">Name</th>
-                <th scope="col" class="px-4 py-2.5 font-medium">Country</th>
-                <th scope="col" class="px-4 py-2.5 font-medium">Last invoice</th>
-                <th scope="col" class="px-4 py-2.5 text-right font-medium">Invoiced</th>
-                <th scope="col" class="px-4 py-2.5 text-right font-medium">Outstanding</th>
-                <th scope="col" class="px-4 py-2.5 font-medium">Status</th>
+              <tr class="border-b text-left" style="border-color: var(--border)">
+                <th scope="col" class="label muted px-4 py-2.5 font-medium">Name</th>
+                <th scope="col" class="label muted px-4 py-2.5 font-medium">Country</th>
+                <th scope="col" class="label muted px-4 py-2.5 font-medium">Last invoice</th>
+                <th scope="col" class="label muted px-4 py-2.5 text-right font-medium">Invoiced</th>
+                <th scope="col" class="label muted px-4 py-2.5 text-right font-medium">Outstanding</th>
+                <th scope="col" class="label muted px-4 py-2.5 font-medium">Status</th>
               </tr>
             </thead>
             <tbody>
@@ -99,10 +124,10 @@ const formatDate = (iso: string | null) =>
                   <td class="muted px-4 py-2.5">
                     {client.country}
                     {client.gstTreatment === 'zero-rated-export' && (
-                      <span class="muted block text-xs">zero-rated</span>
+                      <span class="label-xs muted block">zero-rated</span>
                     )}
                   </td>
-                  <td class="muted px-4 py-2.5 whitespace-nowrap">{formatDate(lastInvoice)}</td>
+                  <td class="tabular muted px-4 py-2.5 whitespace-nowrap">{formatDate(lastInvoice)}</td>
                   <td class="tabular px-4 py-2.5 text-right">{formatMoney(invoiced, client.currency)}</td>
                   <td
                     class="tabular px-4 py-2.5 text-right font-medium"
@@ -114,7 +139,7 @@ const formatDate = (iso: string | null) =>
             </tbody>
           </table>
         </div>
-      </div>
+      </>
     )
   }
 </AppLayout>

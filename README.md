@@ -40,6 +40,15 @@ reason for each. Re-importing an overlapping period is safe. An exact amount on
 its own is never treated as certain, because two invoices for the same round
 figure are exactly where a silent mis-match happens.
 
+**Email templates** — a drag-and-drop email builder at `/templates` for writing
+the wording once and reusing it, with merge variables like
+`{{invoice.number}}` and `{{client.firstName}}`. Blocks on the left, the email
+in the middle, settings for the selected block on the right; six base templates
+to start from. Templates are
+optional: choosing none falls back to the built-in wording, so sending works on
+a fresh account with no templates at all. Sends are recorded, with approximate
+open tracking — read the caveats in *Email* before trusting the numbers.
+
 **Tax & accounting** — a proper tax engine for both countries. Progressive
 brackets, ACC levies, student loan, Medicare levy, HELP, GST/BAS, provisional
 tax and PAYG instalments. Expense tracking with business-use apportionment,
@@ -359,6 +368,92 @@ Set `MAIL_PROVIDER` to `resend` in `wrangler.jsonc` and
 behind one interface in `src/lib/mail/`. Set it to `none` to disable sending
 entirely.
 
+### Templates
+
+`/templates` is a visual builder for the outbound wording. It saves three
+things per template: the Tiptap JSON it reloads from, the rendered HTML that gets
+mailed, and a plain-text alternative. Rendering happens **in the browser** —
+the Worker never runs React Email, which keeps Tiptap out of the Worker bundle
+entirely (it is a ~2.5 MB client chunk, ~790 KB gzipped, loaded only on the
+builder page).
+
+A three-pane builder, in the shape anyone who has used Klaviyo or GrapesJS
+expects: **blocks** and **layers** on the left, the **canvas** in the middle,
+**design** and **variables** on the right. Blocks drag onto the canvas (or
+click, for touch and keyboard); the selected block gets an outline and a
+toolbar to move, duplicate or delete it; the design panel edits its spacing,
+colour, size and alignment, and the email's own background and width. A
+desktop/mobile toggle changes the canvas width the way a client would.
+
+The thing that makes this work is that **there is no second model of the
+email**. The canvas is a real rich-text editor — click in and type, paste, undo
+— and every piece of builder chrome is a reading of that same document rather
+than a parallel tree kept in sync with it. A block dragged in and a paragraph
+typed by hand produce the same kind of node, which is why the builder and the
+text editing can coexist instead of fighting. `builder/targeting.ts` is the
+whole translation layer: which block is under this point, where is it on
+screen, and how do you move it. `tests/builder.test.ts` drives those against a
+real editor, because ProseMirror position arithmetic is where this kind of
+thing quietly goes wrong — a node's position is not its index, and nothing
+throws when you get it a little bit off.
+
+**Base templates** (`src/lib/mail/starters.ts`) give a finished layout to edit
+down rather than a blank page; one can be chosen when the template is created
+or applied later from *Start from a base*. They are authored as HTML rather
+than editor JSON, for two reasons: hand-written Tiptap JSON is unreviewable,
+and converting HTML into it needs the editor schema, which must stay out of
+the Worker. So a starter's id rides along on the redirect into the editor and
+the browser applies the body. `tests/starters.test.ts` parses every starter and
+every palette block through the real schema and asserts each one arrives as the
+block it claims to be — a button missing one attribute is still valid HTML, it
+just silently turns into a paragraph.
+
+Bodies use `{{variable}}` tokens, substituted at send time. The catalogue lives
+in `src/lib/mail/variables.ts` and is shared by the editor palette and the send
+path, so a variable cannot exist in one and not the other. Substituted values
+are HTML-escaped; an unrecognised token renders as nothing rather than leaking
+`{{like.this}}` into a client's inbox.
+
+Four things are deliberately true:
+
+- **Templates are optional.** No template, or a template with an empty body,
+  falls back to the built-in wording in `src/lib/mail/templates.ts`. Sending
+  cannot be broken by the template system.
+- **The sign-in email is not templatable.** A malformed template there would
+  lock you out of the app.
+- **Deleting a template archives it** rather than removing the row, so past
+  sends keep resolving.
+- **A base template is only offered for kinds it can fill.** A proposal starter
+  on an invoice template would carry `{{proposal.amount}}`, which an invoice
+  send has no value for — it would reach a client as a gap mid-sentence. The
+  test suite enforces the same rule the picker does.
+
+### Open tracking, and why the numbers lie
+
+Every send embeds a 1×1 pixel at `/e/<token>.gif` and gets a row in
+`email_sends`. When a mail client loads that image, the open is recorded.
+
+Treat the counts as a hint, never as fact:
+
+- **Apple Mail Privacy Protection fetches every image on arrival**, read or
+  not. That is an open that never happened, and it is a large share of consumer
+  mail. Hits that arrive within ten seconds of sending, or from a recognised
+  scanner, are flagged `likely_prefetch` so they can be discounted.
+- **Gmail proxies images** through `googleusercontent.com` and caches them. The
+  first load registers; re-opens usually do not, and the IP and user agent
+  belong to Google.
+- **Blocked images** (Outlook's default) mean a real, careful read records
+  nothing.
+
+Which is why open tracking **never drives invoice status**. The signal that
+means something is the client following the link: `/pay/<token>` stamps
+`invoices.viewed_at`, and that is what moves an invoice to *viewed*.
+
+Images dropped into the editor go to R2 under `email-assets/` and are served
+publicly from `/email-assets/…` — they have to be, since a mail client sends no
+cookies. Keys are random and unguessable, but treat anything uploaded there as
+published.
+
 ### A note on what not to use
 
 Cloudflare Email **Routing** is a different product: inbound only, it cannot
@@ -463,7 +558,7 @@ src/
     tax/          the tax engine — pure, tested, no I/O
     invoices/     invoice arithmetic and multi-table operations
     pdf/          the PDF writer and the invoice template
-    mail/         provider abstraction and email templates
+    mail/         providers, built-in templates, variables, open tracking
     stripe/       checkout sessions and webhook verification
     ai/           Workers AI helpers and prospecting
     auth/         password hashing and sessions
