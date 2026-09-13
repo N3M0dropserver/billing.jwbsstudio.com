@@ -1,1 +1,1 @@
-CREATE UNIQUE INDEX `payments_stripe_charge_idx` ON `payments` (`stripe_charge_id`);
+CREATE UNIQUE INDEX IF NOT EXISTS `payments_stripe_charge_idx` ON `payments` (`stripe_charge_id`);

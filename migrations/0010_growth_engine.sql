@@ -12,7 +12,7 @@
 -- and the style repertoire had no UI to populate it. `brand_kits` and
 -- `campaigns` replace them.
 
-CREATE TABLE `brand_assets` (
+CREATE TABLE IF NOT EXISTS `brand_assets` (
 	`id` text PRIMARY KEY NOT NULL,
 	`user_id` text NOT NULL,
 	`brand_kit_id` text,
@@ -29,9 +29,9 @@ CREATE TABLE `brand_assets` (
 	FOREIGN KEY (`campaign_id`) REFERENCES `campaigns`(`id`) ON UPDATE no action ON DELETE cascade
 );
 --> statement-breakpoint
-CREATE INDEX `brand_assets_kit_idx` ON `brand_assets` (`brand_kit_id`);--> statement-breakpoint
-CREATE INDEX `brand_assets_campaign_idx` ON `brand_assets` (`campaign_id`);--> statement-breakpoint
-CREATE TABLE `brand_kits` (
+CREATE INDEX IF NOT EXISTS `brand_assets_kit_idx` ON `brand_assets` (`brand_kit_id`);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `brand_assets_campaign_idx` ON `brand_assets` (`campaign_id`);--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS `brand_kits` (
 	`id` text PRIMARY KEY NOT NULL,
 	`user_id` text NOT NULL,
 	`name` text NOT NULL,
@@ -51,8 +51,8 @@ CREATE TABLE `brand_kits` (
 	FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE cascade
 );
 --> statement-breakpoint
-CREATE INDEX `brand_kits_user_idx` ON `brand_kits` (`user_id`,`is_default`);--> statement-breakpoint
-CREATE TABLE `campaign_events` (
+CREATE INDEX IF NOT EXISTS `brand_kits_user_idx` ON `brand_kits` (`user_id`,`is_default`);--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS `campaign_events` (
 	`id` text PRIMARY KEY NOT NULL,
 	`campaign_id` text NOT NULL,
 	`user_id` text NOT NULL,
@@ -66,8 +66,8 @@ CREATE TABLE `campaign_events` (
 	FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE cascade
 );
 --> statement-breakpoint
-CREATE INDEX `campaign_events_idx` ON `campaign_events` (`campaign_id`,`created_at`);--> statement-breakpoint
-CREATE TABLE `campaigns` (
+CREATE INDEX IF NOT EXISTS `campaign_events_idx` ON `campaign_events` (`campaign_id`,`created_at`);--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS `campaigns` (
 	`id` text PRIMARY KEY NOT NULL,
 	`user_id` text NOT NULL,
 	`name` text DEFAULT '' NOT NULL,
@@ -101,9 +101,9 @@ CREATE TABLE `campaigns` (
 	FOREIGN KEY (`brand_kit_id`) REFERENCES `brand_kits`(`id`) ON UPDATE no action ON DELETE set null
 );
 --> statement-breakpoint
-CREATE INDEX `campaigns_user_idx` ON `campaigns` (`user_id`,`created_at`);--> statement-breakpoint
-CREATE INDEX `campaigns_status_idx` ON `campaigns` (`user_id`,`status`);--> statement-breakpoint
-CREATE TABLE `demo_sites` (
+CREATE INDEX IF NOT EXISTS `campaigns_user_idx` ON `campaigns` (`user_id`,`created_at`);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `campaigns_status_idx` ON `campaigns` (`user_id`,`status`);--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS `demo_sites` (
 	`id` text PRIMARY KEY NOT NULL,
 	`user_id` text NOT NULL,
 	`prospect_id` text NOT NULL,
@@ -129,9 +129,9 @@ CREATE TABLE `demo_sites` (
 	FOREIGN KEY (`plan_id`) REFERENCES `design_plans`(`id`) ON UPDATE no action ON DELETE set null
 );
 --> statement-breakpoint
-CREATE UNIQUE INDEX `demo_sites_host_idx` ON `demo_sites` (`host`);--> statement-breakpoint
-CREATE INDEX `demo_sites_prospect_idx` ON `demo_sites` (`prospect_id`);--> statement-breakpoint
-CREATE TABLE `design_plans` (
+CREATE UNIQUE INDEX IF NOT EXISTS `demo_sites_host_idx` ON `demo_sites` (`host`);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `demo_sites_prospect_idx` ON `demo_sites` (`prospect_id`);--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS `design_plans` (
 	`id` text PRIMARY KEY NOT NULL,
 	`user_id` text NOT NULL,
 	`prospect_id` text NOT NULL,
@@ -154,8 +154,8 @@ CREATE TABLE `design_plans` (
 	FOREIGN KEY (`brand_kit_id`) REFERENCES `brand_kits`(`id`) ON UPDATE no action ON DELETE set null
 );
 --> statement-breakpoint
-CREATE INDEX `design_plans_prospect_idx` ON `design_plans` (`prospect_id`);--> statement-breakpoint
-CREATE TABLE `prospect_artifacts` (
+CREATE INDEX IF NOT EXISTS `design_plans_prospect_idx` ON `design_plans` (`prospect_id`);--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS `prospect_artifacts` (
 	`id` text PRIMARY KEY NOT NULL,
 	`user_id` text NOT NULL,
 	`prospect_id` text NOT NULL,
@@ -173,11 +173,11 @@ CREATE TABLE `prospect_artifacts` (
 	FOREIGN KEY (`campaign_id`) REFERENCES `campaigns`(`id`) ON UPDATE no action ON DELETE cascade
 );
 --> statement-breakpoint
-CREATE INDEX `prospect_artifacts_idx` ON `prospect_artifacts` (`prospect_id`,`kind`);--> statement-breakpoint
-DROP TABLE `prospect_searches`;--> statement-breakpoint
-DROP TABLE `style_repertoire`;--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `prospect_artifacts_idx` ON `prospect_artifacts` (`prospect_id`,`kind`);--> statement-breakpoint
+DROP TABLE IF EXISTS `prospect_searches`;--> statement-breakpoint
+DROP TABLE IF EXISTS `style_repertoire`;--> statement-breakpoint
 PRAGMA foreign_keys=OFF;--> statement-breakpoint
-CREATE TABLE `__new_prospects` (
+CREATE TABLE IF NOT EXISTS `__new_prospects` (
 	`id` text PRIMARY KEY NOT NULL,
 	`user_id` text NOT NULL,
 	`campaign_id` text,
@@ -223,13 +223,13 @@ CREATE TABLE `__new_prospects` (
 );
 --> statement-breakpoint
 INSERT INTO `__new_prospects`("id", "user_id", "business_name", "niche", "region", "country", "website", "email", "phone", "address", "maps_url", "social_links", "signal", "score", "findings", "status", "converted_client_id", "notes", "created_at", "updated_at") SELECT "id", "user_id", "business_name", "niche", "region", "country", "website", "email", "phone", "address", "maps_url", "social_links", "signal", "score", "findings", "status", "converted_client_id", "notes", "created_at", "updated_at" FROM `prospects`;--> statement-breakpoint
-DROP TABLE `prospects`;--> statement-breakpoint
+DROP TABLE IF EXISTS `prospects`;--> statement-breakpoint
 ALTER TABLE `__new_prospects` RENAME TO `prospects`;--> statement-breakpoint
 PRAGMA foreign_keys=ON;--> statement-breakpoint
-CREATE INDEX `prospects_user_status_idx` ON `prospects` (`user_id`,`status`);--> statement-breakpoint
-CREATE INDEX `prospects_score_idx` ON `prospects` (`user_id`,`score`);--> statement-breakpoint
-CREATE INDEX `prospects_campaign_idx` ON `prospects` (`campaign_id`,`score`);--> statement-breakpoint
-CREATE INDEX `prospects_domain_idx` ON `prospects` (`user_id`,`domain`);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `prospects_user_status_idx` ON `prospects` (`user_id`,`status`);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `prospects_score_idx` ON `prospects` (`user_id`,`score`);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `prospects_campaign_idx` ON `prospects` (`campaign_id`,`score`);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `prospects_domain_idx` ON `prospects` (`user_id`,`domain`);--> statement-breakpoint
 ALTER TABLE `proposals` ADD `campaign_id` text REFERENCES campaigns(id);--> statement-breakpoint
 ALTER TABLE `proposals` ADD `demo_site_id` text REFERENCES demo_sites(id);--> statement-breakpoint
 ALTER TABLE `proposals` ADD `email_subject` text DEFAULT '' NOT NULL;--> statement-breakpoint
@@ -237,7 +237,7 @@ ALTER TABLE `proposals` ADD `email_body` text DEFAULT '' NOT NULL;--> statement-
 ALTER TABLE `proposals` ADD `sent_to` text DEFAULT '' NOT NULL;--> statement-breakpoint
 ALTER TABLE `proposals` ADD `send_result` text DEFAULT '' NOT NULL;--> statement-breakpoint
 ALTER TABLE `proposals` ADD `view_count` integer DEFAULT 0 NOT NULL;--> statement-breakpoint
-CREATE INDEX `proposals_campaign_idx` ON `proposals` (`campaign_id`);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `proposals_campaign_idx` ON `proposals` (`campaign_id`);--> statement-breakpoint
 ALTER TABLE `proposals` DROP COLUMN `mockup_subdomain`;--> statement-breakpoint
 ALTER TABLE `proposals` DROP COLUMN `mockup_key`;--> statement-breakpoint
 ALTER TABLE `settings` ADD `growth_policy` text DEFAULT '{}' NOT NULL;--> statement-breakpoint

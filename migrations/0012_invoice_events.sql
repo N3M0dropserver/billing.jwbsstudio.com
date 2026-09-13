@@ -1,4 +1,4 @@
-CREATE TABLE `invoice_events` (
+CREATE TABLE IF NOT EXISTS `invoice_events` (
 	`id` text PRIMARY KEY NOT NULL,
 	`invoice_id` text NOT NULL,
 	`client_id` text,
@@ -15,8 +15,8 @@ CREATE TABLE `invoice_events` (
 	FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE set null
 );
 --> statement-breakpoint
-CREATE INDEX `invoice_events_invoice_idx` ON `invoice_events` (`invoice_id`,`occurred_at`);--> statement-breakpoint
-CREATE INDEX `invoice_events_client_idx` ON `invoice_events` (`client_id`,`occurred_at`);--> statement-breakpoint
-CREATE INDEX `invoice_events_user_idx` ON `invoice_events` (`user_id`,`occurred_at`);--> statement-breakpoint
-CREATE INDEX `invoice_events_parent_idx` ON `invoice_events` (`parent_id`);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `invoice_events_invoice_idx` ON `invoice_events` (`invoice_id`,`occurred_at`);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `invoice_events_client_idx` ON `invoice_events` (`client_id`,`occurred_at`);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `invoice_events_user_idx` ON `invoice_events` (`user_id`,`occurred_at`);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `invoice_events_parent_idx` ON `invoice_events` (`parent_id`);--> statement-breakpoint
 ALTER TABLE `settings` ADD `track_email_opens` integer DEFAULT true NOT NULL;

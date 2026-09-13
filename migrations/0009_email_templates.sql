@@ -1,4 +1,4 @@
-CREATE TABLE `email_templates` (
+CREATE TABLE IF NOT EXISTS `email_templates` (
 	`id` text PRIMARY KEY NOT NULL,
 	`user_id` text NOT NULL,
 	`name` text NOT NULL,
@@ -14,9 +14,9 @@ CREATE TABLE `email_templates` (
 	FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE cascade
 );
 --> statement-breakpoint
-CREATE INDEX `email_templates_user_kind_idx` ON `email_templates` (`user_id`,`kind`);--> statement-breakpoint
-CREATE INDEX `email_templates_default_idx` ON `email_templates` (`user_id`,`kind`,`is_default`);--> statement-breakpoint
-CREATE TABLE `email_sends` (
+CREATE INDEX IF NOT EXISTS `email_templates_user_kind_idx` ON `email_templates` (`user_id`,`kind`);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `email_templates_default_idx` ON `email_templates` (`user_id`,`kind`,`is_default`);--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS `email_sends` (
 	`id` text PRIMARY KEY NOT NULL,
 	`user_id` text NOT NULL,
 	`entity_type` text DEFAULT 'invoice' NOT NULL,
@@ -39,6 +39,6 @@ CREATE TABLE `email_sends` (
 	FOREIGN KEY (`template_id`) REFERENCES `email_templates`(`id`) ON UPDATE no action ON DELETE set null
 );
 --> statement-breakpoint
-CREATE UNIQUE INDEX `email_sends_token_idx` ON `email_sends` (`token`);--> statement-breakpoint
-CREATE INDEX `email_sends_entity_idx` ON `email_sends` (`entity_type`,`entity_id`);--> statement-breakpoint
-CREATE INDEX `email_sends_user_idx` ON `email_sends` (`user_id`,`sent_at`);
+CREATE UNIQUE INDEX IF NOT EXISTS `email_sends_token_idx` ON `email_sends` (`token`);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `email_sends_entity_idx` ON `email_sends` (`entity_type`,`entity_id`);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `email_sends_user_idx` ON `email_sends` (`user_id`,`sent_at`);

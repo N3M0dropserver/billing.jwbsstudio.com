@@ -1,4 +1,4 @@
-CREATE TABLE `bank_transactions` (
+CREATE TABLE IF NOT EXISTS `bank_transactions` (
 	`id` text PRIMARY KEY NOT NULL,
 	`user_id` text NOT NULL,
 	`source` text DEFAULT '' NOT NULL,
@@ -19,6 +19,6 @@ CREATE TABLE `bank_transactions` (
 	FOREIGN KEY (`matched_payment_id`) REFERENCES `payments`(`id`) ON UPDATE no action ON DELETE set null
 );
 --> statement-breakpoint
-CREATE UNIQUE INDEX `bank_tx_fingerprint_idx` ON `bank_transactions` (`user_id`,`fingerprint`);--> statement-breakpoint
-CREATE INDEX `bank_tx_user_status_idx` ON `bank_transactions` (`user_id`,`status`);--> statement-breakpoint
-CREATE INDEX `bank_tx_user_date_idx` ON `bank_transactions` (`user_id`,`occurred_on`);
+CREATE UNIQUE INDEX IF NOT EXISTS `bank_tx_fingerprint_idx` ON `bank_transactions` (`user_id`,`fingerprint`);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `bank_tx_user_status_idx` ON `bank_transactions` (`user_id`,`status`);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `bank_tx_user_date_idx` ON `bank_transactions` (`user_id`,`occurred_on`);

@@ -397,6 +397,37 @@ Copy it in one go — a character lost to a line wrap or a shell that ate the
 recognised", with no hint that the password is nearly right. If that happens,
 sign in with an emailed link instead (below) and set a password you chose.
 
+### Migrations, and the one rule about them
+
+Migrations are generated from `src/lib/db/schema.ts`, never written by hand:
+
+```bash
+npm run db:generate
+```
+
+Every `CREATE` in `migrations/` is `CREATE ... IF NOT EXISTS`, and every `DROP`
+is `DROP ... IF EXISTS`. drizzle-kit does not emit them that way, so
+`db:generate` runs `scripts/idempotent-migrations.mjs` afterwards to add the
+guards, and `tests/migrations.test.ts` fails if any are missing. The reason is
+that wrangler decides what to apply by **filename**, against the names in the
+`d1_migrations` table — a name it does not recognise is run in full, and a bare
+`CREATE TABLE` then aborts the whole migration on the first object that is
+already there.
+
+That makes re-application survivable, not safe: SQLite has no
+`ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, so a re-run still stops at the
+first column it has already added. **So never rename or renumber a migration
+that has been applied anywhere.** If a branch merge forces it, record the new
+name as already applied rather than letting it re-run:
+
+```sql
+INSERT INTO d1_migrations (name, applied_at)
+SELECT '0010_growth_engine.sql', CURRENT_TIMESTAMP
+WHERE NOT EXISTS (SELECT 1 FROM d1_migrations WHERE name = '0010_growth_engine.sql');
+```
+
+Locally, deleting the database and migrating from scratch is usually simpler.
+
 ### 4. Run it
 
 ```bash
@@ -753,6 +784,7 @@ npm test                 # run the test suite
 npm run typecheck        # tsc --noEmit
 npm run typecheck:agent  # tsc --noEmit for the agent worker
 npm run db:generate      # generate a migration from schema changes
+npm run db:idempotent    # add the IF NOT EXISTS guards to migrations by hand
 npm run db:migrate:local # apply migrations locally
 npm run db:migrate:remote # apply migrations to the deployed database
 npm run user:add         # create or reset a user

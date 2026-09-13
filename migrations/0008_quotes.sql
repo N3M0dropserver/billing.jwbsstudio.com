@@ -1,4 +1,4 @@
-CREATE TABLE `proposal_lines` (
+CREATE TABLE IF NOT EXISTS `proposal_lines` (
 	`id` text PRIMARY KEY NOT NULL,
 	`proposal_id` text NOT NULL,
 	`position` integer DEFAULT 0 NOT NULL,
@@ -12,7 +12,7 @@ CREATE TABLE `proposal_lines` (
 	FOREIGN KEY (`proposal_id`) REFERENCES `proposals`(`id`) ON UPDATE no action ON DELETE cascade
 );
 --> statement-breakpoint
-CREATE INDEX `proposal_lines_proposal_idx` ON `proposal_lines` (`proposal_id`,`position`);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `proposal_lines_proposal_idx` ON `proposal_lines` (`proposal_id`,`position`);--> statement-breakpoint
 ALTER TABLE `proposals` ADD `number` text DEFAULT '' NOT NULL;--> statement-breakpoint
 ALTER TABLE `proposals` ADD `jurisdiction` text DEFAULT 'NZ' NOT NULL;--> statement-breakpoint
 ALTER TABLE `proposals` ADD `gst_treatment` text DEFAULT 'standard' NOT NULL;--> statement-breakpoint

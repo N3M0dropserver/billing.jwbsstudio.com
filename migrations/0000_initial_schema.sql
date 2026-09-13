@@ -1,4 +1,4 @@
-CREATE TABLE `activity_log` (
+CREATE TABLE IF NOT EXISTS `activity_log` (
 	`id` text PRIMARY KEY NOT NULL,
 	`user_id` text,
 	`action` text NOT NULL,
@@ -10,8 +10,8 @@ CREATE TABLE `activity_log` (
 	FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE set null
 );
 --> statement-breakpoint
-CREATE INDEX `activity_user_idx` ON `activity_log` (`user_id`,`created_at`);--> statement-breakpoint
-CREATE TABLE `assets` (
+CREATE INDEX IF NOT EXISTS `activity_user_idx` ON `activity_log` (`user_id`,`created_at`);--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS `assets` (
 	`id` text PRIMARY KEY NOT NULL,
 	`user_id` text NOT NULL,
 	`name` text NOT NULL,
@@ -33,8 +33,8 @@ CREATE TABLE `assets` (
 	FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE cascade
 );
 --> statement-breakpoint
-CREATE INDEX `assets_user_idx` ON `assets` (`user_id`,`acquired_on`);--> statement-breakpoint
-CREATE TABLE `clients` (
+CREATE INDEX IF NOT EXISTS `assets_user_idx` ON `assets` (`user_id`,`acquired_on`);--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS `clients` (
 	`id` text PRIMARY KEY NOT NULL,
 	`user_id` text NOT NULL,
 	`name` text NOT NULL,
@@ -61,10 +61,10 @@ CREATE TABLE `clients` (
 	FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE cascade
 );
 --> statement-breakpoint
-CREATE INDEX `clients_user_idx` ON `clients` (`user_id`);--> statement-breakpoint
-CREATE INDEX `clients_status_idx` ON `clients` (`user_id`,`status`);--> statement-breakpoint
-CREATE INDEX `clients_name_idx` ON `clients` (`name`);--> statement-breakpoint
-CREATE TABLE `communications` (
+CREATE INDEX IF NOT EXISTS `clients_user_idx` ON `clients` (`user_id`);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `clients_status_idx` ON `clients` (`user_id`,`status`);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `clients_name_idx` ON `clients` (`name`);--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS `communications` (
 	`id` text PRIMARY KEY NOT NULL,
 	`user_id` text NOT NULL,
 	`client_id` text,
@@ -80,9 +80,9 @@ CREATE TABLE `communications` (
 	FOREIGN KEY (`contact_id`) REFERENCES `contacts`(`id`) ON UPDATE no action ON DELETE set null
 );
 --> statement-breakpoint
-CREATE INDEX `comms_client_idx` ON `communications` (`client_id`,`occurred_at`);--> statement-breakpoint
-CREATE INDEX `comms_followup_idx` ON `communications` (`user_id`,`follow_up_at`);--> statement-breakpoint
-CREATE TABLE `contacts` (
+CREATE INDEX IF NOT EXISTS `comms_client_idx` ON `communications` (`client_id`,`occurred_at`);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `comms_followup_idx` ON `communications` (`user_id`,`follow_up_at`);--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS `contacts` (
 	`id` text PRIMARY KEY NOT NULL,
 	`client_id` text NOT NULL,
 	`name` text NOT NULL,
@@ -96,8 +96,8 @@ CREATE TABLE `contacts` (
 	FOREIGN KEY (`client_id`) REFERENCES `clients`(`id`) ON UPDATE no action ON DELETE cascade
 );
 --> statement-breakpoint
-CREATE INDEX `contacts_client_idx` ON `contacts` (`client_id`);--> statement-breakpoint
-CREATE TABLE `depreciation_entries` (
+CREATE INDEX IF NOT EXISTS `contacts_client_idx` ON `contacts` (`client_id`);--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS `depreciation_entries` (
 	`id` text PRIMARY KEY NOT NULL,
 	`asset_id` text NOT NULL,
 	`tax_year` text NOT NULL,
@@ -109,8 +109,8 @@ CREATE TABLE `depreciation_entries` (
 	FOREIGN KEY (`asset_id`) REFERENCES `assets`(`id`) ON UPDATE no action ON DELETE cascade
 );
 --> statement-breakpoint
-CREATE UNIQUE INDEX `depreciation_asset_year_idx` ON `depreciation_entries` (`asset_id`,`tax_year`);--> statement-breakpoint
-CREATE TABLE `expenses` (
+CREATE UNIQUE INDEX IF NOT EXISTS `depreciation_asset_year_idx` ON `depreciation_entries` (`asset_id`,`tax_year`);--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS `expenses` (
 	`id` text PRIMARY KEY NOT NULL,
 	`user_id` text NOT NULL,
 	`client_id` text,
@@ -138,10 +138,10 @@ CREATE TABLE `expenses` (
 	FOREIGN KEY (`billed_on_invoice_id`) REFERENCES `invoices`(`id`) ON UPDATE no action ON DELETE set null
 );
 --> statement-breakpoint
-CREATE INDEX `expenses_user_date_idx` ON `expenses` (`user_id`,`incurred_on`);--> statement-breakpoint
-CREATE INDEX `expenses_category_idx` ON `expenses` (`user_id`,`category`);--> statement-breakpoint
-CREATE INDEX `expenses_client_idx` ON `expenses` (`client_id`);--> statement-breakpoint
-CREATE TABLE `income_sources` (
+CREATE INDEX IF NOT EXISTS `expenses_user_date_idx` ON `expenses` (`user_id`,`incurred_on`);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `expenses_category_idx` ON `expenses` (`user_id`,`category`);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `expenses_client_idx` ON `expenses` (`client_id`);--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS `income_sources` (
 	`id` text PRIMARY KEY NOT NULL,
 	`user_id` text NOT NULL,
 	`tax_year` text NOT NULL,
@@ -158,8 +158,8 @@ CREATE TABLE `income_sources` (
 	FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE cascade
 );
 --> statement-breakpoint
-CREATE INDEX `income_sources_user_year_idx` ON `income_sources` (`user_id`,`tax_year`);--> statement-breakpoint
-CREATE TABLE `invoice_lines` (
+CREATE INDEX IF NOT EXISTS `income_sources_user_year_idx` ON `income_sources` (`user_id`,`tax_year`);--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS `invoice_lines` (
 	`id` text PRIMARY KEY NOT NULL,
 	`invoice_id` text NOT NULL,
 	`position` integer DEFAULT 0 NOT NULL,
@@ -173,8 +173,8 @@ CREATE TABLE `invoice_lines` (
 	FOREIGN KEY (`invoice_id`) REFERENCES `invoices`(`id`) ON UPDATE no action ON DELETE cascade
 );
 --> statement-breakpoint
-CREATE INDEX `invoice_lines_invoice_idx` ON `invoice_lines` (`invoice_id`,`position`);--> statement-breakpoint
-CREATE TABLE `invoices` (
+CREATE INDEX IF NOT EXISTS `invoice_lines_invoice_idx` ON `invoice_lines` (`invoice_id`,`position`);--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS `invoices` (
 	`id` text PRIMARY KEY NOT NULL,
 	`user_id` text NOT NULL,
 	`client_id` text,
@@ -209,13 +209,13 @@ CREATE TABLE `invoices` (
 	FOREIGN KEY (`client_id`) REFERENCES `clients`(`id`) ON UPDATE no action ON DELETE set null
 );
 --> statement-breakpoint
-CREATE UNIQUE INDEX `invoices_number_idx` ON `invoices` (`user_id`,`number`);--> statement-breakpoint
-CREATE UNIQUE INDEX `invoices_public_token_idx` ON `invoices` (`public_token`);--> statement-breakpoint
-CREATE INDEX `invoices_user_status_idx` ON `invoices` (`user_id`,`status`);--> statement-breakpoint
-CREATE INDEX `invoices_client_idx` ON `invoices` (`client_id`);--> statement-breakpoint
-CREATE INDEX `invoices_issued_idx` ON `invoices` (`user_id`,`issued_on`);--> statement-breakpoint
-CREATE INDEX `invoices_due_idx` ON `invoices` (`user_id`,`due_on`);--> statement-breakpoint
-CREATE TABLE `payments` (
+CREATE UNIQUE INDEX IF NOT EXISTS `invoices_number_idx` ON `invoices` (`user_id`,`number`);--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS `invoices_public_token_idx` ON `invoices` (`public_token`);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `invoices_user_status_idx` ON `invoices` (`user_id`,`status`);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `invoices_client_idx` ON `invoices` (`client_id`);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `invoices_issued_idx` ON `invoices` (`user_id`,`issued_on`);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `invoices_due_idx` ON `invoices` (`user_id`,`due_on`);--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS `payments` (
 	`id` text PRIMARY KEY NOT NULL,
 	`user_id` text NOT NULL,
 	`invoice_id` text,
@@ -232,9 +232,9 @@ CREATE TABLE `payments` (
 	FOREIGN KEY (`invoice_id`) REFERENCES `invoices`(`id`) ON UPDATE no action ON DELETE cascade
 );
 --> statement-breakpoint
-CREATE INDEX `payments_invoice_idx` ON `payments` (`invoice_id`);--> statement-breakpoint
-CREATE INDEX `payments_user_date_idx` ON `payments` (`user_id`,`received_on`);--> statement-breakpoint
-CREATE TABLE `projects` (
+CREATE INDEX IF NOT EXISTS `payments_invoice_idx` ON `payments` (`invoice_id`);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `payments_user_date_idx` ON `payments` (`user_id`,`received_on`);--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS `projects` (
 	`id` text PRIMARY KEY NOT NULL,
 	`user_id` text NOT NULL,
 	`client_id` text,
@@ -252,9 +252,9 @@ CREATE TABLE `projects` (
 	FOREIGN KEY (`client_id`) REFERENCES `clients`(`id`) ON UPDATE no action ON DELETE cascade
 );
 --> statement-breakpoint
-CREATE INDEX `projects_user_idx` ON `projects` (`user_id`,`status`);--> statement-breakpoint
-CREATE INDEX `projects_client_idx` ON `projects` (`client_id`);--> statement-breakpoint
-CREATE TABLE `proposals` (
+CREATE INDEX IF NOT EXISTS `projects_user_idx` ON `projects` (`user_id`,`status`);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `projects_client_idx` ON `projects` (`client_id`);--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS `proposals` (
 	`id` text PRIMARY KEY NOT NULL,
 	`user_id` text NOT NULL,
 	`client_id` text,
@@ -280,9 +280,9 @@ CREATE TABLE `proposals` (
 	FOREIGN KEY (`converted_invoice_id`) REFERENCES `invoices`(`id`) ON UPDATE no action ON DELETE set null
 );
 --> statement-breakpoint
-CREATE INDEX `proposals_user_status_idx` ON `proposals` (`user_id`,`status`);--> statement-breakpoint
-CREATE UNIQUE INDEX `proposals_public_token_idx` ON `proposals` (`public_token`);--> statement-breakpoint
-CREATE TABLE `prospect_searches` (
+CREATE INDEX IF NOT EXISTS `proposals_user_status_idx` ON `proposals` (`user_id`,`status`);--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS `proposals_public_token_idx` ON `proposals` (`public_token`);--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS `prospect_searches` (
 	`id` text PRIMARY KEY NOT NULL,
 	`user_id` text NOT NULL,
 	`niche` text NOT NULL,
@@ -298,8 +298,8 @@ CREATE TABLE `prospect_searches` (
 	FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE cascade
 );
 --> statement-breakpoint
-CREATE INDEX `prospect_searches_user_idx` ON `prospect_searches` (`user_id`,`created_at`);--> statement-breakpoint
-CREATE TABLE `prospects` (
+CREATE INDEX IF NOT EXISTS `prospect_searches_user_idx` ON `prospect_searches` (`user_id`,`created_at`);--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS `prospects` (
 	`id` text PRIMARY KEY NOT NULL,
 	`user_id` text NOT NULL,
 	`search_id` text,
@@ -326,9 +326,9 @@ CREATE TABLE `prospects` (
 	FOREIGN KEY (`converted_client_id`) REFERENCES `clients`(`id`) ON UPDATE no action ON DELETE set null
 );
 --> statement-breakpoint
-CREATE INDEX `prospects_user_status_idx` ON `prospects` (`user_id`,`status`);--> statement-breakpoint
-CREATE INDEX `prospects_score_idx` ON `prospects` (`user_id`,`score`);--> statement-breakpoint
-CREATE TABLE `sessions` (
+CREATE INDEX IF NOT EXISTS `prospects_user_status_idx` ON `prospects` (`user_id`,`status`);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `prospects_score_idx` ON `prospects` (`user_id`,`score`);--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS `sessions` (
 	`id` text PRIMARY KEY NOT NULL,
 	`user_id` text NOT NULL,
 	`token_hash` text NOT NULL,
@@ -339,10 +339,10 @@ CREATE TABLE `sessions` (
 	FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE cascade
 );
 --> statement-breakpoint
-CREATE UNIQUE INDEX `sessions_token_idx` ON `sessions` (`token_hash`);--> statement-breakpoint
-CREATE INDEX `sessions_user_idx` ON `sessions` (`user_id`);--> statement-breakpoint
-CREATE INDEX `sessions_expiry_idx` ON `sessions` (`expires_at`);--> statement-breakpoint
-CREATE TABLE `settings` (
+CREATE UNIQUE INDEX IF NOT EXISTS `sessions_token_idx` ON `sessions` (`token_hash`);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `sessions_user_idx` ON `sessions` (`user_id`);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `sessions_expiry_idx` ON `sessions` (`expires_at`);--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS `settings` (
 	`id` text PRIMARY KEY NOT NULL,
 	`user_id` text NOT NULL,
 	`business_name` text DEFAULT '' NOT NULL,
@@ -389,7 +389,7 @@ CREATE TABLE `settings` (
 	FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE cascade
 );
 --> statement-breakpoint
-CREATE TABLE `style_repertoire` (
+CREATE TABLE IF NOT EXISTS `style_repertoire` (
 	`id` text PRIMARY KEY NOT NULL,
 	`user_id` text NOT NULL,
 	`name` text NOT NULL,
@@ -403,8 +403,8 @@ CREATE TABLE `style_repertoire` (
 	FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE cascade
 );
 --> statement-breakpoint
-CREATE INDEX `style_repertoire_user_idx` ON `style_repertoire` (`user_id`);--> statement-breakpoint
-CREATE TABLE `time_entries` (
+CREATE INDEX IF NOT EXISTS `style_repertoire_user_idx` ON `style_repertoire` (`user_id`);--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS `time_entries` (
 	`id` text PRIMARY KEY NOT NULL,
 	`user_id` text NOT NULL,
 	`client_id` text,
@@ -425,10 +425,10 @@ CREATE TABLE `time_entries` (
 	FOREIGN KEY (`invoice_id`) REFERENCES `invoices`(`id`) ON UPDATE no action ON DELETE set null
 );
 --> statement-breakpoint
-CREATE INDEX `time_user_started_idx` ON `time_entries` (`user_id`,`started_at`);--> statement-breakpoint
-CREATE INDEX `time_client_idx` ON `time_entries` (`client_id`);--> statement-breakpoint
-CREATE INDEX `time_unbilled_idx` ON `time_entries` (`user_id`,`billed`);--> statement-breakpoint
-CREATE TABLE `users` (
+CREATE INDEX IF NOT EXISTS `time_user_started_idx` ON `time_entries` (`user_id`,`started_at`);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `time_client_idx` ON `time_entries` (`client_id`);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `time_unbilled_idx` ON `time_entries` (`user_id`,`billed`);--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS `users` (
 	`id` text PRIMARY KEY NOT NULL,
 	`email` text NOT NULL,
 	`name` text NOT NULL,
@@ -443,4 +443,4 @@ CREATE TABLE `users` (
 	`updated_at` text NOT NULL
 );
 --> statement-breakpoint
-CREATE UNIQUE INDEX `users_email_idx` ON `users` (`email`);
+CREATE UNIQUE INDEX IF NOT EXISTS `users_email_idx` ON `users` (`email`);
