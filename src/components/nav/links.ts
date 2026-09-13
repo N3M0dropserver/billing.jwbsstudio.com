@@ -4,8 +4,8 @@
  * what the sidebar has room for.
  *
  * The sidebar shows every link. The tab bar only has room for five keys under
- * a thumb, so `tab` marks the five that earn a place there; Quotes and Bank
- * are reached from the dashboard or the sidebar on a phone.
+ * a thumb, so `tab` marks the five that earn a place there; Quotes, Growth
+ * and Bank are reached from the dashboard or the sidebar on a phone.
  */
 export interface NavLink {
   href: string;
@@ -20,6 +20,7 @@ export const NAV_LINKS: NavLink[] = [
   { href: '/invoices', label: 'Invoices', short: 'Invoices', icon: 'file', tab: true },
   { href: '/clients', label: 'Clients', short: 'Clients', icon: 'users', tab: true },
   { href: '/quotes', label: 'Quotes', short: 'Quotes', icon: 'quote' },
+  { href: '/growth', label: 'Growth', short: 'Growth', icon: 'compass' },
   { href: '/time', label: 'Time', short: 'Time', icon: 'clock', tab: true },
   { href: '/bank', label: 'Bank', short: 'Bank', icon: 'bank' },
   { href: '/tax', label: 'Tax & accounting', short: 'Tax', icon: 'calculator', tab: true },
@@ -37,6 +38,7 @@ export const ICONS: Record<string, string> = {
   calculator: 'M4 2h16v20H4zM8 6h8M8 10h.01M12 10h.01M16 10h.01M8 14h.01M12 14h.01M16 14h.01M8 18h8',
   bank: 'M3 21h18M3 10h18M5 6l7-3 7 3M6 10v11M10 10v11M14 10v11M18 10v11',
   quote: 'M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2zM8 9h8M8 13h5',
+  compass: 'M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM16.24 7.76l-2.12 6.36-6.36 2.12 2.12-6.36z',
   search: 'M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16zM21 21l-4.35-4.35',
   moon: 'M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z',
   gear:

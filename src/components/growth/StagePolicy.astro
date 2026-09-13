@@ -1,0 +1,76 @@
+---
+/**
+ * The autonomy control.
+ *
+ * The highlight is CSS-driven (`.segmented__option:has(input:checked)`), not a
+ * server-rendered style. An inline style computed from the saved policy could
+ * not move until the form round-tripped, so every click looked ignored.
+ *
+ * Every stage, every mode, on one screen. This is the most important control
+ * in the feature and it earns the space: someone setting a run to send email
+ * without looking at it first should have seen the word "propose" next to the
+ * words "just do it" while they did.
+ */
+import { CAMPAIGN_STAGES, MODE_LABELS, STAGE_DESCRIPTIONS, STAGE_LABELS, STAGE_MODES } from '~/lib/growth/policy';
+import type { StagePolicy } from '~/lib/growth/policy';
+
+interface Props {
+  policy: StagePolicy;
+  /** Stages that have already run and can no longer be changed. */
+  locked?: string[];
+  namePrefix?: string;
+}
+
+const { policy, locked = [], namePrefix = 'policy' } = Astro.props;
+
+/** Stages whose `auto` reaches outside this app. Worth a word of warning. */
+const CONSEQUENTIAL: Record<string, string> = {
+  build: 'publishes a public page',
+  propose: 'emails a stranger',
+};
+---
+
+<fieldset class="space-y-2 border-0 p-0">
+  <legend class="sr-only">How much of the run happens without you</legend>
+
+  {
+    CAMPAIGN_STAGES.map((stage) => {
+      const isLocked = locked.includes(stage);
+      return (
+        <div
+          class="grid gap-2 rounded-lg border p-3 sm:grid-cols-[1fr_auto] sm:items-center"
+          style={`border-color: var(--border); ${isLocked ? 'opacity: 0.55' : ''}`}
+        >
+          <div class="min-w-0">
+            <p class="text-sm font-medium">
+              {STAGE_LABELS[stage]}
+              {CONSEQUENTIAL[stage] && (
+                <span class="ml-2 rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide"
+                  style="background: color-mix(in oklch, var(--color-owing) 16%, transparent); color: var(--color-owing)">
+                  {CONSEQUENTIAL[stage]}
+                </span>
+              )}
+            </p>
+            <p class="muted mt-0.5 text-xs leading-relaxed">{STAGE_DESCRIPTIONS[stage]}</p>
+          </div>
+
+          <div class="segmented">
+            {STAGE_MODES.map((mode) => (
+              <label class="segmented__option">
+                <input
+                  type="radio"
+                  class="sr-only"
+                  name={`${namePrefix}.${stage}`}
+                  value={mode}
+                  checked={policy[stage] === mode}
+                  disabled={isLocked}
+                />
+                {MODE_LABELS[mode]}
+              </label>
+            ))}
+          </div>
+        </div>
+      );
+    })
+  }
+</fieldset>

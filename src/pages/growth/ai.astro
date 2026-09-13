@@ -1,0 +1,301 @@
+---
+/**
+ * What the pipeline is spending.
+ *
+ * A run makes dozens of model calls unattended. Before this the only evidence
+ * any of them happened was the bill, and the only way to find an expensive
+ * stage was to guess.
+ *
+ * Costs are shown as estimates because they are: Workers AI bills in neurons
+ * rather than tokens and the per-model ratio is not something to guess at, so
+ * the page says so rather than presenting a figure that looks authoritative.
+ * The comparisons between stages are sound even where the absolute number is
+ * not, and that is what the page is for.
+ */
+import AppLayout from '~/layouts/AppLayout.astro';
+import Card from '~/components/ui/Card.astro';
+import EmptyState from '~/components/ui/EmptyState.astro';
+import { and, desc, eq, gte, sql } from 'drizzle-orm';
+import { db } from '~/lib/env';
+import { aiCache, aiCalls, campaigns } from '~/lib/db/schema';
+import { formatCost, MODEL_PRICING } from '~/lib/ai/pricing';
+
+const user = Astro.locals.user!;
+const database = db();
+
+const days = Number.parseInt(Astro.url.searchParams.get('days') ?? '30', 10);
+const window = Number.isFinite(days) && days > 0 && days <= 365 ? days : 30;
+const since = new Date(Date.now() - window * 86_400_000).toISOString();
+
+const scope = and(eq(aiCalls.userId, user.id), gte(aiCalls.createdAt, since));
+
+const [totals, byOperation, byStage, byModel, recent, cacheRows, runs] = await Promise.all([
+  database
+    .select({
+      calls: sql<number>`count(*)`,
+      tokens: sql<number>`coalesce(sum(${aiCalls.totalTokens}), 0)`,
+      cost: sql<number>`coalesce(sum(${aiCalls.costMicrocents}), 0)`,
+      cached: sql<number>`coalesce(sum(case when ${aiCalls.cached} then 1 else 0 end), 0)`,
+      failed: sql<number>`coalesce(sum(case when ${aiCalls.ok} then 0 else 1 end), 0)`,
+      estimated: sql<number>`coalesce(sum(case when ${aiCalls.tokensMeasured} then 0 else 1 end), 0)`,
+      unconfident: sql<number>`coalesce(sum(case when ${aiCalls.costConfident} then 0 else 1 end), 0)`,
+      duration: sql<number>`coalesce(sum(${aiCalls.durationMs}), 0)`,
+    })
+    .from(aiCalls)
+    .where(scope),
+
+  database
+    .select({
+      key: aiCalls.operation,
+      calls: sql<number>`count(*)`,
+      tokens: sql<number>`coalesce(sum(${aiCalls.totalTokens}), 0)`,
+      cost: sql<number>`coalesce(sum(${aiCalls.costMicrocents}), 0)`,
+      cached: sql<number>`coalesce(sum(case when ${aiCalls.cached} then 1 else 0 end), 0)`,
+      avgMs: sql<number>`coalesce(avg(${aiCalls.durationMs}), 0)`,
+    })
+    .from(aiCalls)
+    .where(scope)
+    .groupBy(aiCalls.operation)
+    .orderBy(desc(sql`sum(${aiCalls.costMicrocents})`)),
+
+  database
+    .select({
+      key: aiCalls.stage,
+      calls: sql<number>`count(*)`,
+      cost: sql<number>`coalesce(sum(${aiCalls.costMicrocents}), 0)`,
+    })
+    .from(aiCalls)
+    .where(scope)
+    .groupBy(aiCalls.stage)
+    .orderBy(desc(sql`sum(${aiCalls.costMicrocents})`)),
+
+  database
+    .select({
+      key: aiCalls.model,
+      calls: sql<number>`count(*)`,
+      inTokens: sql<number>`coalesce(sum(${aiCalls.promptTokens}), 0)`,
+      outTokens: sql<number>`coalesce(sum(${aiCalls.completionTokens}), 0)`,
+      cost: sql<number>`coalesce(sum(${aiCalls.costMicrocents}), 0)`,
+    })
+    .from(aiCalls)
+    .where(scope)
+    .groupBy(aiCalls.model)
+    .orderBy(desc(sql`sum(${aiCalls.costMicrocents})`)),
+
+  database.select().from(aiCalls).where(scope).orderBy(desc(aiCalls.createdAt)).limit(40),
+
+  database
+    .select({
+      entries: sql<number>`count(*)`,
+      hits: sql<number>`coalesce(sum(${aiCache.hits}), 0)`,
+    })
+    .from(aiCache)
+    .where(eq(aiCache.userId, user.id)),
+
+  database
+    .select({
+      key: aiCalls.campaignId,
+      name: campaigns.name,
+      niche: campaigns.niche,
+      calls: sql<number>`count(*)`,
+      cost: sql<number>`coalesce(sum(${aiCalls.costMicrocents}), 0)`,
+    })
+    .from(aiCalls)
+    .leftJoin(campaigns, eq(aiCalls.campaignId, campaigns.id))
+    .where(scope)
+    .groupBy(aiCalls.campaignId)
+    .orderBy(desc(sql`sum(${aiCalls.costMicrocents})`))
+    .limit(10),
+]);
+
+const t = totals[0] ?? { calls: 0, tokens: 0, cost: 0, cached: 0, failed: 0, estimated: 0, unconfident: 0, duration: 0 };
+const cache = cacheRows[0] ?? { entries: 0, hits: 0 };
+
+const cacheRate = t.calls > 0 ? Math.round((t.cached / t.calls) * 100) : 0;
+const avgMs = t.calls > t.cached ? Math.round(t.duration / Math.max(1, t.calls - t.cached)) : 0;
+const costPerRun = runs.length ? t.cost / runs.length : 0;
+const anyEstimatedTokens = t.estimated > 0;
+const anyUnconfidentCost = t.unconfident > 0;
+
+const maxOperationCost = Math.max(1, ...byOperation.map((row) => row.cost));
+
+const OPERATION_LABELS: Record<string, string> = {
+  qualify: 'Qualifying prospects',
+  shortlist: 'Choosing the shortlist',
+  plan: 'Writing design plans',
+  proposal: 'Drafting outreach',
+  brief: 'Adapting the brief',
+};
+
+const number = (value: number) => value.toLocaleString('en-NZ');
+---
+
+<AppLayout title="AI usage" subtitle={`Model calls, tokens and estimated cost over the last ${window} days`} width="wide">
+  <div slot="actions" class="flex gap-2">
+    {[7, 30, 90].map((option) => (
+      <a
+        href={`/growth/ai?days=${option}`}
+        class:list={['rounded-lg border px-3 py-2 text-sm', option === window ? 'font-medium' : 'muted']}
+        style={option === window ? 'border-color: var(--color-brand-600); color: var(--color-brand-600)' : 'border-color: var(--border)'}
+      >{option}d</a>
+    ))}
+  </div>
+
+  {t.calls === 0 ? (
+    <EmptyState
+      title="No model calls recorded yet"
+      description="Start a growth run and every call it makes is recorded here — by stage, by operation and by model, with what it cost and whether the cache saved it."
+      actionHref="/growth/new"
+      actionLabel="Start a run"
+    />
+  ) : (
+    <div class="space-y-4">
+      <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <Card>
+          <p class="muted text-xs">Estimated spend</p>
+          <p class="tabular mt-1 text-2xl font-semibold">{formatCost(t.cost)}</p>
+          <p class="muted mt-1 text-xs">{number(t.calls)} calls</p>
+        </Card>
+        <Card>
+          <p class="muted text-xs">Tokens</p>
+          <p class="tabular mt-1 text-2xl font-semibold">{number(t.tokens)}</p>
+          <p class="muted mt-1 text-xs">
+            {anyEstimatedTokens ? `${number(t.estimated)} call(s) estimated` : 'all measured'}
+          </p>
+        </Card>
+        <Card>
+          <p class="muted text-xs">Served from cache</p>
+          <p class="tabular mt-1 text-2xl font-semibold" style={cacheRate > 0 ? 'color: var(--color-paid)' : ''}>{cacheRate}%</p>
+          <p class="muted mt-1 text-xs">{number(cache.entries)} entries, {number(cache.hits)} hits</p>
+        </Card>
+        <Card>
+          <p class="muted text-xs">Average call</p>
+          <p class="tabular mt-1 text-2xl font-semibold">{(avgMs / 1000).toFixed(1)}s</p>
+          <p class="muted mt-1 text-xs">{t.failed > 0 ? `${number(t.failed)} failed` : 'none failed'}</p>
+        </Card>
+      </div>
+
+      {(anyUnconfidentCost || anyEstimatedTokens) && (
+        <div class="rounded-lg px-4 py-3 text-sm leading-relaxed" style="background: color-mix(in oklch, var(--color-owing) 10%, transparent)">
+          <p class="font-medium" style="color: var(--color-owing)">These are estimates</p>
+          <ul class="muted mt-1.5 space-y-1 text-xs">
+            {anyUnconfidentCost && (
+              <li>
+                Workers AI bills in neurons rather than tokens, and the per-model ratio here has
+                not been confirmed against a published rate. Compare stages against each other
+                freely; do not reconcile the total against an invoice. Rates live in
+                <code class="ml-1">src/lib/ai/pricing.ts</code>.
+              </li>
+            )}
+            {anyEstimatedTokens && (
+              <li>
+                {number(t.estimated)} call(s) did not report token counts, so those are estimated
+                at about four characters per token.
+              </li>
+            )}
+          </ul>
+        </div>
+      )}
+
+      <div class="grid gap-4 lg:grid-cols-2">
+        <Card title="By operation" subtitle="Where the spend actually goes">
+          <ul class="space-y-3">
+            {byOperation.map((row) => (
+              <li>
+                <div class="flex items-baseline justify-between gap-3 text-sm">
+                  <span class="font-medium">{OPERATION_LABELS[row.key] ?? (row.key || 'unattributed')}</span>
+                  <span class="tabular">{formatCost(row.cost)}</span>
+                </div>
+                <div class="mt-1.5 h-1.5 overflow-hidden rounded-full" style="background: var(--surface-sunken)">
+                  <div style={`width: ${Math.round((row.cost / maxOperationCost) * 100)}%; height: 100%; background: var(--color-brand-500)`}></div>
+                </div>
+                <p class="muted mt-1 text-xs">
+                  {number(row.calls)} calls · {number(row.tokens)} tokens · {(row.avgMs / 1000).toFixed(1)}s average
+                  {row.cached > 0 && ` · ${row.cached} cached`}
+                </p>
+              </li>
+            ))}
+          </ul>
+        </Card>
+
+        <div class="space-y-4">
+          <Card title="By stage">
+            <ul class="space-y-2 text-sm">
+              {byStage.map((row) => (
+                <li class="flex items-baseline justify-between gap-3">
+                  <span>{row.key || 'unattributed'}</span>
+                  <span class="muted tabular text-xs">{number(row.calls)} · {formatCost(row.cost)}</span>
+                </li>
+              ))}
+            </ul>
+          </Card>
+
+          <Card title="By model">
+            <ul class="space-y-2.5 text-sm">
+              {byModel.map((row) => (
+                <li>
+                  <div class="flex items-baseline justify-between gap-3">
+                    <span class="truncate font-mono text-xs">{row.key || 'unknown'}</span>
+                    <span class="tabular shrink-0">{formatCost(row.cost)}</span>
+                  </div>
+                  <p class="muted text-xs">
+                    {number(row.inTokens)} in / {number(row.outTokens)} out
+                    {!MODEL_PRICING[row.key] && ' · no rate recorded, priced pessimistically'}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          </Card>
+
+          <Card title="By run" subtitle={`About ${formatCost(costPerRun)} per run`}>
+            <ul class="space-y-2 text-sm">
+              {runs.map((row) => (
+                <li class="flex items-baseline justify-between gap-3">
+                  <a href={row.key ? `/growth/${row.key}` : '#'} class="truncate hover:opacity-80">
+                    {row.name || row.niche || 'Outside a run'}
+                  </a>
+                  <span class="muted tabular shrink-0 text-xs">{formatCost(row.cost)}</span>
+                </li>
+              ))}
+            </ul>
+          </Card>
+        </div>
+      </div>
+
+      <Card title="Recent calls" subtitle="Newest first">
+        <div class="overflow-x-auto">
+          <table class="w-full text-left text-sm">
+            <thead>
+              <tr class="muted text-xs">
+                <th class="pb-2 pr-3 font-medium">When</th>
+                <th class="pb-2 pr-3 font-medium">Operation</th>
+                <th class="pb-2 pr-3 font-medium">Stage</th>
+                <th class="pb-2 pr-3 text-right font-medium">In</th>
+                <th class="pb-2 pr-3 text-right font-medium">Out</th>
+                <th class="pb-2 pr-3 text-right font-medium">Time</th>
+                <th class="pb-2 text-right font-medium">Cost</th>
+              </tr>
+            </thead>
+            <tbody>
+              {recent.map((call) => (
+                <tr class="border-t" style="border-color: var(--border)">
+                  <td class="tabular py-1.5 pr-3 text-xs">{call.createdAt.slice(11, 19)}</td>
+                  <td class="py-1.5 pr-3">
+                    {call.operation}
+                    {call.cached && <span class="ml-1.5 text-xs" style="color: var(--color-paid)">cached</span>}
+                    {!call.ok && <span class="ml-1.5 text-xs" style="color: var(--color-overdue)">failed</span>}
+                  </td>
+                  <td class="muted py-1.5 pr-3 text-xs">{call.stage}</td>
+                  <td class="tabular py-1.5 pr-3 text-right text-xs">{number(call.promptTokens)}</td>
+                  <td class="tabular py-1.5 pr-3 text-right text-xs">{number(call.completionTokens)}</td>
+                  <td class="tabular py-1.5 pr-3 text-right text-xs">{(call.durationMs / 1000).toFixed(1)}s</td>
+                  <td class="tabular py-1.5 text-right text-xs">{formatCost(call.costMicrocents)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+    </div>
+  )}
+</AppLayout>

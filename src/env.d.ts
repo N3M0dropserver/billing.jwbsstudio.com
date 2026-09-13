@@ -48,8 +48,17 @@ interface Env {
     }): Promise<{ messageId: string }>;
   };
 
+  /**
+   * The campaign agent's Durable Object namespace, from the Worker in
+   * `workers/agent`. Bound by `script_name`, so the class is not defined in
+   * this Worker and only the stub type is available here.
+   */
+  CAMPAIGN_AGENT: DurableObjectNamespace;
+
   APP_NAME: string;
   APP_URL: string;
+  /** Apex that generated demo sites are served under, e.g. demo.jwbsstudio.com. */
+  DEMO_HOST?: string;
   MAIL_PROVIDER: 'cloudflare' | 'resend' | 'none';
   MAIL_FROM: string;
   MAIL_FROM_NAME: string;
@@ -70,6 +79,24 @@ interface Env {
   STRIPE_SECRET_KEY?: string;
   STRIPE_WEBHOOK_SECRET?: string;
   RESEND_API_KEY?: string;
+
+  /** Enables the Google Places discovery provider. Optional — see the README. */
+  GOOGLE_PLACES_API_KEY?: string;
+  /**
+   * Web search for checking how well known a business already is.
+   *
+   * Optional: the Wikidata lookup runs without it and catches the recognised
+   * brands, which is most of the value. "brave" or "serper".
+   */
+  SEARCH_PROVIDER?: 'none' | 'brave' | 'serper';
+  SEARCH_API_KEY?: string;
+  /**
+   * Only needed when demo subdomains get their own DNS records rather than
+   * being covered by a wildcard. The token needs Zone:DNS:Edit on that zone
+   * and nothing else.
+   */
+  CLOUDFLARE_API_TOKEN?: string;
+  CLOUDFLARE_ZONE_ID?: string;
 }
 
 declare namespace App {

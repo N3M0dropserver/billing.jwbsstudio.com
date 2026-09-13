@@ -48,6 +48,19 @@
     "ai": {
         "binding": "AI"
     },
+    // The campaign agent lives in its own Worker (workers/agent) because the
+    // Astro Cloudflare adapter generates this Worker's entry and there is no
+    // supported way to add a Durable Object export to it. Deploy that Worker
+    // first — `bun run deploy:agent`, or `bun run deploy` which does both.
+    "durable_objects": {
+        "bindings": [
+            {
+                "name": "CAMPAIGN_AGENT",
+                "class_name": "CampaignAgent",
+                "script_name": "jwbs-growth-agent"
+            }
+        ]
+    },
     "vars": {
         "APP_NAME": "JWBS Studio Billing",
         "APP_URL": "https://billing.jwbsstudio.com",
@@ -55,7 +68,13 @@
         // public beta). "resend" uses RESEND_API_KEY. "none" disables sending.
         "MAIL_PROVIDER": "cloudflare",
         "MAIL_FROM": "invoices@jwbsstudio.com",
-        "MAIL_FROM_NAME": "JWBS Studio"
+        "MAIL_FROM_NAME": "JWBS Studio",
+        // Generated demo sites are served from this Worker on any subdomain
+        // of this host. Point a proxied wildcard at the app and add a
+        // matching Worker route:
+        //   *.demo.jwbsstudio.com  CNAME  billing.jwbsstudio.com  (proxied)
+        //   route: *.demo.jwbsstudio.com/*
+        "DEMO_HOST": "demo.jwbsstudio.com"
     },
     // Cloudflare Email Service. The sending domain must use Cloudflare DNS and
     // be onboarded to Email Service before this can reach arbitrary recipients
