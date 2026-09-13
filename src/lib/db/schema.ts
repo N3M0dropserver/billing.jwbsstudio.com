@@ -165,6 +165,12 @@ export const settings = sqliteTable('settings', {
   invoiceNextNumber: integer('invoice_next_number').notNull().default(1),
   invoiceFooter: text('invoice_footer').notNull().default(''),
 
+  /** Quotes have their own series — see proposals.number for why. */
+  quoteNumberPrefix: text('quote_number_prefix').notNull().default('QUO-'),
+  quoteNextNumber: integer('quote_next_number').notNull().default(1),
+  /** Days a quote stays open before it lapses. */
+  quoteValidDays: integer('quote_valid_days').notNull().default(30),
+
   bankAccountName: text('bank_account_name').notNull().default(''),
   bankAccountNumber: text('bank_account_number').notNull().default(''),
   bankName: text('bank_name').notNull().default(''),
@@ -175,6 +181,29 @@ export const settings = sqliteTable('settings', {
 
   /** Share of each payment to move into the tax account, as a decimal. */
   taxReserveRate: real('tax_reserve_rate').notNull().default(0.33),
+
+  /* ---------------- Automatic payment reminders ---------------- */
+
+  /**
+   * Off until you turn it on. Sending mail to clients on a schedule is not
+   * something software should start doing on your behalf because it was
+   * deployed.
+   */
+  remindersEnabled: integer('reminders_enabled', { mode: 'boolean' }).notNull().default(false),
+  /** Days before the due date to send a courtesy note. 0 disables it. */
+  reminderDaysBefore: integer('reminder_days_before').notNull().default(3),
+  /**
+   * Days AFTER the due date to chase, as a JSON array. The default ladder is
+   * a week, a fortnight, then a month: enough to be useful, not so much that
+   * a client stops reading them.
+   */
+  reminderDaysAfter: text('reminder_days_after').notNull().default('[7,14,30]'),
+  /** Hard ceiling on reminders per invoice, whatever the ladder says. */
+  reminderMaxCount: integer('reminder_max_count').notNull().default(4),
+  /** Skip weekends. A Saturday chase reads as automated, because it is. */
+  reminderSkipWeekends: integer('reminder_skip_weekends', { mode: 'boolean' })
+    .notNull()
+    .default(true),
 
   createdAt: createdAt(),
   updatedAt: updatedAt(),
@@ -216,6 +245,11 @@ export const clients = sqliteTable(
     status: text('status', { enum: ['lead', 'active', 'dormant', 'archived'] })
       .notNull()
       .default('active'),
+    /**
+     * Some clients are chased by their own accounts payable calendar and a
+     * reminder only irritates them. Per-client opt-out, on by default.
+     */
+    remindersEnabled: integer('reminders_enabled', { mode: 'boolean' }).notNull().default(true),
     source: text('source').notNull().default(''),
     notes: text('notes').notNull().default(''),
     tags: text('tags').notNull().default('[]'),
@@ -334,6 +368,15 @@ export const invoices = sqliteTable(
     viewedAt: text('viewed_at'),
     remindersSent: integer('reminders_sent').notNull().default(0),
     lastReminderAt: text('last_reminder_at'),
+    /**
+     * Which rung of the ladder was last sent, e.g. `before-3` or `after-14`.
+     * Recorded so a sweep that runs twice in a day, or after a gap, does not
+     * send the same reminder again — the day count alone cannot tell you
+     * whether you already chased on day 7.
+     */
+    lastReminderStage: text('last_reminder_stage'),
+    /** Stop chasing this one specifically — a payment plan, a dispute. */
+    remindersPaused: integer('reminders_paused', { mode: 'boolean' }).notNull().default(false),
 
     stripePaymentIntentId: text('stripe_payment_intent_id'),
     stripePaymentLinkUrl: text('stripe_payment_link_url'),
@@ -390,6 +433,8 @@ export const payments = sqliteTable(
       .default('bank-transfer'),
     /** Merchant/processing fee deducted before the money landed. */
     fee: integer('fee').notNull().default(0),
+    /** Rate converting this payment into the tax-residence currency. */
+    fxRateToResidence: real('fx_rate_to_residence').notNull().default(1),
     reference: text('reference').notNull().default(''),
     stripeChargeId: text('stripe_charge_id'),
     notes: text('notes').notNull().default(''),
@@ -398,6 +443,18 @@ export const payments = sqliteTable(
   (t) => [
     index('payments_invoice_idx').on(t.invoiceId),
     index('payments_user_date_idx').on(t.userId, t.receivedOn),
+    /**
+     * A Stripe charge settles exactly once. `recordPayment` checks for the id
+     * before inserting, but that is a read followed by a write: one card
+     * payment fires both `checkout.session.completed` and
+     * `payment_intent.succeeded`, and Stripe retries on any non-2xx, so two
+     * deliveries can race, both read "not found", and both credit the
+     * invoice. The database is the only place that can settle it.
+     *
+     * SQLite treats NULLs as distinct in a unique index, so the many payments
+     * with no charge id — bank transfers, cash — are unaffected.
+     */
+    uniqueIndex('payments_stripe_charge_idx').on(t.stripeChargeId),
   ],
 );
 
@@ -428,6 +485,13 @@ export const expenses = sqliteTable(
 
     currency: text('currency', { enum: ['NZD', 'AUD'] }).notNull().default('NZD'),
     jurisdiction: text('jurisdiction', { enum: ['NZ', 'AU'] }).notNull().default('NZ'),
+    /**
+     * Rate converting this expense into the tax-residence currency, as it
+     * stood when the money was spent. Same reasoning as on an invoice: the
+     * rate on the day is the one the return uses, so it is stored rather
+     * than looked up later.
+     */
+    fxRateToResidence: real('fx_rate_to_residence').notNull().default(1),
 
     /** Share that is business use, 0..1. */
     businessUsePercent: real('business_use_percent').notNull().default(1),
@@ -445,6 +509,13 @@ export const expenses = sqliteTable(
     }),
 
     receiptKey: text('receipt_key'),
+    /**
+     * What the vision model read off the receipt, as JSON, alongside what was
+     * actually saved. Kept so a figure that turns out wrong can be traced to
+     * a misread rather than a typo — and so the picture, the reading and the
+     * record stay together for as long as the records must be retained.
+     */
+    receiptExtraction: text('receipt_extraction'),
     notes: text('notes').notNull().default(''),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -528,18 +599,37 @@ export const incomeSources = sqliteTable(
       enum: ['employment', 'interest', 'dividends', 'rental', 'foreign', 'other'],
     }).notNull(),
     label: text('label').notNull(),
-    /** Gross amount before any withholding. */
+    /**
+     * The period the income was actually earned over, inclusive. This is what
+     * makes part-time or seasonal work usable: the NZ tax year (1 Apr-31 Mar)
+     * and the AU financial year (1 Jul-30 Jun) do not line up, so a period of
+     * work is apportioned across whichever years it overlaps rather than
+     * being dumped whole into one label. Null on rows created before periods
+     * existed, which fall back to the whole of `taxYear`.
+     */
+    earnedFrom: text('earned_from'),
+    earnedTo: text('earned_to'),
+    /** Gross amount before any withholding, in `currency`. */
     grossAmount: integer('gross_amount').notNull().default(0),
-    /** PAYE (NZ) or PAYG withholding (AU) already taken. */
+    /** PAYE (NZ) or PAYG withholding (AU) already taken, in `currency`. */
     taxWithheld: integer('tax_withheld').notNull().default(0),
     /** ACC earner levy collected through PAYE, NZ employment only. */
     accLevyWithheld: integer('acc_levy_withheld').notNull().default(0),
     currency: text('currency', { enum: ['NZD', 'AUD'] }).notNull().default('NZD'),
+    /**
+     * Rate that converts `currency` into the tax-residence currency. Stored
+     * per row because the rate at the time of the pay period is what the
+     * return uses, not today's rate. 1 when the two currencies are the same.
+     */
+    fxRateToResidence: real('fx_rate_to_residence').notNull().default(1),
     notes: text('notes').notNull().default(''),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
-  (t) => [index('income_sources_user_year_idx').on(t.userId, t.taxYear)],
+  (t) => [
+    index('income_sources_user_year_idx').on(t.userId, t.taxYear),
+    index('income_sources_user_period_idx').on(t.userId, t.earnedFrom),
+  ],
 );
 
 /* ------------------------------------------------------------------ */
@@ -604,6 +694,67 @@ export const projects = sqliteTable(
 );
 
 /* ------------------------------------------------------------------ */
+/* Bank statements                                                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Transactions imported from a bank CSV.
+ *
+ * Kept as their own records rather than turned straight into payments,
+ * because most lines on a statement are not payments at all and the ones that
+ * are still need a person to agree which invoice they settle. A row here is
+ * evidence; a payment is a decision.
+ */
+export const bankTransactions = sqliteTable(
+  'bank_transactions',
+  {
+    id: id(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+
+    /** What the user called this import, e.g. "ASB business — March". */
+    source: text('source').notNull().default(''),
+    /** ISO date of the transaction, as the bank stated it. */
+    occurredOn: text('occurred_on').notNull(),
+    /** Signed cents. Positive is money in. */
+    amount: integer('amount').notNull(),
+    currency: text('currency', { enum: ['NZD', 'AUD'] }).notNull().default('NZD'),
+    description: text('description').notNull().default(''),
+    reference: text('reference').notNull().default(''),
+
+    /**
+     * Stable identity within this account, so re-importing an overlapping
+     * statement updates rather than duplicates. See src/lib/bank/csv.ts.
+     */
+    fingerprint: text('fingerprint').notNull(),
+
+    status: text('status', { enum: ['unmatched', 'matched', 'ignored'] })
+      .notNull()
+      .default('unmatched'),
+    matchedInvoiceId: text('matched_invoice_id').references(() => invoices.id, {
+      onDelete: 'set null',
+    }),
+    matchedPaymentId: text('matched_payment_id').references(() => payments.id, {
+      onDelete: 'set null',
+    }),
+    /** Why it was matched, kept so a wrong match can be understood later. */
+    matchReason: text('match_reason').notNull().default(''),
+
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    // One row per transaction per account, enforced rather than hoped for.
+    uniqueIndex('bank_tx_fingerprint_idx').on(t.userId, t.fingerprint),
+    index('bank_tx_user_status_idx').on(t.userId, t.status),
+    index('bank_tx_user_date_idx').on(t.userId, t.occurredOn),
+  ],
+);
+
+export type BankTransaction = typeof bankTransactions.$inferSelect;
+
+/* ------------------------------------------------------------------ */
 /* Proposals and prospecting                                           */
 /* ------------------------------------------------------------------ */
 
@@ -640,6 +791,42 @@ export const proposals = sqliteTable(
     convertedInvoiceId: text('converted_invoice_id').references(() => invoices.id, {
       onDelete: 'set null',
     }),
+
+    /* ---------------- Quoting ---------------- */
+
+    /**
+     * Its own number series, separate from invoices. A quote is not an
+     * invoice and must not consume an invoice number — a gap in the invoice
+     * sequence is the first thing an auditor asks about, and every quote that
+     * was never accepted would leave one.
+     */
+    number: text('number').notNull().default(''),
+
+    /** Priced the same way an invoice is, through the same GST engine. */
+    jurisdiction: text('jurisdiction', { enum: ['NZ', 'AU'] }).notNull().default('NZ'),
+    gstTreatment: text('gst_treatment', {
+      enum: ['standard', 'zero-rated-export', 'exempt', 'not-registered'],
+    })
+      .notNull()
+      .default('standard'),
+    subtotal: integer('subtotal').notNull().default(0),
+    gstAmount: integer('gst_amount').notNull().default(0),
+    total: integer('total').notNull().default(0),
+    fxRateToResidence: real('fx_rate_to_residence').notNull().default(1),
+
+    reference: text('reference').notNull().default(''),
+    notes: text('notes').notNull().default(''),
+    terms: text('terms').notNull().default(''),
+
+    /**
+     * Who accepted it and from where. A quote accepted in a browser is the
+     * agreement the invoice rests on, so the record of that acceptance is
+     * worth as much as the figures.
+     */
+    acceptedName: text('accepted_name').notNull().default(''),
+    acceptedIp: text('accepted_ip'),
+    declineReason: text('decline_reason').notNull().default(''),
+
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -648,6 +835,29 @@ export const proposals = sqliteTable(
     uniqueIndex('proposals_public_token_idx').on(t.publicToken),
   ],
 );
+
+/** Line items on a quote. Mirrors invoice_lines so conversion is a copy. */
+export const proposalLines = sqliteTable(
+  'proposal_lines',
+  {
+    id: id(),
+    proposalId: text('proposal_id')
+      .notNull()
+      .references(() => proposals.id, { onDelete: 'cascade' }),
+    position: integer('position').notNull().default(0),
+    description: text('description').notNull(),
+    /** Thousandths, as on an invoice. 1500 == 1.5 */
+    quantity: integer('quantity').notNull().default(1000),
+    unit: text('unit').notNull().default('hours'),
+    unitPrice: integer('unit_price').notNull().default(0),
+    discount: real('discount').notNull().default(0),
+    lineTotal: integer('line_total').notNull().default(0),
+    taxable: integer('taxable', { mode: 'boolean' }).notNull().default(true),
+  },
+  (t) => [index('proposal_lines_proposal_idx').on(t.proposalId, t.position)],
+);
+
+export type ProposalLine = typeof proposalLines.$inferSelect;
 
 /**
  * Businesses surfaced by the AI prospecting mode — a niche in a region with

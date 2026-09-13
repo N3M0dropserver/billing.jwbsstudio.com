@@ -32,5 +32,6 @@ const error = Astro.url.searchParams.get('error');
     clients={clientRows}
     defaultJurisdiction={jurisdiction}
     gstRegistered={jurisdiction === 'NZ' ? settings.nzGstRegistered : settings.auGstRegistered}
+    residenceCurrency={settings.taxResidence === 'NZ' ? 'NZD' : 'AUD'}
   />
 </AppLayout>

@@ -215,6 +215,24 @@ const address = [client.addressLine1, client.addressLine2, client.city, client.p
             receiving the work offshore — the billing address on its own is thin.
           </p>
         )}
+
+        <form
+          method="post"
+          action={`/api/clients/${client.id}/reminders`}
+          class="mt-3 border-t pt-3"
+          style="border-color: var(--border)"
+        >
+          <input type="hidden" name="enabled" value={client.remindersEnabled ? 'no' : 'yes'} />
+          <p class="muted mb-2 text-xs">
+            {client.remindersEnabled
+              ? 'Included in automatic payment reminders.'
+              : 'Excluded from automatic payment reminders — you chase this one yourself.'}
+          </p>
+          <button
+            class="muted w-full rounded-md border px-2 py-1.5 text-xs hover:opacity-80"
+            style="border-color: var(--border)"
+          >{client.remindersEnabled ? 'Exclude from reminders' : 'Include in reminders'}</button>
+        </form>
       </Card>
 
       {client.notes && (

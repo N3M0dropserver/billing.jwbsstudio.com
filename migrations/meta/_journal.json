@@ -15,6 +15,55 @@
       "when": 1789188149643,
       "tag": "0001_login_tokens",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1789225165714,
+      "tag": "0002_income_source_period_fx",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1789263365716,
+      "tag": "0003_expense_payment_fx",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1789263632155,
+      "tag": "0004_payment_charge_unique",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1789264308211,
+      "tag": "0005_payment_reminders",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1789264705202,
+      "tag": "0006_receipt_extraction",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1789265014438,
+      "tag": "0007_bank_transactions",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1789265361949,
+      "tag": "0008_quotes",
+      "breakpoints": true
     }
   ]
 }

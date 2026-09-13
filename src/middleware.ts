@@ -14,8 +14,14 @@ const PUBLIC_PREFIXES = [
   '/api/auth/login',
   '/api/auth/magic-link',
   '/api/stripe/webhook',
+  // Started from the public pay page by the client, who has no session and
+  // never will. It takes no id of its own — the invoice comes from the same
+  // public token the page was reached by, so this exposes nothing the page
+  // does not already show.
+  '/api/stripe/checkout',
   '/pay/', // public invoice view + payment page
-  '/proposal/', // public proposal view
+  '/proposal/', // public quote view + PDF
+  '/api/quotes/respond', // accept or decline, from that page
   '/_astro/',
   '/favicon',
   '/robots.txt',

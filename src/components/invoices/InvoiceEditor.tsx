@@ -41,6 +41,8 @@ interface Props {
   unbilled: UnbilledEntry[];
   defaults: {
     currency: 'NZD' | 'AUD';
+    /** Currency the tax figures are kept in — follows tax residence. */
+    residenceCurrency: 'NZD' | 'AUD';
     jurisdiction: 'NZ' | 'AU';
     paymentTermsDays: number;
     hourlyRate: number;
@@ -55,6 +57,7 @@ interface Props {
     currency: 'NZD' | 'AUD';
     jurisdiction: 'NZ' | 'AU';
     gstTreatment: string;
+    fxRateToResidence: number;
     reference: string;
     notes: string;
     terms: string;
@@ -97,7 +100,28 @@ export default function InvoiceEditor({ clients, unbilled, defaults, invoice }: 
   const [reference, setReference] = useState(invoice?.reference ?? '');
   const [notes, setNotes] = useState(invoice?.notes ?? '');
   const [terms, setTerms] = useState(invoice?.terms ?? defaults.terms);
-  const [termsDays, setTermsDays] = useState(String(defaults.paymentTermsDays));
+  /**
+   * When editing, the payment terms are whatever the stored due date actually
+   * says — recomputing them from the default would silently move the due date
+   * of an invoice the client has already been given.
+   */
+  const [termsDays, setTermsDays] = useState(
+    String(
+      invoice
+        ? Math.max(
+            Math.round(
+              (Date.parse(`${invoice.dueOn}T00:00:00Z`) -
+                Date.parse(`${invoice.issuedOn}T00:00:00Z`)) /
+                86_400_000,
+            ),
+            0,
+          )
+        : defaults.paymentTermsDays,
+    ),
+  );
+  const [fxRate, setFxRate] = useState(
+    invoice && invoice.fxRateToResidence !== 1 ? String(invoice.fxRateToResidence) : '',
+  );
   const [importedIds, setImportedIds] = useState<string[]>([]);
   const [lines, setLines] = useState<Line[]>(
     invoice?.lines.length
@@ -395,6 +419,27 @@ export default function InvoiceEditor({ clients, unbilled, defaults, invoice }: 
                 <option value="AUD">AUD</option>
               </select>
             </div>
+
+            {currency !== defaults.residenceCurrency && (
+              <div>
+                <label htmlFor="fxRateToResidence" className="mb-1.5 block text-xs font-medium">
+                  Rate to {defaults.residenceCurrency}
+                </label>
+                <input
+                  id="fxRateToResidence" name="fxRateToResidence" className="field tabular"
+                  inputMode="decimal" placeholder="1.0900"
+                  value={fxRate} onChange={(e) => setFxRate(e.target.value)}
+                />
+                <p className="muted mt-1 text-xs">
+                  {fxRate.trim()
+                    ? `${money(totals.total, currency)} counts as about ${money(
+                        Math.round(totals.total * (Number.parseFloat(fxRate) || 0)),
+                        defaults.residenceCurrency,
+                      )} in your tax figures.`
+                    : `Your tax figures are kept in ${defaults.residenceCurrency}. Without a rate this invoice is counted at face value, which overstates or understates your income by the whole spread. Use the rate on the issue date — that is the one the return uses.`}
+                </p>
+              </div>
+            )}
 
             <div>
               <label htmlFor="gstTreatment" className="mb-1.5 block text-xs font-medium">GST</label>

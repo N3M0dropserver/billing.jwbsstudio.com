@@ -14,22 +14,30 @@ import {
   getUpcoming,
   getBankedTotals,
 } from '~/lib/queries/dashboard';
-import { formatMoneyShort, formatMoney, formatPercent } from '~/lib/tax/money';
+import { formatMoneyShort, formatMoney, formatMoneyWithCode, formatPercent } from '~/lib/tax/money';
 
 const user = Astro.locals.user!;
 const database = db();
 const settings = await getSettings(database, user.id);
 const position = await buildTaxPosition(database, settings);
 
+/**
+ * Every headline figure is expressed in the TAX RESIDENCE currency, not the
+ * invoicing default — the two are separate settings and can disagree, and the
+ * totals have already been converted into the residence currency by the
+ * queries. Labelling a converted figure with the invoicing default was how
+ * NZD and AUD came to be added together and shown as one number.
+ */
+const currency = position.invoices.residenceCurrency;
+
 const [series, byClient, time, upcoming, banked] = await Promise.all([
-  getCumulativeSeries(database, user.id, position.range),
-  getRevenueByClient(database, user.id, position.range, 5),
+  getCumulativeSeries(database, user.id, position.range, currency),
+  getRevenueByClient(database, user.id, position.range, currency, 5),
   getTimeSummary(database, user.id, position.range, settings.defaultHourlyRate),
   getUpcoming(database, user.id, 5),
-  getBankedTotals(database, user.id, position.range),
+  getBankedTotals(database, user.id, position.range, currency),
 ]);
 
-const currency = settings.defaultCurrency;
 const { invoices: inv, result } = position;
 const netProfit =
   settings.taxResidence === 'NZ' ? result.nz.netBusinessProfit : result.au.netBusinessProfit;
@@ -38,6 +46,28 @@ const yearLabel =
   settings.taxResidence === 'NZ'
     ? `NZ tax year ${position.range.year} (to 31 Mar)`
     : `AU financial year ${position.range.year} (to 30 Jun)`;
+
+/**
+ * When more than one currency is in play, say so on the figure itself. A
+ * converted total is a true number but not one that appears on any invoice,
+ * and the reader is entitled to know which it is looking at.
+ */
+const foreignSlices = position.invoices.byCurrency.filter((s) => s.currency !== currency);
+const mixedCurrency =
+  foreignSlices.length > 0
+    ? `incl. ${foreignSlices
+        .map((s) => formatMoneyWithCode(s.invoiced, s.currency))
+        .join(', ')} converted`
+    : null;
+
+/**
+ * A foreign-currency invoice left at a rate of exactly 1 was counted at face
+ * value, which is wrong by the whole spread. Worth one line rather than a
+ * silently wrong total.
+ */
+const unconverted =
+  position.invoices.unconvertedForeignCurrencyCount +
+  position.expenses.unconvertedForeignCurrencyCount;
 
 const hours = (minutes: number) => `${(minutes / 60).toFixed(1)}h`;
 const formatDate = (iso: string) =>
@@ -63,7 +93,9 @@ const today = new Date().toISOString().slice(0, 10);
     <Stat
       label="Invoiced"
       value={formatMoneyShort(inv.invoicedTotal, currency)}
-      hint={`${inv.invoiceCount} invoice${inv.invoiceCount === 1 ? '' : 's'} this year`}
+      hint={mixedCurrency
+        ? `${inv.invoiceCount} invoices · ${mixedCurrency}`
+        : `${inv.invoiceCount} invoice${inv.invoiceCount === 1 ? '' : 's'} this year`}
       href="/invoices"
     />
     <Stat
@@ -89,6 +121,28 @@ const today = new Date().toISOString().slice(0, 10);
       href="/tax"
     />
   </div>
+
+  {position.range.ratesAreProvisional && (
+    <p
+      class="mt-3 rounded-lg px-3.5 py-2.5 text-sm"
+      style="background: color-mix(in oklch, var(--color-overdue) 12%, transparent); color: var(--color-overdue)"
+    >
+      No {settings.taxResidence === 'NZ' ? 'IRD' : 'ATO'} rate table for {position.range.year} yet,
+      so the tax figures use the {position.range.ratesYear} rates. <a class="underline" href="/tax">See the tax page</a>.
+    </p>
+  )}
+
+  {unconverted > 0 && (
+    <p
+      class="mt-3 rounded-lg px-3.5 py-2.5 text-sm"
+      style="background: color-mix(in oklch, var(--color-overdue) 12%, transparent); color: var(--color-overdue)"
+    >
+      {unconverted} {unconverted === 1 ? 'record is' : 'records are'} in a currency other than
+      {' '}{currency} with no exchange rate recorded, so {unconverted === 1 ? 'it is' : 'they are'}
+      {' '}counted at face value. Set a rate on {unconverted === 1 ? 'it' : 'them'} to make these
+      figures right.
+    </p>
+  )}
 
   <div class="mt-4 grid gap-4 lg:grid-cols-3">
     <!-- Chart -->
@@ -187,7 +241,7 @@ const today = new Date().toISOString().slice(0, 10);
                   {item.label}
                 </a>
                 <span class="tabular shrink-0 font-medium">
-                  {formatMoneyShort(item.amount, currency)}
+                  {formatMoneyShort(item.amount, item.currency)}
                 </span>
                 <span
                   class="muted w-16 shrink-0 text-right text-xs"

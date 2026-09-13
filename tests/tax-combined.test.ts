@@ -84,10 +84,15 @@ describe('foreign tax credit', () => {
     expect(r.foreignTaxCredit.claimed).toBeGreaterThan(0);
   });
 
-  it('reduces the total liability by the credit claimed', () => {
-    const withoutCredit = calculateCombined({
+  it('taxes the foreign income at home first, then credits against it', () => {
+    const noForeign = calculateCombined({
       residence: 'NZ',
       nz: { ...nzBase, selfEmployedIncome: $(100_000) },
+      au: auBase,
+    });
+    const declaredButUncredited = calculateCombined({
+      residence: 'NZ',
+      nz: { ...nzBase, selfEmployedIncome: $(100_000), otherIncome: $(20_000) },
       au: auBase,
     });
     const withCredit = calculateCombined({
@@ -97,7 +102,55 @@ describe('foreign tax credit', () => {
       foreignIncomeInResidenceCurrency: $(20_000),
       foreignTaxPaidInResidenceCurrency: $(2_000),
     });
-    expect(withCredit.totalLiability).toBe(withoutCredit.totalLiability - $(2_000));
+
+    // The foreign income is in the NZ taxable base, not merely credited.
+    expect(withCredit.nz.taxableIncome).toBe($(120_000));
+    expect(withCredit.foreignIncomeTaxedAtHome).toBe($(20_000));
+    // Same liability as declaring it as other income, less the credit.
+    expect(withCredit.totalLiability).toBe(declaredButUncredited.totalLiability - $(2_000));
+    // And declaring foreign income must never LOWER the bill below the
+    // domestic-only position. That is what the old behaviour did.
+    expect(withCredit.totalLiability).toBeGreaterThan(noForeign.totalLiability);
+  });
+
+  it('caps the NZ credit at the effective rate on the foreign slice', () => {
+    const r = calculateCombined({
+      residence: 'NZ',
+      nz: { ...nzBase, selfEmployedIncome: $(100_000) },
+      au: auBase,
+      foreignIncomeInResidenceCurrency: $(20_000),
+      foreignTaxPaidInResidenceCurrency: $(15_000),
+    });
+    expect(r.foreignTaxCredit.method).toBe('nz-effective-rate');
+    expect(r.foreignTaxCredit.cap).toBe(Math.round($(20_000) * r.nz.effectiveRate));
+    expect(r.foreignTaxCredit.claimed).toBe(r.foreignTaxCredit.cap);
+  });
+
+  it('caps the AU credit incrementally, including the Medicare levy', () => {
+    const withForeign = calculateCombined({
+      residence: 'AU',
+      nz: nzBase,
+      au: { ...auBase, businessIncome: $(100_000) },
+      foreignIncomeInResidenceCurrency: $(20_000),
+      foreignTaxPaidInResidenceCurrency: $(15_000),
+    });
+    const withoutForeign = calculateCombined({
+      residence: 'AU',
+      nz: nzBase,
+      au: { ...auBase, businessIncome: $(100_000) },
+    });
+    const expected =
+      withForeign.au.incomeTax.total +
+      withForeign.au.medicareLevy -
+      (withoutForeign.au.incomeTax.total + withoutForeign.au.medicareLevy);
+
+    expect(withForeign.foreignTaxCredit.method).toBe('au-incremental');
+    expect(withForeign.foreignTaxCredit.cap).toBe(expected);
+    // Incremental sits at the margin, so it is the more generous of the two
+    // on a progressive scale — worth more than an average-rate cap.
+    expect(withForeign.foreignTaxCredit.cap).toBeGreaterThan(
+      Math.round($(20_000) * withForeign.au.effectiveRate),
+    );
   });
 
   it('never produces a negative total liability', () => {

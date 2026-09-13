@@ -5,7 +5,7 @@ import StatusBadge from '~/components/ui/StatusBadge.astro';
 import { eq, desc } from 'drizzle-orm';
 import { db, appUrl } from '~/lib/env';
 import { getSettings } from '~/lib/queries/settings';
-import { getInvoice } from '~/lib/invoices/service';
+import { getInvoice, editability } from '~/lib/invoices/service';
 import { deriveStatus } from '~/lib/invoices/calculate';
 import { payments } from '~/lib/db/schema';
 import { formatMoneyWithCode } from '~/lib/tax/money';
@@ -30,6 +30,12 @@ const publicUrl = invoice.publicToken ? `${appUrl()}/pay/${invoice.publicToken}`
 const sent = Astro.url.searchParams.get('sent');
 const reason = Astro.url.searchParams.get('reason');
 const paymentFlag = Astro.url.searchParams.get('payment');
+const saved = Astro.url.searchParams.get('saved');
+const statusChange = Astro.url.searchParams.get('status');
+const error = Astro.url.searchParams.get('error');
+
+const allowed = editability(invoice);
+const isCancelled = status === 'void' || status === 'written-off';
 
 const formatDate = (iso: string) =>
   new Date(`${iso}T00:00:00Z`).toLocaleDateString('en-NZ', {
@@ -49,6 +55,13 @@ const formatDate = (iso: string) =>
         Client view
       </a>
     )}
+    {allowed.canEdit && (
+      <a
+        href={`/invoices/${invoice.id}/edit`}
+        class="rounded-lg px-3.5 py-2 text-sm font-medium text-white"
+        style="background: var(--color-brand-600)"
+      >Edit</a>
+    )}
   </div>
 
   {sent === 'ok' && (
@@ -66,6 +79,34 @@ const formatDate = (iso: string) =>
   )}
   {paymentFlag === 'ok' && (
     <p class="card mb-4 px-4 py-3 text-sm" style="color: var(--color-paid)">Payment recorded.</p>
+  )}
+  {saved === '1' && (
+    <p class="card mb-4 px-4 py-3 text-sm" style="color: var(--color-paid)">
+      Invoice updated. The PDF will be regenerated next time it is downloaded or sent.
+    </p>
+  )}
+  {statusChange === 'void' && (
+    <p class="card mb-4 px-4 py-3 text-sm muted">
+      Voided. The number stays used so the sequence has no gap.
+    </p>
+  )}
+  {statusChange === 'written-off' && (
+    <p class="card mb-4 px-4 py-3 text-sm muted">
+      Written off as a bad debt. It is out of what you are owed, and the amount may be
+      deductible — <a class="underline" href="/tax">check the tax page</a>.
+    </p>
+  )}
+  {Astro.url.searchParams.get('reminders') === 'paused' && (
+    <p class="card mb-4 px-4 py-3 text-sm muted">Reminders paused for this invoice.</p>
+  )}
+  {Astro.url.searchParams.get('reminders') === 'resumed' && (
+    <p class="card mb-4 px-4 py-3 text-sm muted">Reminders resumed.</p>
+  )}
+  {statusChange === 'reinstate' && (
+    <p class="card mb-4 px-4 py-3 text-sm muted">Reinstated.</p>
+  )}
+  {error && (
+    <p class="card mb-4 px-4 py-3 text-sm" style="color: var(--color-overdue)">{error}</p>
   )}
 
   <div class="grid gap-4 lg:grid-cols-3">
@@ -230,6 +271,104 @@ const formatDate = (iso: string) =>
           <input readonly value={publicUrl} class="field text-xs" onclick="this.select()" />
         </Card>
       )}
+
+      {!isCancelled && invoice.status !== 'draft' && outstanding > 0 && (
+        <Card title="Automatic reminders">
+          <form method="post" action={`/api/invoices/${invoice.id}/reminders`}>
+            <input type="hidden" name="paused" value={invoice.remindersPaused ? 'no' : 'yes'} />
+            <p class="muted mb-3 text-xs">
+              {invoice.remindersPaused
+                ? 'Paused for this invoice. Nothing automatic will be sent about it.'
+                : settings.remindersEnabled
+                  ? `Chasing on the schedule set in Settings. ${invoice.remindersSent} sent so far.`
+                  : 'Automatic chasing is switched off for everything — turn it on in Settings.'}
+            </p>
+            <button
+              class="muted w-full rounded-lg border px-4 py-2 text-sm font-medium hover:opacity-80"
+              style="border-color: var(--border)"
+            >{invoice.remindersPaused ? 'Resume reminders' : 'Pause reminders for this invoice'}</button>
+          </form>
+        </Card>
+      )}
+
+      <Card
+        title={isCancelled ? 'Reinstate' : 'Cancel this invoice'}
+        subtitle={isCancelled
+          ? 'Put it back the way it was'
+          : 'Two different things, and a tax return treats them differently'}
+      >
+        {isCancelled ? (
+          <form method="post" action={`/api/invoices/${invoice.id}/status`}>
+            <input type="hidden" name="action" value="reinstate" />
+            <button class="muted w-full rounded-lg border px-4 py-2.5 text-sm font-medium hover:opacity-80" style="border-color: var(--border)">
+              Reinstate invoice
+            </button>
+          </form>
+        ) : (
+          <div class="space-y-4">
+            {invoice.status === 'draft' ? (
+              <form method="post" action={`/api/invoices/${invoice.id}/status`}>
+                <input type="hidden" name="action" value="delete-draft" />
+                <p class="muted mb-2 text-xs">
+                  This draft was never issued, so it can simply go. Any time entries on it go
+                  back to unbilled.
+                </p>
+                <button
+                  class="w-full rounded-lg border px-4 py-2.5 text-sm font-medium hover:opacity-80"
+                  style="border-color: var(--color-overdue); color: var(--color-overdue)"
+                  data-confirm="Delete this draft? Time entries on it return to unbilled."
+                >Delete draft</button>
+              </form>
+            ) : (
+              <>
+                <form method="post" action={`/api/invoices/${invoice.id}/status`} class="space-y-2">
+                  <input type="hidden" name="action" value="void" />
+                  <p class="muted text-xs">
+                    <strong>Void</strong> — it should never have been issued. It stops counting
+                    as income. The number stays used, so the sequence has no gap.
+                  </p>
+                  <input name="note" class="field text-xs" placeholder="Reason (optional)" />
+                  <button
+                    class="muted w-full rounded-lg border px-4 py-2 text-sm font-medium hover:opacity-80"
+                    style="border-color: var(--border)"
+                    data-confirm="Void this invoice? It stops counting as income."
+                  >Void</button>
+                </form>
+
+                <form
+                  method="post"
+                  action={`/api/invoices/${invoice.id}/status`}
+                  class="space-y-2 border-t pt-4"
+                  style="border-color: var(--border)"
+                >
+                  <input type="hidden" name="action" value="written-off" />
+                  <p class="muted text-xs">
+                    <strong>Write off</strong> — it was genuinely owed and will not be paid.
+                    It leaves what you are owed but stays as income, and the bad debt may be
+                    deductible in the year you write it off.
+                  </p>
+                  <input name="note" class="field text-xs" placeholder="Reason (optional)" />
+                  <button
+                    class="muted w-full rounded-lg border px-4 py-2 text-sm font-medium hover:opacity-80"
+                    style="border-color: var(--border)"
+                    data-confirm="Write this invoice off as a bad debt?"
+                  >Write off as bad debt</button>
+                </form>
+              </>
+            )}
+          </div>
+        )}
+      </Card>
     </div>
   </div>
+
+  <script is:inline>
+    // One confirmation for anything that changes an issued document.
+    document.addEventListener('submit', (e) => {
+      const form = e.target;
+      if (!(form instanceof HTMLFormElement)) return;
+      const button = form.querySelector('[data-confirm]');
+      if (button && !confirm(button.getAttribute('data-confirm'))) e.preventDefault();
+    });
+  </script>
 </AppLayout>
