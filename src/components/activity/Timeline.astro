@@ -10,19 +10,12 @@ import type { TimelineEntry } from '~/lib/activity/timeline';
 
 interface Props {
   entries: TimelineEntry[];
-  /** Show which invoice each row belongs to. Off on an invoice's own page. */
+  /** Link each row to its invoice. Off on an invoice's own page. */
   showInvoice?: boolean;
-  /** Show which client each row belongs to. Off on a client's own page. */
-  showClient?: boolean;
   emptyMessage?: string;
 }
 
-const {
-  entries,
-  showInvoice = false,
-  showClient = false,
-  emptyMessage = 'Nothing yet.',
-} = Astro.props;
+const { entries, showInvoice = false, emptyMessage = 'Nothing yet.' } = Astro.props;
 
 const TONE_COLOURS: Record<string, string> = {
   neutral: 'var(--text-muted)',
@@ -114,21 +107,11 @@ const formatDay = (iso: string) =>
 
             {entry.note && <p class="muted mt-0.5 text-sm leading-relaxed">{entry.note}</p>}
 
-            {(showInvoice || showClient) && (entry.invoiceNumber || entry.clientName) && (
-              <p class="muted mt-1 flex flex-wrap items-center gap-x-2 text-xs">
-                {showInvoice && entry.invoiceNumber && entry.invoiceId && (
-                  <a href={`/invoices/${entry.invoiceId}`} class="hover:underline">
-                    {entry.invoiceNumber}
-                  </a>
-                )}
-                {showInvoice && showClient && entry.invoiceNumber && entry.clientName && (
-                  <span aria-hidden="true">·</span>
-                )}
-                {showClient && entry.clientName && entry.clientId && (
-                  <a href={`/clients/${entry.clientId}`} class="hover:underline">
-                    {entry.clientName}
-                  </a>
-                )}
+            {showInvoice && entry.invoiceNumber && entry.invoiceId && (
+              <p class="mt-1 text-xs">
+                <a href={`/invoices/${entry.invoiceId}`} class="muted hover:underline">
+                  {entry.invoiceNumber}
+                </a>
               </p>
             )}
           </div>

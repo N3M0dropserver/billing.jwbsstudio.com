@@ -16,7 +16,7 @@ import {
   trackingPixelUrl,
   TRANSPARENT_GIF,
 } from '~/lib/activity/tracking';
-import { mergeTimeline, isActivityFilter, type TimelineEntry } from '~/lib/activity/timeline';
+import { mergeTimeline, type TimelineEntry } from '~/lib/activity/timeline';
 import { invoiceEmail } from '~/lib/mail/templates';
 
 describe('building an event row', () => {
@@ -275,7 +275,6 @@ describe('merging the two logs into one timeline', () => {
     invoiceId: null,
     invoiceNumber: null,
     clientId: null,
-    clientName: null,
   });
 
   it('interleaves both sources newest first', () => {
@@ -295,20 +294,5 @@ describe('merging the two logs into one timeline', () => {
 
   it('handles no entries at all', () => {
     expect(mergeTimeline([], [])).toEqual([]);
-  });
-});
-
-describe('the activity page filter', () => {
-  it('accepts only the filters the page offers', () => {
-    expect(isActivityFilter('all')).toBe(true);
-    expect(isActivityFilter('client')).toBe(true);
-    expect(isActivityFilter('money')).toBe(true);
-    expect(isActivityFilter('outbound')).toBe(true);
-  });
-
-  it('rejects anything else arriving in the query string', () => {
-    expect(isActivityFilter('everything')).toBe(false);
-    expect(isActivityFilter('')).toBe(false);
-    expect(isActivityFilter(null)).toBe(false);
   });
 });

@@ -11,7 +11,7 @@
 
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import type { Db } from '~/lib/db';
-import { clients, communications, invoiceEvents, invoices } from '~/lib/db/schema';
+import { communications, invoiceEvents, invoices } from '~/lib/db/schema';
 import {
   describeEventType,
   parseDetail,
@@ -31,12 +31,12 @@ export interface TimelineEntry {
   tone: EventTone;
   actor: InvoiceEventActor;
   source: 'invoice' | 'communication';
-  /** The raw type, for filtering and for the icon. */
+  /** The raw event or communication type, which chooses the icon. */
   kind: string;
   invoiceId: string | null;
+  /** Set only where the timeline spans more than one invoice. */
   invoiceNumber: string | null;
   clientId: string | null;
-  clientName: string | null;
 }
 
 /** How a hand-logged communication reads on the timeline. */
@@ -55,7 +55,7 @@ type CommunicationRow = typeof communications.$inferSelect;
 
 function fromEvent(
   row: EventRow,
-  context: { invoiceNumber?: string | null; clientName?: string | null } = {},
+  context: { invoiceNumber?: string | null } = {},
 ): TimelineEntry {
   const described = describeEventType(row.type);
   return {
@@ -70,14 +70,10 @@ function fromEvent(
     invoiceId: row.invoiceId,
     invoiceNumber: context.invoiceNumber ?? null,
     clientId: row.clientId,
-    clientName: context.clientName ?? null,
   };
 }
 
-function fromCommunication(
-  row: CommunicationRow,
-  context: { clientName?: string | null } = {},
-): TimelineEntry {
+function fromCommunication(row: CommunicationRow): TimelineEntry {
   const label = COMMUNICATION_LABELS[row.kind] ?? row.kind;
   return {
     id: row.id,
@@ -93,7 +89,6 @@ function fromCommunication(
     invoiceId: null,
     invoiceNumber: null,
     clientId: row.clientId,
-    clientName: context.clientName ?? null,
   };
 }
 
@@ -144,67 +139,6 @@ export async function clientTimeline(
   return mergeTimeline(
     eventRows.map((row) => fromEvent(row.event, { invoiceNumber: row.invoiceNumber })),
     commsRows.map((row) => fromCommunication(row)),
-  ).slice(0, limit);
-}
-
-export type ActivityFilter = 'all' | 'outbound' | 'client' | 'money';
-
-const FILTER_TYPES: Record<Exclude<ActivityFilter, 'all'>, InvoiceEventType[]> = {
-  outbound: ['sent', 'reminder-sent', 'send-failed'],
-  client: ['email-opened', 'viewed', 'pdf-downloaded', 'payment-started'],
-  money: ['payment-recorded', 'paid'],
-};
-
-export function isActivityFilter(value: string | null | undefined): value is ActivityFilter {
-  return value === 'all' || value === 'outbound' || value === 'client' || value === 'money';
-}
-
-/**
- * The whole account's activity feed.
- *
- * `outbound` and `client` are invoice events only, so hand-logged
- * communications are left out of those two deliberately — a logged phone call
- * is neither an email you sent nor something the client did to an invoice.
- */
-export async function recentActivity(
-  db: Db,
-  userId: string,
-  options: { limit?: number; filter?: ActivityFilter } = {},
-): Promise<TimelineEntry[]> {
-  const limit = options.limit ?? 100;
-  const filter = options.filter ?? 'all';
-
-  const conditions = [eq(invoices.userId, userId)];
-  if (filter !== 'all') conditions.push(inArray(invoiceEvents.type, FILTER_TYPES[filter]));
-
-  // Scoped through the invoice rather than invoice_events.user_id, because
-  // client-side events have no user on them at all.
-  const eventRows = await db
-    .select({ event: invoiceEvents, invoiceNumber: invoices.number, clientName: clients.name })
-    .from(invoiceEvents)
-    .innerJoin(invoices, eq(invoiceEvents.invoiceId, invoices.id))
-    .leftJoin(clients, eq(invoiceEvents.clientId, clients.id))
-    .where(and(...conditions))
-    .orderBy(desc(invoiceEvents.occurredAt))
-    .limit(limit);
-
-  const entries = eventRows.map((row) =>
-    fromEvent(row.event, { invoiceNumber: row.invoiceNumber, clientName: row.clientName }),
-  );
-
-  if (filter !== 'all') return mergeTimeline(entries).slice(0, limit);
-
-  const commsRows = await db
-    .select({ communication: communications, clientName: clients.name })
-    .from(communications)
-    .leftJoin(clients, eq(communications.clientId, clients.id))
-    .where(eq(communications.userId, userId))
-    .orderBy(desc(communications.occurredAt))
-    .limit(limit);
-
-  return mergeTimeline(
-    entries,
-    commsRows.map((row) => fromCommunication(row.communication, { clientName: row.clientName })),
   ).slice(0, limit);
 }
 

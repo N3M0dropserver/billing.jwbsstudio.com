@@ -31,8 +31,10 @@ scaffolding for an AI prospecting mode (see *Known limitations*).
 
 **Activity log** — what you sent and what the client did with it: invoice sent,
 reminder sent, email opened, web invoice viewed, PDF downloaded, card payment
-started, payment recorded. Per invoice, per client, and as one account-wide
-feed. See *The activity log* for what each signal is actually worth.
+started, payment recorded. It lives where the question gets asked: the full
+history on the invoice page, and the client's own history — invoice events
+interleaved with the calls and notes you logged — on the client page. See
+*The activity log* for what each signal is actually worth.
 
 **Time** — a timer that survives closing the tab, manual entry, and one-click
 conversion of unbilled time into an invoice.
@@ -290,9 +292,14 @@ Three logs exist, and they are not the same thing:
 The third is the new one, and it exists because neither of the others can
 answer "INV-0042 went out Tuesday, the reminder Friday, and they opened both
 but have never opened the web invoice" — which is what you want to know before
-chasing a payment. The Activity page merges `invoice_events` and
-`communications` into one feed; the client and invoice pages show the same
-merge scoped to one record.
+chasing a payment.
+
+There is no separate activity screen, deliberately: the log is only useful
+next to the thing it describes. The invoice page carries that invoice's
+history, with an engagement summary in the card header — "2 web views · 1 PDF
+download", or "Sent, but the client has not opened it yet". The client page
+carries theirs, merging `invoice_events` with `communications` so a logged
+phone call sits in sequence with the reminder that prompted it.
 
 ### What each signal is worth
 
@@ -459,6 +466,6 @@ src/
   pages/          Astro routes and API endpoints
   components/     Astro components and React islands
 migrations/       D1 migrations
-tests/            263 tests, mostly the tax engine
+tests/            261 tests, mostly the tax engine
 docs/             the tax research
 ```
