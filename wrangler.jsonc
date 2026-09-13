@@ -43,6 +43,11 @@
                 "name": "CAMPAIGN_AGENT",
                 "class_name": "CampaignAgent",
                 "script_name": "jwbs-growth-agent"
+            },
+            {
+                "name": "RESEARCH_AGENT",
+                "class_name": "ResearchAgent",
+                "script_name": "jwbs-growth-agent"
             }
         ]
     },

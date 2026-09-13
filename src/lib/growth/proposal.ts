@@ -22,7 +22,7 @@ import { MODELS, type AiResult } from '../ai/index';
 import { trackedGenerateJson, type AiUsageContext } from '../ai/usage';
 import { sendMail, type SendResult } from '../mail/index';
 import type { SiteAudit } from './assess';
-import type { DesignPlanDraft } from './qualify';
+import { withGuidance, type DesignPlanDraft } from './qualify';
 
 export interface ProposalDraft {
   subject: string;
@@ -44,6 +44,8 @@ export interface ProposalInput {
   signature: string;
   /** What the designer can actually deliver, from the brief. */
   capabilities: string;
+  /** Skills and remembered notes, rendered by the engine. */
+  guidance?: string;
   /** Where to book the cost of this call. */
   usage: AiUsageContext;
 }
@@ -104,7 +106,13 @@ export async function draftProposal(
 
   const result = await trackedGenerateJson<{ subject?: unknown; body?: unknown; page_body?: unknown }>(
     ai,
-    { system: SYSTEM, prompt, model: MODELS.text, maxTokens: 1200, temperature: 0.75 },
+    {
+      system: withGuidance(SYSTEM, input.guidance),
+      prompt,
+      model: MODELS.text,
+      maxTokens: 1200,
+      temperature: 0.75,
+    },
     input.usage,
   );
 

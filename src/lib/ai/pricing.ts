@@ -56,6 +56,15 @@ export const MODEL_PRICING: Record<string, ModelPrice> = {
     confident: false,
     note: 'verify — derived from neuron pricing, not a published token rate',
   },
+  '@cf/baai/bge-base-en-v1.5': {
+    inputCentsPerMillion: 1.2,
+    // An embedding has no completion side, so this rate is never exercised —
+    // it matches the input rate rather than sitting at zero so the table's
+    // "output is never cheaper than input" invariant still holds.
+    outputCentsPerMillion: 1.2,
+    confident: false,
+    note: 'verify — derived from neuron pricing, not a published token rate',
+  },
 };
 
 /** A deliberately pessimistic stand-in for a model we have no rate for. */

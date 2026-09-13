@@ -1,7 +1,7 @@
 import type { APIRoute } from 'astro';
 import { eq } from 'drizzle-orm';
 import { db } from '~/lib/env';
-import { settings } from '~/lib/db/schema';
+import { BROWSER_MODES, SELF_IMPROVE_MODES, settings } from '~/lib/db/schema';
 import { getSettings } from '~/lib/queries/settings';
 import { policyFromForm, serialisePolicy } from '~/lib/growth/policy';
 import { toProviderName } from '~/lib/growth/discovery/index';
@@ -14,6 +14,11 @@ function cleanHost(value: string): string {
   return /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(host) ? host : '';
 }
 
+/** Narrow a submitted value to one of a fixed set, or fall back. */
+function oneOf<T extends string>(value: unknown, allowed: readonly T[], fallback: T): T {
+  return allowed.includes(value as T) ? (value as T) : fallback;
+}
+
 export const POST: APIRoute = async ({ request, locals, redirect }) => {
   const user = locals.user;
   if (!user) return redirect('/login', 302);
@@ -24,6 +29,8 @@ export const POST: APIRoute = async ({ request, locals, redirect }) => {
   const text = (key: string, max: number) => String(form.get(key) ?? '').trim().slice(0, max);
 
   const cap = Number.parseInt(String(form.get('outreachDailyCap') ?? ''), 10);
+  const stepBudget = Number.parseInt(String(form.get('agentStepBudget') ?? ''), 10);
+  const researchCap = Number.parseInt(String(form.get('agentResearchDailyCap') ?? ''), 10);
   const cacheHours = Number.parseInt(String(form.get('aiCacheTtlHours') ?? ''), 10);
   const host = cleanHost(text('demoHost', 200));
   const provider =
@@ -46,6 +53,20 @@ export const POST: APIRoute = async ({ request, locals, redirect }) => {
       aiCacheTtlHours: Number.isFinite(cacheHours)
         ? Math.min(Math.max(cacheHours, 0), 720)
         : current.aiCacheTtlHours,
+
+      agentBrowserMode: oneOf(form.get('agentBrowserMode'), BROWSER_MODES, current.agentBrowserMode),
+      agentStepBudget: Number.isFinite(stepBudget)
+        ? Math.min(Math.max(stepBudget, 1), 24)
+        : current.agentStepBudget,
+      // An unticked checkbox is not submitted at all, so absence is "off"
+      // rather than "unchanged" — which is only correct because both boxes
+      // are always rendered on the form that posts here.
+      agentMemoryEnabled: form.get('agentMemoryEnabled') === 'on',
+      agentSkillsEnabled: form.get('agentSkillsEnabled') === 'on',
+      agentSelfImprove: oneOf(form.get('agentSelfImprove'), SELF_IMPROVE_MODES, current.agentSelfImprove),
+      agentResearchDailyCap: Number.isFinite(researchCap)
+        ? Math.min(Math.max(researchCap, 0), 200)
+        : current.agentResearchDailyCap,
       updatedAt: new Date().toISOString(),
     })
     .where(eq(settings.id, current.id));

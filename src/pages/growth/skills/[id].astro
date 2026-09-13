@@ -1,0 +1,101 @@
+---
+import AppLayout from '~/layouts/AppLayout.astro';
+import Card from '~/components/ui/Card.astro';
+import SkillForm from '~/components/growth/SkillForm.astro';
+import { db } from '~/lib/env';
+import { getSkill, skillRevisions } from '~/lib/agent/skills';
+
+const user = Astro.locals.user!;
+const database = db();
+const id = Astro.params.id!;
+
+const skill = await getSkill(database, user.id, id);
+if (!skill) return Astro.redirect('/growth/skills', 302);
+
+const revisions = await skillRevisions(database, skill.id);
+const saved = Astro.url.searchParams.get('saved');
+const error = Astro.url.searchParams.get('error');
+---
+
+<AppLayout title={skill.name} subtitle={`Skill · ${skill.slug} · version ${skill.version}`}>
+  <div slot="actions">
+    <a href="/growth/skills" class="muted rounded-lg border px-3 py-2 text-sm" style="border-color: var(--border)">All skills</a>
+  </div>
+
+  <div class="space-y-4">
+    {saved && <p class="muted rounded-lg px-4 py-3 text-sm" style="background: var(--surface-sunken)" role="status">Saved.</p>}
+    {error && (
+      <p class="rounded-lg px-4 py-3 text-sm" style="background: color-mix(in oklch, var(--color-overdue) 12%, transparent); color: var(--color-overdue)" role="alert">{error}</p>
+    )}
+
+    {skill.status === 'proposed' && (
+      <div class="rounded-lg px-4 py-3 text-sm" style="background: color-mix(in oklch, var(--color-owing) 12%, transparent); color: var(--color-owing)">
+        <p class="font-medium">The agent wrote this for itself, and nothing loads it yet.</p>
+        {skill.rationale && <p class="mt-1 text-xs">Its reason: “{skill.rationale}”</p>}
+      </div>
+    )}
+
+    <!--
+      Every button here names the action. There is deliberately no hidden
+      `action` field: a hidden input would be submitted alongside the button
+      that was pressed and, being first in the form, would win — so Delete
+      would silently save instead.
+    -->
+    <form method="post" action="/api/agent/skills" class="space-y-4">
+      <Card title="The skill">
+        <SkillForm skill={skill} />
+      </Card>
+
+      <div class="flex flex-wrap gap-2">
+        <button name="action" value="save" class="rounded-lg px-4 py-2.5 text-sm font-medium text-white" style="background: var(--color-brand-600)">
+          Save {skill.status === 'proposed' ? 'and approve' : 'changes'}
+        </button>
+        <button name="action" value={skill.locked ? 'unlock' : 'lock'} class="muted rounded-lg border px-4 py-2.5 text-sm" style="border-color: var(--border)">
+          {skill.locked ? 'Unlock' : 'Lock so the agent cannot change it'}
+        </button>
+        <button name="action" value="archive" class="muted rounded-lg border px-4 py-2.5 text-sm" style="border-color: var(--border)">Archive</button>
+        <button name="action" value="delete" class="muted rounded-lg border px-4 py-2.5 text-sm" style="border-color: var(--color-overdue); color: var(--color-overdue)">Delete</button>
+      </div>
+    </form>
+
+    <Card title="How it has done" subtitle="Crude, and better than guessing">
+      <dl class="grid grid-cols-3 gap-4 text-sm">
+        <div><dt class="muted text-xs">Loaded</dt><dd class="tabular font-medium">{skill.useCount}</dd></div>
+        <div><dt class="muted text-xs">In runs that finished</dt><dd class="tabular font-medium">{skill.successCount}</dd></div>
+        <div><dt class="muted text-xs">Last loaded</dt><dd class="text-xs">{skill.lastUsedAt ? skill.lastUsedAt.slice(0, 16).replace('T', ' ') : 'never'}</dd></div>
+      </dl>
+    </Card>
+
+    {revisions.length > 0 && (
+      <Card title="History" subtitle="Every version that was replaced, newest first">
+        <ul class="space-y-3">
+          {revisions.map((revision) => (
+            <li class="rounded-lg border p-3.5" style="border-color: var(--border)">
+              <div class="flex items-start justify-between gap-3">
+                <div class="min-w-0">
+                  <p class="text-sm font-medium">Version {revision.version}</p>
+                  <p class="muted text-xs">
+                    {revision.author === 'agent' ? 'Written by the agent' : 'Written by you'} ·
+                    {' '}{revision.createdAt.slice(0, 16).replace('T', ' ')}
+                    {revision.note && ` · ${revision.note}`}
+                  </p>
+                </div>
+                <form method="post" action="/api/agent/skills" class="shrink-0">
+                  <input type="hidden" name="id" value={skill.id} />
+                  <input type="hidden" name="version" value={revision.version} />
+                  <button name="action" value="revert" class="muted rounded-lg border px-2.5 py-1.5 text-xs" style="border-color: var(--border)">
+                    Put this back
+                  </button>
+                </form>
+              </div>
+              <details class="mt-2">
+                <summary class="muted cursor-pointer text-xs">What it said</summary>
+                <pre class="muted mt-1 max-h-72 overflow-auto rounded p-2 text-[11px] whitespace-pre-wrap" style="background: var(--surface-sunken)">{revision.instructions}</pre>
+              </details>
+            </li>
+          ))}
+        </ul>
+      </Card>
+    )}
+  </div>
+</AppLayout>

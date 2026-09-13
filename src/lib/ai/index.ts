@@ -12,6 +12,15 @@ export const MODELS = {
   text: '@cf/meta/llama-3.3-70b-instruct-fp8-fast',
   /** Cheaper, for classification and scoring. */
   fast: '@cf/meta/llama-3.1-8b-instruct',
+  /**
+   * The agent loop's model. Tool calling is the whole point of it, so this
+   * is deliberately a separate entry from `text` even though they are the
+   * same model today — the day a better tool-caller appears, the loop moves
+   * and the pipeline's drafting does not.
+   */
+  tools: '@cf/meta/llama-3.3-70b-instruct-fp8-fast',
+  /** Memory recall. 768 dimensions, cheap enough to run on every write. */
+  embedding: '@cf/baai/bge-base-en-v1.5',
 } as const;
 
 export type AiResult<T> =

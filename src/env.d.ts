@@ -54,6 +54,11 @@ interface Env {
    * this Worker and only the stub type is available here.
    */
   CAMPAIGN_AGENT: DurableObjectNamespace;
+  /**
+   * The research agent's namespace, from the same Worker. One object per
+   * research task.
+   */
+  RESEARCH_AGENT: DurableObjectNamespace;
 
   APP_NAME: string;
   APP_URL: string;
@@ -88,9 +93,22 @@ interface Env {
    * Only needed when demo subdomains get their own DNS records rather than
    * being covered by a wildcard. The token needs Zone:DNS:Edit on that zone
    * and nothing else.
+   *
+   * The same token is used for Browser Rendering when it also carries that
+   * permission; `BROWSER_RENDERING_TOKEN` overrides it when you would rather
+   * keep the two apart.
    */
   CLOUDFLARE_API_TOKEN?: string;
   CLOUDFLARE_ZONE_ID?: string;
+  /**
+   * Browser Rendering. With an account id and a token carrying the Browser
+   * Rendering permission, the agent can read pages that draw themselves with
+   * JavaScript, take screenshots and pull elements out by selector. Without
+   * them everything still works over plain `fetch`, which is what the
+   * pipeline did before the agent could browse.
+   */
+  CLOUDFLARE_ACCOUNT_ID?: string;
+  BROWSER_RENDERING_TOKEN?: string;
 }
 
 declare namespace App {

@@ -10,10 +10,15 @@
  */
 
 import { getAgentByName } from 'agents';
-import type { CampaignAgent, CampaignState } from '../../../workers/agent/src/index';
+import type {
+  CampaignAgent,
+  CampaignState,
+  ResearchAgent,
+  ResearchState,
+} from '../../../workers/agent/src/index';
 import type { GateDecision } from './engine';
 
-export type { CampaignState };
+export type { CampaignState, ResearchState };
 
 async function stub(env: Env, campaignId: string) {
   return getAgentByName<Env, CampaignAgent>(
@@ -64,6 +69,45 @@ export async function campaignState(env: Env, campaignId: string): Promise<Campa
     const response = await agent.fetch('https://agent/');
     if (!response.ok) return null;
     return (await response.json()) as CampaignState;
+  } catch {
+    return null;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Research                                                            */
+/* ------------------------------------------------------------------ */
+
+async function researchStub(env: Env, researchId: string) {
+  return getAgentByName<Env, ResearchAgent>(
+    env.RESEARCH_AGENT as unknown as DurableObjectNamespace<ResearchAgent>,
+    researchId,
+  );
+}
+
+/**
+ * Hand a queued research task to its own Durable Object.
+ *
+ * One object per task id, so a second press of Start lands on the same object
+ * and finds it already running rather than starting a second loop over the
+ * same question.
+ */
+export async function startResearch(
+  env: Env,
+  researchId: string,
+  userId: string,
+): Promise<ResearchState> {
+  const agent = await researchStub(env, researchId);
+  return agent.begin(researchId, userId);
+}
+
+/** The agent's live view of a task. Null when it cannot be reached. */
+export async function researchState(env: Env, researchId: string): Promise<ResearchState | null> {
+  try {
+    const agent = await researchStub(env, researchId);
+    const response = await agent.fetch('https://agent/');
+    if (!response.ok) return null;
+    return (await response.json()) as ResearchState;
   } catch {
     return null;
   }

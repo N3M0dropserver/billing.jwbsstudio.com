@@ -17,6 +17,12 @@
             {
                 "name": "CampaignAgent",
                 "class_name": "CampaignAgent"
+            },
+            // The research agent: one object per research task, started from
+            // the growth pages or by a campaign's enrich stage.
+            {
+                "name": "ResearchAgent",
+                "class_name": "ResearchAgent"
             }
         ]
     },
@@ -25,6 +31,12 @@
             "tag": "v1",
             "new_sqlite_classes": [
                 "CampaignAgent"
+            ]
+        },
+        {
+            "tag": "v2",
+            "new_sqlite_classes": [
+                "ResearchAgent"
             ]
         }
     ],

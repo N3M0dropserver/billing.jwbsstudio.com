@@ -29,6 +29,13 @@
       "when": 1789262991608,
       "tag": "0003_scale_and_ai_observability",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1789282922290,
+      "tag": "0004_agent_brain",
+      "breakpoints": true
     }
   ]
 }

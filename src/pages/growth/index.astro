@@ -2,15 +2,24 @@
 import AppLayout from '~/layouts/AppLayout.astro';
 import Card from '~/components/ui/Card.astro';
 import EmptyState from '~/components/ui/EmptyState.astro';
-import { desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, isNull, sql } from 'drizzle-orm';
 import { db } from '~/lib/env';
-import { brandKits, campaigns, demoSites, proposals, prospects } from '~/lib/db/schema';
+import {
+  agentMemories,
+  agentResearch,
+  agentSkills,
+  brandKits,
+  campaigns,
+  demoSites,
+  proposals,
+  prospects,
+} from '~/lib/db/schema';
 import { STAGE_LABELS } from '~/lib/growth/policy';
 
 const user = Astro.locals.user!;
 const database = db();
 
-const [runs, kits, totals] = await Promise.all([
+const [runs, kits, totals, brain, research] = await Promise.all([
   database
     .select()
     .from(campaigns)
@@ -23,9 +32,30 @@ const [runs, kits, totals] = await Promise.all([
     database.select({ n: sql<number>`count(*)` }).from(demoSites).where(eq(demoSites.userId, user.id)),
     database.select({ n: sql<number>`count(*)` }).from(proposals).where(eq(proposals.userId, user.id)),
   ]),
+  Promise.all([
+    database
+      .select({ n: sql<number>`count(*)` })
+      .from(agentSkills)
+      .where(and(eq(agentSkills.userId, user.id), eq(agentSkills.status, 'active'))),
+    database
+      .select({ n: sql<number>`count(*)` })
+      .from(agentSkills)
+      .where(and(eq(agentSkills.userId, user.id), eq(agentSkills.status, 'proposed'))),
+    database
+      .select({ n: sql<number>`count(*)` })
+      .from(agentMemories)
+      .where(and(eq(agentMemories.userId, user.id), isNull(agentMemories.retiredAt))),
+  ]),
+  database
+    .select({ id: agentResearch.id, question: agentResearch.question, status: agentResearch.status })
+    .from(agentResearch)
+    .where(eq(agentResearch.userId, user.id))
+    .orderBy(desc(agentResearch.createdAt))
+    .limit(4),
 ]);
 
 const [prospectCount, demoCount, proposalCount] = totals.map((rows) => rows[0]?.n ?? 0);
+const [skillCount, proposedCount, memoryCount] = brain.map((rows) => rows[0]?.n ?? 0);
 
 const STATUS_COLOURS: Record<string, string> = {
   draft: 'var(--text-muted)',
@@ -39,7 +69,12 @@ const STATUS_COLOURS: Record<string, string> = {
 ---
 
 <AppLayout title="Growth" subtitle="Find businesses worth helping, and show them what you would do" width="wide">
-  <div slot="actions" class="flex gap-2">
+  <div slot="actions" class="flex flex-wrap gap-2">
+    <a href="/growth/research" class="muted rounded-lg border px-3 py-2 text-sm" style="border-color: var(--border)">Research</a>
+    <a href="/growth/skills" class="muted rounded-lg border px-3 py-2 text-sm" style="border-color: var(--border)">
+      Skills{proposedCount > 0 && <span class="ml-1.5 rounded-full px-1.5 text-xs" style="background: color-mix(in oklch, var(--color-owing) 18%, transparent); color: var(--color-owing)">{proposedCount}</span>}
+    </a>
+    <a href="/growth/memory" class="muted rounded-lg border px-3 py-2 text-sm" style="border-color: var(--border)">Memory</a>
     <a href="/growth/ai" class="muted rounded-lg border px-3 py-2 text-sm" style="border-color: var(--border)">AI usage</a>
     <a href="/growth/settings" class="muted rounded-lg border px-3 py-2 text-sm" style="border-color: var(--border)">Defaults</a>
     <a href="/growth/brand" class="muted rounded-lg border px-3 py-2 text-sm" style="border-color: var(--border)">Style directions</a>
@@ -92,6 +127,41 @@ const STATUS_COLOURS: Record<string, string> = {
           <div class="flex justify-between"><dt class="muted">Demos built</dt><dd class="tabular font-medium">{demoCount}</dd></div>
           <div class="flex justify-between"><dt class="muted">Proposals</dt><dd class="tabular font-medium">{proposalCount}</dd></div>
         </dl>
+      </Card>
+
+      <Card title="The agent" subtitle="What it knows and what it is allowed to decide">
+        <dl class="space-y-2.5 text-sm">
+          <div class="flex justify-between">
+            <dt class="muted"><a href="/growth/skills" class="hover:opacity-80">Skills in use</a></dt>
+            <dd class="tabular font-medium">{skillCount}</dd>
+          </div>
+          <div class="flex justify-between">
+            <dt class="muted"><a href="/growth/memory" class="hover:opacity-80">Things remembered</a></dt>
+            <dd class="tabular font-medium">{memoryCount}</dd>
+          </div>
+          {proposedCount > 0 && (
+            <div class="flex justify-between">
+              <dt style="color: var(--color-owing)"><a href="/growth/skills" class="hover:opacity-80">Skills it wants to add</a></dt>
+              <dd class="tabular font-medium" style="color: var(--color-owing)">{proposedCount}</dd>
+            </div>
+          )}
+        </dl>
+
+        {research.length > 0 && (
+          <div class="mt-3.5 border-t pt-3" style="border-color: var(--border)">
+            <p class="muted mb-1.5 text-xs font-medium uppercase tracking-wide">Recent research</p>
+            <ul class="space-y-1 text-sm">
+              {research.map((task) => (
+                <li class="truncate">
+                  <a href={`/growth/research/${task.id}`} class="hover:opacity-80">{task.question}</a>
+                  {task.status === 'running' && <span class="muted ml-1.5 text-xs">running</span>}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        <a href="/growth/research" class="mt-3 inline-block text-sm" style="color: var(--color-brand-600)">Ask it something →</a>
       </Card>
 
       <Card title="Style directions" subtitle="What the generated sites look like">
