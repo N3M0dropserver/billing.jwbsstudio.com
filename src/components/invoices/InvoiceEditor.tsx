@@ -57,6 +57,7 @@ interface Props {
     currency: 'NZD' | 'AUD';
     jurisdiction: 'NZ' | 'AU';
     gstTreatment: string;
+    fxRateToResidence: number;
     reference: string;
     notes: string;
     terms: string;
@@ -99,8 +100,28 @@ export default function InvoiceEditor({ clients, unbilled, defaults, invoice }: 
   const [reference, setReference] = useState(invoice?.reference ?? '');
   const [notes, setNotes] = useState(invoice?.notes ?? '');
   const [terms, setTerms] = useState(invoice?.terms ?? defaults.terms);
-  const [termsDays, setTermsDays] = useState(String(defaults.paymentTermsDays));
-  const [fxRate, setFxRate] = useState('');
+  /**
+   * When editing, the payment terms are whatever the stored due date actually
+   * says — recomputing them from the default would silently move the due date
+   * of an invoice the client has already been given.
+   */
+  const [termsDays, setTermsDays] = useState(
+    String(
+      invoice
+        ? Math.max(
+            Math.round(
+              (Date.parse(`${invoice.dueOn}T00:00:00Z`) -
+                Date.parse(`${invoice.issuedOn}T00:00:00Z`)) /
+                86_400_000,
+            ),
+            0,
+          )
+        : defaults.paymentTermsDays,
+    ),
+  );
+  const [fxRate, setFxRate] = useState(
+    invoice && invoice.fxRateToResidence !== 1 ? String(invoice.fxRateToResidence) : '',
+  );
   const [importedIds, setImportedIds] = useState<string[]>([]);
   const [lines, setLines] = useState<Line[]>(
     invoice?.lines.length

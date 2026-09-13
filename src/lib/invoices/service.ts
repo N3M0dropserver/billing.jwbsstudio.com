@@ -245,22 +245,95 @@ export async function createInvoice(
   return { id: invoiceId, number };
 }
 
-export async function updateInvoiceLines(
+/**
+ * Whether an invoice may still be changed, and why not when it may not.
+ *
+ * An invoice is a document someone else has been given. Once money has been
+ * recorded against it, or it has been voided, editing it rewrites a record
+ * that two parties are relying on — the remedy there is a credit note or a
+ * second invoice, not a quiet amendment. Everything short of that is fair
+ * game, because the alternative has been no remedy at all: a typo in an
+ * amount meant opening a SQL console against production.
+ */
+export type EditRefusal = 'has-payments' | 'void' | 'written-off';
+
+export function editability(
+  invoice: Pick<Invoice, 'status' | 'amountPaid'>,
+): { canEdit: true } | { canEdit: false; reason: EditRefusal } {
+  if (invoice.status === 'void') return { canEdit: false, reason: 'void' };
+  if (invoice.status === 'written-off') return { canEdit: false, reason: 'written-off' };
+  if (invoice.amountPaid > 0) return { canEdit: false, reason: 'has-payments' };
+  return { canEdit: true };
+}
+
+export const EDIT_REFUSAL_MESSAGE: Record<EditRefusal, string> = {
+  'has-payments':
+    'This invoice has payments recorded against it, so its figures are part of a settled record. Raise a credit note or a second invoice for the difference instead.',
+  void: 'This invoice has been voided. Voiding is deliberately final — raise a new one.',
+  'written-off':
+    'This invoice has been written off as a bad debt. Reverse the write-off first if you need to change it.',
+};
+
+export interface UpdateInvoiceInput {
+  clientId?: string | null;
+  issuedOn?: string;
+  dueOn?: string;
+  currency?: 'NZD' | 'AUD';
+  jurisdiction?: 'NZ' | 'AU';
+  gstTreatment?: GstTreatment;
+  fxRateToResidence?: number;
+  reference?: string;
+  notes?: string;
+  terms?: string;
+  lines: Array<LineInput & { unit?: string }>;
+  /** Move a draft to sent. Never moves a sent invoice back to draft. */
+  finalise?: boolean;
+}
+
+/**
+ * Rewrite an invoice's content and recompute its totals.
+ *
+ * The number is never reissued — it is the thing the client and their
+ * bookkeeper quote at each other — and neither is the public token, so a link
+ * already in someone's inbox keeps working and shows the corrected document.
+ */
+export async function updateInvoice(
   db: Db,
   setting: Settings,
   invoice: Invoice,
-  lines: Array<LineInput & { unit?: string }>,
+  input: UpdateInvoiceInput,
 ): Promise<void> {
-  const taxYear =
-    invoice.jurisdiction === 'NZ'
-      ? nzTaxYearFor(new Date(`${invoice.issuedOn}T00:00:00Z`))
-      : auFinancialYearFor(new Date(`${invoice.issuedOn}T00:00:00Z`));
+  const jurisdiction = input.jurisdiction ?? invoice.jurisdiction;
+  const issuedOn = input.issuedOn || invoice.issuedOn;
 
-  const totals = calculateInvoice(lines, {
-    jurisdiction: invoice.jurisdiction,
-    year: taxYear,
-    treatment: invoice.gstTreatment,
-  });
+  const client =
+    input.clientId !== undefined && input.clientId
+      ? (
+          await db
+            .select()
+            .from(clients)
+            .where(and(eq(clients.id, input.clientId), eq(clients.userId, invoice.userId)))
+            .limit(1)
+        )[0] ?? null
+      : null;
+
+  const treatment = input.gstTreatment ?? resolveGstTreatment(setting, client, jurisdiction);
+
+  const taxYear =
+    jurisdiction === 'NZ'
+      ? nzTaxYearFor(new Date(`${issuedOn}T00:00:00Z`))
+      : auFinancialYearFor(new Date(`${issuedOn}T00:00:00Z`));
+
+  const totals = calculateInvoice(input.lines, { jurisdiction, year: taxYear, treatment });
+
+  const currency = input.currency ?? invoice.currency;
+  const residenceCurrency = setting.taxResidence === 'NZ' ? 'NZD' : 'AUD';
+  const fxRateToResidence =
+    currency === residenceCurrency
+      ? 1
+      : Number.isFinite(input.fxRateToResidence) && (input.fxRateToResidence ?? 0) > 0
+        ? input.fxRateToResidence!
+        : invoice.fxRateToResidence;
 
   const now = new Date().toISOString();
   const statements: unknown[] = [
@@ -275,7 +348,7 @@ export async function updateInvoiceLines(
         position: index,
         description: line.description,
         quantity: line.quantity,
-        unit: lines[index]?.unit ?? 'hours',
+        unit: input.lines[index]?.unit ?? 'hours',
         unitPrice: line.unitPrice,
         discount: line.discount ?? 0,
         lineTotal: line.lineTotal,
@@ -288,9 +361,22 @@ export async function updateInvoiceLines(
     db
       .update(invoices)
       .set({
+        clientId: input.clientId !== undefined ? input.clientId : invoice.clientId,
+        issuedOn,
+        dueOn:
+          input.dueOn ||
+          dueDateFrom(issuedOn, client?.paymentTermsDays ?? setting.defaultPaymentTermsDays),
+        currency,
+        jurisdiction,
+        gstTreatment: treatment,
+        fxRateToResidence,
         subtotal: totals.subtotal,
         gstAmount: totals.gstAmount,
         total: totals.total,
+        reference: input.reference ?? invoice.reference,
+        notes: input.notes ?? invoice.notes,
+        terms: input.terms ?? invoice.terms,
+        status: invoice.status === 'draft' && input.finalise ? 'sent' : invoice.status,
         // A changed invoice must not keep a stale PDF around.
         pdfKey: null,
         updatedAt: now,
@@ -298,7 +384,93 @@ export async function updateInvoiceLines(
       .where(eq(invoices.id, invoice.id)),
   );
 
+  statements.push(
+    db.insert(activityLog).values({
+      id: newId(),
+      userId: invoice.userId,
+      action: 'invoice.edited',
+      entityType: 'invoice',
+      entityId: invoice.id,
+      detail: JSON.stringify({
+        number: invoice.number,
+        from: { total: invoice.total, gst: invoice.gstAmount },
+        to: { total: totals.total, gst: totals.gstAmount },
+      }),
+      createdAt: now,
+    }),
+  );
+
   await db.batch(statements as never);
+}
+
+/**
+ * Void, write off, or reverse either.
+ *
+ * Voiding says the invoice should never have existed; writing off says it was
+ * owed and will not be paid. They are different things to a tax return — a
+ * bad debt is deductible, a voided invoice is simply not income — so they are
+ * separate states rather than one "cancelled".
+ *
+ * Neither deletes anything. The number stays used, which is the point: a gap
+ * in an invoice sequence is the first thing an auditor asks about.
+ */
+export async function setInvoiceStatus(
+  db: Db,
+  invoice: Invoice,
+  status: 'void' | 'written-off' | 'reinstate',
+  note?: string,
+): Promise<void> {
+  const now = new Date().toISOString();
+  const next =
+    status === 'reinstate'
+      ? deriveStatus({ ...invoice, status: invoice.sentAt ? 'sent' : 'draft' })
+      : status;
+
+  await db.batch([
+    db
+      .update(invoices)
+      .set({
+        status: next,
+        notes: note ? `${invoice.notes}${invoice.notes ? '\n\n' : ''}${note}`.slice(0, 5000) : invoice.notes,
+        updatedAt: now,
+      })
+      .where(eq(invoices.id, invoice.id)),
+    db.insert(activityLog).values({
+      id: newId(),
+      userId: invoice.userId,
+      action: `invoice.${status}`,
+      entityType: 'invoice',
+      entityId: invoice.id,
+      detail: JSON.stringify({ number: invoice.number, from: invoice.status, to: next, note }),
+      createdAt: now,
+    }),
+  ] as never);
+}
+
+/** Discard a draft outright. Only ever a draft — see `setInvoiceStatus`. */
+export async function deleteDraftInvoice(db: Db, invoice: Invoice): Promise<void> {
+  if (invoice.status !== 'draft') {
+    throw new Error('Only a draft can be deleted. Void the invoice instead.');
+  }
+  const now = new Date().toISOString();
+  await db.batch([
+    // Release any time entries it had claimed, so they can be billed again.
+    db
+      .update(timeEntries)
+      .set({ billed: false, invoiceId: null, updatedAt: now })
+      .where(eq(timeEntries.invoiceId, invoice.id)),
+    db.delete(invoiceLines).where(eq(invoiceLines.invoiceId, invoice.id)),
+    db.delete(invoices).where(eq(invoices.id, invoice.id)),
+    db.insert(activityLog).values({
+      id: newId(),
+      userId: invoice.userId,
+      action: 'invoice.draft-deleted',
+      entityType: 'invoice',
+      entityId: invoice.id,
+      detail: JSON.stringify({ number: invoice.number, total: invoice.total }),
+      createdAt: now,
+    }),
+  ] as never);
 }
 
 export interface RecordPaymentInput {
