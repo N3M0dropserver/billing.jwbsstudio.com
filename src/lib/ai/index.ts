@@ -21,6 +21,8 @@ export const MODELS = {
   tools: '@cf/meta/llama-3.3-70b-instruct-fp8-fast',
   /** Memory recall. 768 dimensions, cheap enough to run on every write. */
   embedding: '@cf/baai/bge-base-en-v1.5',
+  /** Reads images — receipts, at present. */
+  vision: '@cf/meta/llama-3.2-11b-vision-instruct',
 } as const;
 
 export type AiResult<T> =

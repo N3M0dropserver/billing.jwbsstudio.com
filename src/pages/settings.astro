@@ -5,15 +5,24 @@ import { db } from '~/lib/env';
 import { getSettings } from '~/lib/queries/settings';
 import { unverifiedFigures, NZ_YEARS, AU_YEARS } from '~/lib/tax/rates';
 import { currentTaxYear } from '~/lib/queries/dashboard';
+import { parseDaysAfter } from '~/lib/invoices/reminders';
 
 const user = Astro.locals.user!;
 const s = await getSettings(db(), user.id);
 const saved = Astro.url.searchParams.get('saved') === '1';
 const range = currentTaxYear(s.taxResidence);
 const unverified = unverifiedFigures(s.taxResidence, range.year);
+
+/**
+ * The ladder is stored as JSON but typed as "7, 14, 30" — nobody should have
+ * to write brackets into a settings field.
+ */
+const reminderDaysAfterValue = parseDaysAfter(s.reminderDaysAfter).join(', ');
 ---
 
 <AppLayout title="Settings" subtitle="Business details, tax setup and invoice defaults">
+  <a slot="actions" href="/templates" class="btn btn-secondary">Email templates</a>
+
   {saved && (
     <p class="card mb-4 px-4 py-3 text-sm" style="color: var(--color-paid)">Settings saved.</p>
   )}
@@ -22,35 +31,35 @@ const unverified = unverifiedFigures(s.taxResidence, range.year);
     <Card title="Business" subtitle="Appears on every invoice you send">
       <div class="grid gap-3.5 sm:grid-cols-2">
         <div>
-          <label for="businessName" class="mb-1.5 block text-sm font-medium">Trading name</label>
+          <label for="businessName" class="label muted mb-1.5 block">Trading name</label>
           <input id="businessName" name="businessName" value={s.businessName} class="field" />
         </div>
         <div>
-          <label for="legalName" class="mb-1.5 block text-sm font-medium">Legal name</label>
+          <label for="legalName" class="label muted mb-1.5 block">Legal name</label>
           <input id="legalName" name="legalName" value={s.legalName} class="field" />
         </div>
         <div>
-          <label for="email" class="mb-1.5 block text-sm font-medium">Email</label>
+          <label for="email" class="label muted mb-1.5 block">Email</label>
           <input id="email" name="email" type="email" value={s.email} class="field" />
         </div>
         <div>
-          <label for="phone" class="mb-1.5 block text-sm font-medium">Phone</label>
+          <label for="phone" class="label muted mb-1.5 block">Phone</label>
           <input id="phone" name="phone" value={s.phone} class="field" />
         </div>
         <div class="sm:col-span-2">
-          <label for="website" class="mb-1.5 block text-sm font-medium">Website</label>
+          <label for="website" class="label muted mb-1.5 block">Website</label>
           <input id="website" name="website" value={s.website} class="field" />
         </div>
         <div class="sm:col-span-2">
-          <label for="addressLine1" class="mb-1.5 block text-sm font-medium">Address</label>
+          <label for="addressLine1" class="label muted mb-1.5 block">Address</label>
           <input id="addressLine1" name="addressLine1" value={s.addressLine1} class="field" />
         </div>
         <div>
-          <label for="city" class="mb-1.5 block text-sm font-medium">City</label>
+          <label for="city" class="label muted mb-1.5 block">City</label>
           <input id="city" name="city" value={s.city} class="field" />
         </div>
         <div>
-          <label for="postcode" class="mb-1.5 block text-sm font-medium">Postcode</label>
+          <label for="postcode" class="label muted mb-1.5 block">Postcode</label>
           <input id="postcode" name="postcode" value={s.postcode} class="field" />
         </div>
       </div>
@@ -58,7 +67,7 @@ const unverified = unverifiedFigures(s.taxResidence, range.year);
 
     <Card title="Tax residence" subtitle="Determines which country taxes your worldwide income">
       <div>
-        <label for="taxResidence" class="mb-1.5 block text-sm font-medium">I am tax resident in</label>
+        <label for="taxResidence" class="label muted mb-1.5 block">I am tax resident in</label>
         <select id="taxResidence" name="taxResidence" class="field">
           <option value="NZ" selected={s.taxResidence === 'NZ'}>New Zealand</option>
           <option value="AU" selected={s.taxResidence === 'AU'}>Australia</option>
@@ -75,15 +84,15 @@ const unverified = unverifiedFigures(s.taxResidence, range.year);
     <Card title="New Zealand">
       <div class="grid gap-3.5 sm:grid-cols-2">
         <div>
-          <label for="nzIrdNumber" class="mb-1.5 block text-sm font-medium">IRD number</label>
+          <label for="nzIrdNumber" class="label muted mb-1.5 block">IRD number</label>
           <input id="nzIrdNumber" name="nzIrdNumber" value={s.nzIrdNumber} class="field" />
         </div>
         <div>
-          <label for="nzGstNumber" class="mb-1.5 block text-sm font-medium">GST number</label>
+          <label for="nzGstNumber" class="label muted mb-1.5 block">GST number</label>
           <input id="nzGstNumber" name="nzGstNumber" value={s.nzGstNumber} class="field" />
         </div>
         <div>
-          <label for="nzGstFilingFrequency" class="mb-1.5 block text-sm font-medium">GST filing</label>
+          <label for="nzGstFilingFrequency" class="label muted mb-1.5 block">GST filing</label>
           <select id="nzGstFilingFrequency" name="nzGstFilingFrequency" class="field">
             <option value="monthly" selected={s.nzGstFilingFrequency === 'monthly'}>Monthly</option>
             <option value="two-monthly" selected={s.nzGstFilingFrequency === 'two-monthly'}>Two-monthly</option>
@@ -91,14 +100,14 @@ const unverified = unverifiedFigures(s.taxResidence, range.year);
           </select>
         </div>
         <div>
-          <label for="nzAccCover" class="mb-1.5 block text-sm font-medium">ACC cover</label>
+          <label for="nzAccCover" class="label muted mb-1.5 block">ACC cover</label>
           <select id="nzAccCover" name="nzAccCover" class="field">
             <option value="CoverPlus" selected={s.nzAccCover === 'CoverPlus'}>CoverPlus (standard)</option>
             <option value="CoverPlusExtra" selected={s.nzAccCover === 'CoverPlusExtra'}>CoverPlus Extra</option>
           </select>
         </div>
         <div>
-          <label for="nzAccWorkLevyRate" class="mb-1.5 block text-sm font-medium">
+          <label for="nzAccWorkLevyRate" class="label muted mb-1.5 block">
             ACC work levy rate
           </label>
           <div class="flex items-center gap-2">
@@ -115,7 +124,7 @@ const unverified = unverifiedFigures(s.taxResidence, range.year);
           </p>
         </div>
         <div>
-          <label for="nzAccAgreedCover" class="mb-1.5 block text-sm font-medium">
+          <label for="nzAccAgreedCover" class="label muted mb-1.5 block">
             CoverPlus Extra agreed cover
           </label>
           <input
@@ -144,11 +153,11 @@ const unverified = unverifiedFigures(s.taxResidence, range.year);
     <Card title="Australia">
       <div class="grid gap-3.5 sm:grid-cols-2">
         <div>
-          <label for="auAbn" class="mb-1.5 block text-sm font-medium">ABN</label>
+          <label for="auAbn" class="label muted mb-1.5 block">ABN</label>
           <input id="auAbn" name="auAbn" value={s.auAbn} class="field" />
         </div>
         <div>
-          <label for="auBasFrequency" class="mb-1.5 block text-sm font-medium">BAS frequency</label>
+          <label for="auBasFrequency" class="label muted mb-1.5 block">BAS frequency</label>
           <select id="auBasFrequency" name="auBasFrequency" class="field">
             <option value="monthly" selected={s.auBasFrequency === 'monthly'}>Monthly</option>
             <option value="quarterly" selected={s.auBasFrequency === 'quarterly'}>Quarterly</option>
@@ -175,34 +184,34 @@ const unverified = unverifiedFigures(s.taxResidence, range.year);
     <Card title="Invoice defaults">
       <div class="grid gap-3.5 sm:grid-cols-2">
         <div>
-          <label for="invoiceNumberPrefix" class="mb-1.5 block text-sm font-medium">Number prefix</label>
+          <label for="invoiceNumberPrefix" class="label muted mb-1.5 block">Number prefix</label>
           <input id="invoiceNumberPrefix" name="invoiceNumberPrefix" value={s.invoiceNumberPrefix} class="field" />
         </div>
         <div>
-          <label for="invoiceNextNumber" class="mb-1.5 block text-sm font-medium">Next number</label>
+          <label for="invoiceNextNumber" class="label muted mb-1.5 block">Next number</label>
           <input id="invoiceNextNumber" name="invoiceNextNumber" type="number" min="1" value={s.invoiceNextNumber} class="field" />
         </div>
         <div>
-          <label for="defaultCurrency" class="mb-1.5 block text-sm font-medium">Default currency</label>
+          <label for="defaultCurrency" class="label muted mb-1.5 block">Default currency</label>
           <select id="defaultCurrency" name="defaultCurrency" class="field">
             <option value="NZD" selected={s.defaultCurrency === 'NZD'}>NZD</option>
             <option value="AUD" selected={s.defaultCurrency === 'AUD'}>AUD</option>
           </select>
         </div>
         <div>
-          <label for="defaultPaymentTermsDays" class="mb-1.5 block text-sm font-medium">Payment terms (days)</label>
+          <label for="defaultPaymentTermsDays" class="label muted mb-1.5 block">Payment terms (days)</label>
           <input id="defaultPaymentTermsDays" name="defaultPaymentTermsDays" type="number" min="0" value={s.defaultPaymentTermsDays} class="field" />
         </div>
         <div>
-          <label for="defaultHourlyRate" class="mb-1.5 block text-sm font-medium">Default hourly rate</label>
+          <label for="defaultHourlyRate" class="label muted mb-1.5 block">Default hourly rate</label>
           <input id="defaultHourlyRate" name="defaultHourlyRate" inputmode="decimal" value={String(s.defaultHourlyRate / 100)} class="field" />
         </div>
         <div>
-          <label for="taxReserveRate" class="mb-1.5 block text-sm font-medium">Manual reserve rate (%)</label>
+          <label for="taxReserveRate" class="label muted mb-1.5 block">Manual reserve rate (%)</label>
           <input id="taxReserveRate" name="taxReserveRate" inputmode="decimal" value={String(Math.round(s.taxReserveRate * 100))} class="field" />
         </div>
         <div class="sm:col-span-2">
-          <label for="invoiceFooter" class="mb-1.5 block text-sm font-medium">Invoice footer / terms</label>
+          <label for="invoiceFooter" class="label muted mb-1.5 block">Invoice footer / terms</label>
           <textarea id="invoiceFooter" name="invoiceFooter" rows="2" class="field">{s.invoiceFooter}</textarea>
         </div>
       </div>
@@ -211,23 +220,23 @@ const unverified = unverifiedFigures(s.taxResidence, range.year);
     <Card title="Payment details" subtitle="Printed on every invoice">
       <div class="grid gap-3.5 sm:grid-cols-2">
         <div>
-          <label for="bankAccountName" class="mb-1.5 block text-sm font-medium">Account name</label>
+          <label for="bankAccountName" class="label muted mb-1.5 block">Account name</label>
           <input id="bankAccountName" name="bankAccountName" value={s.bankAccountName} class="field" />
         </div>
         <div>
-          <label for="bankAccountNumber" class="mb-1.5 block text-sm font-medium">Account number</label>
+          <label for="bankAccountNumber" class="label muted mb-1.5 block">Account number</label>
           <input id="bankAccountNumber" name="bankAccountNumber" value={s.bankAccountNumber} class="field" />
         </div>
         <div>
-          <label for="bankName" class="mb-1.5 block text-sm font-medium">Bank</label>
+          <label for="bankName" class="label muted mb-1.5 block">Bank</label>
           <input id="bankName" name="bankName" value={s.bankName} class="field" />
         </div>
         <div>
-          <label for="bankBsb" class="mb-1.5 block text-sm font-medium">BSB (AU)</label>
+          <label for="bankBsb" class="label muted mb-1.5 block">BSB (AU)</label>
           <input id="bankBsb" name="bankBsb" value={s.bankBsb} class="field" />
         </div>
         <div>
-          <label for="bankSwift" class="mb-1.5 block text-sm font-medium">SWIFT</label>
+          <label for="bankSwift" class="label muted mb-1.5 block">SWIFT</label>
           <input id="bankSwift" name="bankSwift" value={s.bankSwift} class="field" />
         </div>
         <div class="sm:col-span-2">
@@ -239,13 +248,94 @@ const unverified = unverifiedFigures(s.taxResidence, range.year);
             Also needs STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET set as Worker secrets.
           </p>
         </div>
+        <div class="sm:col-span-2 border-t pt-4" style="border-color: var(--border)">
+          <label class="flex items-center gap-2.5 text-sm">
+            <input type="checkbox" name="trackEmailOpens" value="yes" checked={s.trackEmailOpens} />
+            Record when a client opens an invoice email
+          </label>
+          <p class="muted mt-1.5 text-xs leading-relaxed">
+            Adds an invisible 1×1 image to invoice emails so an open shows on the
+            invoice's activity timeline. It is a weak signal —
+            many clients block remote images, and some providers load them automatically
+            whether or not anyone read the message. Turn it off and invoice emails carry no
+            remote images at all; web invoice views and PDF downloads are still logged.
+          </p>
+        </div>
+      </div>
+    </Card>
+
+    <Card
+      title="Chasing late payments"
+      subtitle="Reminders sent automatically, so you do not have to be the one who asks"
+    >
+      <div class="space-y-4">
+        <label class="flex items-start gap-2.5 text-sm">
+          <input type="checkbox" name="remindersEnabled" value="yes" checked={s.remindersEnabled} class="mt-0.5" />
+          <span>
+            Send payment reminders automatically
+            <span class="muted mt-1 block text-xs">
+              Off until you turn it on. Nothing is sent to a client until you do, and a
+              reminder only ever goes to an invoice you have actually sent.
+            </span>
+          </span>
+        </label>
+
+        <div class="grid gap-3.5 sm:grid-cols-3">
+          <div>
+            <label for="reminderDaysBefore" class="mb-1.5 block text-sm font-medium">
+              Courtesy note
+            </label>
+            <div class="flex items-center gap-2">
+              <input
+                id="reminderDaysBefore" name="reminderDaysBefore" type="number" min="0" max="60"
+                value={String(s.reminderDaysBefore)} class="field"
+              />
+              <span class="muted shrink-0 text-sm">days before due</span>
+            </div>
+            <p class="muted mt-1 text-xs">0 to skip it.</p>
+          </div>
+
+          <div>
+            <label for="reminderDaysAfter" class="mb-1.5 block text-sm font-medium">
+              Then chase after
+            </label>
+            <input
+              id="reminderDaysAfter" name="reminderDaysAfter" value={reminderDaysAfterValue}
+              class="field tabular" placeholder="7, 14, 30"
+            />
+            <p class="muted mt-1 text-xs">Days overdue, comma separated.</p>
+          </div>
+
+          <div>
+            <label for="reminderMaxCount" class="mb-1.5 block text-sm font-medium">
+              At most
+            </label>
+            <div class="flex items-center gap-2">
+              <input
+                id="reminderMaxCount" name="reminderMaxCount" type="number" min="0" max="20"
+                value={String(s.reminderMaxCount)} class="field"
+              />
+              <span class="muted shrink-0 text-sm">per invoice</span>
+            </div>
+          </div>
+        </div>
+
+        <label class="flex items-center gap-2.5 text-sm">
+          <input type="checkbox" name="reminderSkipWeekends" value="yes" checked={s.reminderSkipWeekends} />
+          Hold weekend reminders until Monday
+        </label>
+
+        <p class="muted border-t pt-3 text-xs" style="border-color: var(--border)">
+          Reminders go out at 08:00 UTC daily — evening in New Zealand, so they land first thing.
+          Deploying also needs <code>wrangler secret put CRON_SECRET</code>; without it the
+          scheduled job refuses to run rather than mailing anyone. Individual clients can be
+          excluded on their own page, and a single invoice can be paused on its page.
+        </p>
       </div>
     </Card>
 
     <div class="flex justify-end gap-2">
-      <button class="rounded-lg px-4 py-2.5 text-sm font-medium text-white" style="background: var(--color-brand-600)">
-        Save settings
-      </button>
+      <button class="btn btn-primary w-full sm:w-auto">Save settings</button>
     </div>
   </form>
 
@@ -271,7 +361,7 @@ const unverified = unverifiedFigures(s.taxResidence, range.year);
         <p class="text-sm font-medium">{user.name}</p>
         <p class="muted text-sm">{user.email}</p>
       </div>
-      <a href="/account/password" class="muted card px-3.5 py-2 text-sm font-medium">Change password</a>
+      <a href="/account/password" class="btn btn-secondary">Change password</a>
     </div>
   </Card>
 </AppLayout>

@@ -17,9 +17,17 @@ const requestedYear = Astro.url.searchParams.get('year') ?? undefined;
 const position = await buildTaxPosition(database, settings, { year: requestedYear });
 
 const isNz = settings.taxResidence === 'NZ';
-const currency = settings.defaultCurrency;
+// Every figure below has been converted into the tax-residence currency by
+// the queries, so it must be labelled with that and not the invoicing default.
+const currency = position.invoices.residenceCurrency;
 const detail = isNz ? position.result.nz : position.result.au;
-const years = isNz ? NZ_YEARS : AU_YEARS;
+
+/**
+ * The dropdown offers the years we hold rate tables for, plus the year we are
+ * actually in when that has no table yet — otherwise the current year is not
+ * selectable and the page silently shows an older one.
+ */
+const years = [...new Set([...(isNz ? NZ_YEARS : AU_YEARS), position.range.year])].sort();
 
 const yearLabel = isNz
   ? `1 April ${position.range.startsOn.slice(0, 4)} – 31 March ${position.range.endsOn.slice(0, 4)}`
@@ -35,6 +43,19 @@ const formatDate = (iso: string) =>
 ---
 
 <AppLayout title="Tax & accounting" subtitle={yearLabel} width="wide">
+  {position.range.ratesAreProvisional && (
+    <p
+      slot="actions"
+      class="w-full rounded-lg px-3.5 py-2.5 text-sm"
+      style="background: color-mix(in oklch, var(--color-overdue) 12%, transparent); color: var(--color-overdue)"
+    >
+      <strong>Provisional figures.</strong> There is no {isNz ? 'IRD' : 'ATO'} rate table for
+      {' '}{position.range.year} in this app yet, so everything here is calculated with the
+      {' '}{position.range.ratesYear} brackets, thresholds and levies. Treat it as an estimate
+      and add the real table in <code class="text-xs">src/lib/tax/rates.ts</code> when it is
+      published.
+    </p>
+  )}
   <div slot="actions" class="flex flex-wrap gap-2">
     <form method="get" class="flex gap-2">
       <select name="year" class="field w-auto text-sm" onchange="this.form.submit()">
@@ -43,7 +64,10 @@ const formatDate = (iso: string) =>
         ))}
       </select>
     </form>
-    <a href="/tax/expenses/new" class="rounded-lg px-3.5 py-2 text-sm font-medium text-white" style="background: var(--color-brand-600)">
+    <a href="/tax/income" class="btn btn-secondary">
+      Other income
+    </a>
+    <a href="/tax/expenses/new" class="btn btn-primary">
       Log expense
     </a>
   </div>
@@ -69,8 +93,22 @@ const formatDate = (iso: string) =>
           </div>
           {position.employment.grossIncome > 0 && (
             <div class="flex justify-between gap-3">
-              <dt class="muted">Employment income (gross)</dt>
+              <dt class="muted">{isNz ? 'New Zealand' : 'Australian'} salary or wages (gross)</dt>
               <dd class="tabular">{formatMoney(position.employment.grossIncome, currency)}</dd>
+            </div>
+          )}
+          {position.foreign.grossIncome > 0 && (
+            <div class="flex justify-between gap-3">
+              <dt class="muted">
+                {isNz ? 'Australian' : 'New Zealand'} income (converted)
+              </dt>
+              <dd class="tabular">{formatMoney(position.foreign.grossIncome, currency)}</dd>
+            </div>
+          )}
+          {position.otherIncome.gross > 0 && (
+            <div class="flex justify-between gap-3">
+              <dt class="muted">Interest, dividends and other</dt>
+              <dd class="tabular">{formatMoney(position.otherIncome.gross, currency)}</dd>
             </div>
           )}
           <div class="flex justify-between gap-3">
@@ -91,8 +129,9 @@ const formatDate = (iso: string) =>
 
         <!-- Bracket breakdown -->
         <div class="mt-5">
-          <p class="muted mb-2 text-xs font-medium uppercase tracking-wide">Income tax by bracket</p>
-          <table class="w-full text-sm">
+          <p class="label muted mb-2">Income tax by bracket</p>
+          <div class="-mx-4 overflow-x-auto px-4 sm:mx-0 sm:px-0">
+          <table class="w-full min-w-[22rem] text-sm">
             <thead>
               <tr class="muted text-left text-xs">
                 <th scope="col" class="py-1 font-medium">Band</th>
@@ -118,6 +157,7 @@ const formatDate = (iso: string) =>
               </tr>
             </tbody>
           </table>
+          </div>
         </div>
 
         <!-- Levies -->
@@ -161,6 +201,17 @@ const formatDate = (iso: string) =>
               )}
             </>
           )}
+          {position.result.foreignTaxCredit.claimed > 0 && (
+            <div class="flex justify-between gap-3">
+              <dt class="muted">
+                Less foreign tax credit
+                {position.result.foreignTaxCredit.capped && (
+                  <span style="color: var(--color-owing)"> · capped</span>
+                )}
+              </dt>
+              <dd class="tabular">−{formatMoney(position.result.foreignTaxCredit.claimed, currency)}</dd>
+            </div>
+          )}
           <div class="flex justify-between gap-3 border-t pt-2 text-base font-semibold" style="border-color: var(--border)">
             <dt>Estimated to pay</dt>
             <dd class="tabular" style="color: var(--color-reserved)">
@@ -168,7 +219,32 @@ const formatDate = (iso: string) =>
             </dd>
           </div>
         </dl>
+
+        {position.foreign.grossIncome > 0 && (
+          <p class="muted mt-4 border-t pt-4 text-xs leading-relaxed" style="border-color: var(--border)">
+            {formatMoney(position.foreign.grossIncome, currency)} of {isNz ? 'Australian' : 'New Zealand'} income
+            is in the figures above, because {isNz ? 'New Zealand' : 'Australia'} taxes your worldwide income.
+            Of the {formatMoney(position.result.foreignTaxCredit.available, currency)} already
+            withheld there, {formatMoney(position.result.foreignTaxCredit.claimed, currency)} is credited —
+            the ceiling is the {currency === 'NZD' ? 'NZ' : 'AU'} tax on that same income, which is
+            {' '}{formatMoney(position.result.foreignTaxCredit.cap, currency)}.
+            {position.result.foreignTaxCredit.capped && ' The excess is not refundable and generally cannot be carried forward.'}
+          </p>
+        )}
       </Card>
+
+      {position.result.warnings.length > 0 && (
+        <Card title="Worth knowing" subtitle="Raised by your current position, not general advice">
+          <ul class="space-y-2.5 text-sm leading-relaxed">
+            {position.result.warnings.map((w) => (
+              <li class="muted flex gap-2.5">
+                <span aria-hidden="true" style="color: var(--color-owing)">•</span>
+                <span>{w}</span>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
 
       <!-- Expenses by category -->
       <Card title="Deductions by category" subtitle="Claimable amounts after business-use apportionment">
@@ -188,8 +264,8 @@ const formatDate = (iso: string) =>
                     <span>{info?.label ?? row.category}</span>
                     <span class="tabular font-medium">{formatMoney(row.claimable, currency)}</span>
                   </div>
-                  <div class="mt-1 h-1 overflow-hidden rounded-full" style="background: var(--surface-sunken)">
-                    <div class="h-full rounded-full" style={`width: ${Math.round((row.claimable / top) * 100)}%; background: var(--color-brand-500)`} />
+                  <div class="mt-1.5 h-1 overflow-hidden" style="background: var(--surface-sunken)">
+                    <div class="h-full" style={`width: ${Math.round((row.claimable / top) * 100)}%; background: var(--accent)`} />
                   </div>
                 </li>
               );
@@ -209,13 +285,13 @@ const formatDate = (iso: string) =>
               <summary class="flex cursor-pointer items-center justify-between gap-3 text-sm font-medium">
                 <span>{item.label}</span>
                 <span
-                  class="rounded-full px-2 py-0.5 text-xs font-normal"
+                  class="label-xs shrink-0 border px-1.5 py-1"
                   style={
                     item.deductible === 'yes'
-                      ? 'background: color-mix(in oklch, var(--color-paid) 14%, transparent); color: var(--color-paid)'
+                      ? 'background: color-mix(in oklch, var(--color-paid) 12%, transparent); border-color: color-mix(in oklch, var(--color-paid) 45%, transparent); color: var(--color-paid); border-radius: 2px'
                       : item.deductible === 'usually-no'
-                        ? 'background: color-mix(in oklch, var(--color-overdue) 12%, transparent); color: var(--color-overdue)'
-                        : 'background: var(--surface-sunken); color: var(--text-muted)'
+                        ? 'background: color-mix(in oklch, var(--color-overdue) 12%, transparent); border-color: color-mix(in oklch, var(--color-overdue) 45%, transparent); color: var(--color-overdue); border-radius: 2px'
+                        : 'background: var(--surface-sunken); border-color: var(--border); color: var(--text-muted); border-radius: 2px'
                   }
                 >
                   {item.deductible === 'yes' ? 'Deductible'
@@ -229,8 +305,8 @@ const formatDate = (iso: string) =>
                 <p><strong style="color: var(--text)">AU:</strong> {item.au}</p>
                 {item.watchOut && (
                   <p
-                    class="rounded-md px-3 py-2"
-                    style="background: color-mix(in oklch, var(--color-owing) 10%, transparent)"
+                    class="px-3 py-2"
+                    style="background: color-mix(in oklch, var(--color-owing) 10%, transparent); border-radius: var(--radius-ctl)"
                   >
                     <strong style="color: var(--color-owing)">Watch out.</strong> {item.watchOut}
                   </p>
@@ -248,8 +324,12 @@ const formatDate = (iso: string) =>
         <div class="space-y-3">
           {[position.result.reserve.best, position.result.reserve.likely, position.result.reserve.worst].map((band, i) => (
             <div
-              class="rounded-lg p-3"
-              style={i === 1 ? 'background: color-mix(in oklch, var(--color-reserved) 10%, transparent)' : 'background: var(--surface-sunken)'}
+              class="border p-3"
+              style={
+                i === 1
+                  ? 'background: color-mix(in oklch, var(--color-reserved) 10%, transparent); border-color: color-mix(in oklch, var(--color-reserved) 35%, transparent); border-radius: var(--radius-ctl)'
+                  : 'background: var(--surface-sunken); border-color: var(--border); border-radius: var(--radius-ctl)'
+              }
             >
               <div class="flex items-baseline justify-between gap-3">
                 <span class="text-sm font-medium">{band.label}</span>

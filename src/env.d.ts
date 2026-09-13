@@ -75,6 +75,12 @@ interface Env {
    * in .dev.vars and nowhere near production.
    */
   AUTH_DEBUG?: string;
+  /**
+   * Shared secret for /api/cron/*. Without it scheduled work refuses to run
+   * — an endpoint that emails clients must not be open because a secret was
+   * forgotten. `wrangler secret put CRON_SECRET`.
+   */
+  CRON_SECRET?: string;
   STRIPE_SECRET_KEY?: string;
   STRIPE_WEBHOOK_SECRET?: string;
   RESEND_API_KEY?: string;

@@ -41,15 +41,26 @@ export function sessionCookieName(url: URL): string {
 }
 
 /**
- * Read the session token under whichever name is in play, tolerating a
- * cookie left over from the other scheme so switching between `wrangler dev`
- * and the deployed Worker does not strand a browser.
+ * Read the session token under whichever name is in play.
+ *
+ * The fallback to the other name runs in ONE direction only: over http we
+ * will still honour a `__Host-` cookie, because that is a cookie a browser
+ * only ever accepted from a secure origin in the first place.
+ *
+ * Over https we will NOT honour the unprefixed name, and that asymmetry is
+ * the whole point of the prefix. `__Host-` guarantees no sibling subdomain
+ * can plant a session cookie on us; accepting `jwbs_session_dev` on https
+ * would hand that guarantee straight back, because anything able to set a
+ * cookie on `.jwbsstudio.com` — another subdomain, or a network attacker on
+ * any plain-http sibling — could fix a session under the unprefixed name.
+ *
+ * The cost is that moving a browser from `wrangler dev` to production needs
+ * a fresh sign-in. That is the correct trade.
  */
 export function readSessionToken(cookies: AstroCookies, url: URL): string | undefined {
-  return (
-    cookies.get(sessionCookieName(url))?.value ??
-    cookies.get(isSecureOrigin(url) ? SESSION_COOKIE_INSECURE : SESSION_COOKIE)?.value
-  );
+  const primary = cookies.get(sessionCookieName(url))?.value;
+  if (primary) return primary;
+  return isSecureOrigin(url) ? undefined : cookies.get(SESSION_COOKIE)?.value;
 }
 
 export function setSessionCookie(cookies: AstroCookies, url: URL, token: string, expiresAt: Date): void {

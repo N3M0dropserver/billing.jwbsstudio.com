@@ -15,9 +15,17 @@ const PUBLIC_PREFIXES = [
   '/api/auth/login',
   '/api/auth/magic-link',
   '/api/stripe/webhook',
+  // Started from the public pay page by the client, who has no session and
+  // never will. It takes no id of its own — the invoice comes from the same
+  // public token the page was reached by, so this exposes nothing the page
+  // does not already show.
+  '/api/stripe/checkout',
   '/pay/', // public invoice view + payment page
-  '/proposal/', // public proposal view
+  '/proposal/', // public quote/proposal view + PDF
+  '/api/quotes/respond', // accept or decline, from that page
   '/api/proposals/', // public accept/decline, token-authenticated
+  '/e/', // email open-tracking pixel — fetched by mail clients, never a session
+  '/email-assets/', // images embedded in sent email, likewise cookie-less
   '/d/', // generated demo sites, served on this origin as well as their subdomain
   '/_astro/',
   '/favicon',
@@ -34,7 +42,13 @@ function isPublic(pathname: string): boolean {
  * API requests are recorded.
  */
 function worthLogging(pathname: string): boolean {
-  return !pathname.startsWith('/_astro/') && !pathname.startsWith('/favicon');
+  return (
+    !pathname.startsWith('/_astro/') &&
+    !pathname.startsWith('/favicon') &&
+    // Tracking pixels are fetched by mail clients that have no session and
+    // never will. Nothing they do is an auth event worth a line.
+    !pathname.startsWith('/e/')
+  );
 }
 
 export const onRequest = defineMiddleware(async (context, next) => {

@@ -5,7 +5,7 @@ const actions = [
   { href: '/time', label: 'Track time', hint: 'Start or log a session', icon: 'M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM12 6v6l4 2' },
   { href: '/tax', label: 'Tax position', hint: 'What you owe and when', icon: 'M4 2h16v20H4zM8 6h8M8 10h.01M12 10h.01M16 10h.01M8 14h.01M12 14h.01M16 14h.01M8 18h8' },
   { href: '/tax/expenses/new', label: 'Log expense', hint: 'Capture a deduction', icon: 'M20 12V8H6a2 2 0 0 1 0-4h12v4M4 6v12a2 2 0 0 0 2 2h14v-4M18 12a2 2 0 0 0 0 4h4v-4z' },
-  { href: '/clients/prospect', label: 'Find prospects', hint: 'AI niche search', icon: 'M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16zM21 21l-4.35-4.35M11 8v6M8 11h6' },
+  { href: '/growth', label: 'Find prospects', hint: 'Growth pipeline', icon: 'M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16zM21 21l-4.35-4.35M11 8v6M8 11h6' },
 ];
 ---
 <div class="grid grid-cols-2 gap-2 sm:grid-cols-3">
@@ -13,18 +13,20 @@ const actions = [
     actions.map((action) => (
       <a
         href={action.href}
-        class="card group flex flex-col gap-1.5 p-3.5 transition-opacity hover:opacity-80"
+        class="card group flex items-center gap-3 p-3 transition-colors hover:border-[var(--border-strong)]"
       >
         <span
-          class="grid size-8 place-items-center rounded-lg"
-          style="background: color-mix(in oklch, var(--color-brand-500) 14%, transparent); color: var(--color-brand-600)"
+          class="grid size-9 shrink-0 place-items-center border"
+          style="border-color: var(--border); color: var(--accent-text); border-radius: 2px"
         >
-          <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
             <path d={action.icon} />
           </svg>
         </span>
-        <span class="text-sm font-medium leading-tight">{action.label}</span>
-        <span class="muted text-xs leading-tight">{action.hint}</span>
+        <span class="min-w-0">
+          <span class="label block truncate">{action.label}</span>
+          <span class="muted mt-1 block truncate text-xs">{action.hint}</span>
+        </span>
       </a>
     ))
   }

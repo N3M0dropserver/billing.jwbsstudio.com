@@ -1,0 +1,45 @@
+---
+import { TAB_LINKS, ICONS, isActive } from './links';
+
+const path = Astro.url.pathname;
+---
+
+<!--
+  Mobile only. Fixed to the bottom so the five primary destinations sit under a thumb,
+  with the home-indicator inset added to the padding so nothing is swallowed
+  by the gesture bar on an iPhone.
+-->
+<nav
+  class="fixed inset-x-0 bottom-0 z-40 border-t lg:hidden"
+  style="background: var(--surface-raised); border-color: var(--border); padding-bottom: env(safe-area-inset-bottom, 0px)"
+  aria-label="Primary"
+>
+  <ul class="grid grid-cols-5">
+    {
+      TAB_LINKS.map((link) => {
+        const active = isActive(path, link.href);
+        return (
+          <li>
+            <a
+              href={link.href}
+              class="relative flex flex-col items-center justify-center gap-1 py-2"
+              style={active ? 'color: var(--accent-text)' : 'color: var(--text-muted)'}
+              aria-current={active ? 'page' : undefined}
+            >
+              {/* The lit indicator above the active key. */}
+              <span
+                class="absolute inset-x-3 top-0 h-[2px]"
+                style={active ? 'background: var(--accent)' : 'background: transparent'}
+                aria-hidden="true"
+              />
+              <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                <path d={ICONS[link.icon]} />
+              </svg>
+              <span class="label-xs">{link.short}</span>
+            </a>
+          </li>
+        );
+      })
+    }
+  </ul>
+</nav>

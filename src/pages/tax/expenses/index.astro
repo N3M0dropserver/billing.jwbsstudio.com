@@ -49,12 +49,7 @@ const formatDate = (iso: string) =>
   subtitle={`${range.year} · ${formatMoney(totals.claimable, settings.defaultCurrency)} claimable`}
   width="wide"
 >
-  <a
-    slot="actions"
-    href="/tax/expenses/new"
-    class="rounded-lg px-3.5 py-2 text-sm font-medium text-white"
-    style="background: var(--color-brand-600)"
-  >Log expense</a>
+  <a slot="actions" href="/tax/expenses/new" class="btn btn-primary">Log expense</a>
 
   {Astro.url.searchParams.get('added') === '1' && (
     <p class="card mb-4 px-4 py-3 text-sm" style="color: var(--color-paid)">Expense recorded.</p>
@@ -69,29 +64,71 @@ const formatDate = (iso: string) =>
         actionLabel="Log your first expense"
       />
     ) : (
-      <div class="card overflow-hidden p-0">
-        <div class="overflow-x-auto">
+      <>
+        {/* Phones: description leads, the claimable figure is the number that matters. */}
+        <div class="card divide-y overflow-hidden lg:hidden" style="border-color: var(--border)">
+          {rows.map(({ expense, clientName }) => (
+            <div class="px-4 py-3.5" style="border-color: var(--border)">
+              <div class="flex items-start justify-between gap-3">
+                <div class="min-w-0">
+                  <p class="text-sm font-medium">{expense.description}</p>
+                  <p class="muted mt-0.5 truncate text-xs">
+                    {[expense.vendor, clientName].filter(Boolean).join(' · ') ||
+                      EXPENSE_GUIDANCE[expense.category as keyof typeof EXPENSE_GUIDANCE]?.label ||
+                      expense.category}
+                  </p>
+                </div>
+                <span class="label-xs muted shrink-0">{formatDate(expense.incurredOn)}</span>
+              </div>
+              <div class="mt-2.5 flex items-baseline justify-between gap-3">
+                <span class="label-xs muted">
+                  {formatMoney(expense.amountGross, expense.currency)} paid ·{' '}
+                  {Math.round(expense.businessUsePercent * 100)}% business
+                </span>
+                <span class="tabular text-sm font-semibold">
+                  {expense.isCapital
+                    ? 'Depreciated'
+                    : formatMoney(expense.claimableAmount, expense.currency)}
+                </span>
+              </div>
+            </div>
+          ))}
+          <div class="flex items-baseline justify-between gap-3 px-4 py-3" style="background: var(--surface-sunken); border-color: var(--border)">
+            <span class="label muted">{rows.length} claimable</span>
+            <span class="tabular text-sm font-semibold">{formatMoney(totals.claimable, settings.defaultCurrency)}</span>
+          </div>
+        </div>
+
+        {/* Desktop: the full grid. */}
+        <div class="card hidden overflow-hidden lg:block">
           <table class="w-full text-sm">
             <thead>
-              <tr class="muted border-b text-left text-xs" style="border-color: var(--border)">
-                <th scope="col" class="px-4 py-2.5 font-medium">Date</th>
-                <th scope="col" class="px-4 py-2.5 font-medium">Description</th>
-                <th scope="col" class="px-4 py-2.5 font-medium">Category</th>
-                <th scope="col" class="px-4 py-2.5 text-right font-medium">Paid</th>
-                <th scope="col" class="px-4 py-2.5 text-right font-medium">Use</th>
-                <th scope="col" class="px-4 py-2.5 text-right font-medium">Claimable</th>
+              <tr class="border-b text-left" style="border-color: var(--border)">
+                <th scope="col" class="label muted px-4 py-2.5 font-medium">Date</th>
+                <th scope="col" class="label muted px-4 py-2.5 font-medium">Description</th>
+                <th scope="col" class="label muted px-4 py-2.5 font-medium">Category</th>
+                <th scope="col" class="label muted px-4 py-2.5 text-right font-medium">Paid</th>
+                <th scope="col" class="label muted px-4 py-2.5 text-right font-medium">Use</th>
+                <th scope="col" class="label muted px-4 py-2.5 text-right font-medium">Claimable</th>
               </tr>
             </thead>
             <tbody>
               {rows.map(({ expense, clientName }) => (
                 <tr class="border-b last:border-0" style="border-color: var(--border)">
-                  <td class="muted px-4 py-2.5 whitespace-nowrap">{formatDate(expense.incurredOn)}</td>
+                  <td class="tabular muted px-4 py-2.5 whitespace-nowrap">{formatDate(expense.incurredOn)}</td>
                   <td class="px-4 py-2.5">
                     {expense.description}
                     {expense.vendor && <span class="muted"> · {expense.vendor}</span>}
                     {clientName && <span class="muted"> · {clientName}</span>}
-                    {expense.isCapital && (
-                      <span class="muted ml-1.5 text-xs">capital</span>
+                    {expense.isCapital && <span class="label-xs muted ml-1.5">capital</span>}
+                    {expense.receiptKey && (
+                      <a
+                        href={`/api/expenses/${expense.id}/receipt`}
+                        target="_blank" rel="noopener"
+                        class="label-xs ml-1.5 underline"
+                        style="color: var(--accent-text)"
+                        title="The receipt as photographed"
+                      >receipt</a>
                     )}
                   </td>
                   <td class="muted px-4 py-2.5">
@@ -110,21 +147,21 @@ const formatDate = (iso: string) =>
               ))}
             </tbody>
             <tfoot>
-              <tr class="border-t font-medium" style="border-color: var(--border); background: var(--surface-sunken)">
-                <td class="px-4 py-2.5" colspan="3">
+              <tr class="border-t" style="border-color: var(--border); background: var(--surface-sunken)">
+                <td class="label muted px-4 py-2.5" colspan="3">
                   {rows.length} expenses
                   {totals.gst > 0 && (
-                    <span class="muted font-normal"> · {formatMoney(totals.gst, settings.defaultCurrency)} GST reclaimable</span>
+                    <span> · {formatMoney(totals.gst, settings.defaultCurrency)} GST reclaimable</span>
                   )}
                 </td>
-                <td class="tabular px-4 py-2.5 text-right">{formatMoney(totals.gross, settings.defaultCurrency)}</td>
+                <td class="tabular px-4 py-2.5 text-right font-medium">{formatMoney(totals.gross, settings.defaultCurrency)}</td>
                 <td></td>
-                <td class="tabular px-4 py-2.5 text-right">{formatMoney(totals.claimable, settings.defaultCurrency)}</td>
+                <td class="tabular px-4 py-2.5 text-right font-medium">{formatMoney(totals.claimable, settings.defaultCurrency)}</td>
               </tr>
             </tfoot>
           </table>
         </div>
-      </div>
+      </>
     )
   }
 </AppLayout>

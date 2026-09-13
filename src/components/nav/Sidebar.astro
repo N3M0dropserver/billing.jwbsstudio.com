@@ -1,0 +1,96 @@
+---
+import type { User } from '~/lib/db/schema';
+import { NAV_LINKS, ICONS, isActive } from './links';
+
+interface Props {
+  user: User | null;
+}
+const { user } = Astro.props;
+const path = Astro.url.pathname;
+---
+
+<!-- Desktop only. On phones the same destinations live in the bottom tab bar. -->
+<nav
+  class="hidden shrink-0 lg:sticky lg:top-0 lg:flex lg:h-screen lg:w-56 lg:flex-col lg:border-r"
+  style="background: var(--surface-raised); border-color: var(--border)"
+  aria-label="Primary"
+>
+  <div class="flex items-center gap-2.5 border-b px-4 py-3.5" style="border-color: var(--border)">
+    <a href="/" class="flex min-w-0 items-center gap-2.5">
+      <span
+        class="grid size-7 shrink-0 place-items-center text-xs font-bold"
+        style="background: var(--accent); color: var(--accent-ink); border-radius: 2px"
+      >J</span>
+      <span class="label truncate">JWBS Studio</span>
+    </a>
+  </div>
+
+  <div class="p-3">
+    <button
+      type="button"
+      data-omni-open
+      class="flex w-full items-center gap-2 border px-2.5 py-2 text-left"
+      style="border-color: var(--border-strong); background: var(--surface-sunken); border-radius: var(--radius-ctl)"
+    >
+      <svg class="size-3.5 shrink-0" style="color: var(--text-muted)" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+        <path d={ICONS.search} />
+      </svg>
+      <span class="label muted flex-1">Search</span>
+      <kbd class="label-xs muted">⌘K</kbd>
+    </button>
+  </div>
+
+  <ul class="flex flex-col gap-px px-3">
+    {
+      NAV_LINKS.map((link) => {
+        const active = isActive(path, link.href);
+        return (
+          <li>
+            <a
+              href={link.href}
+              class="label relative flex items-center gap-2.5 py-2.5 pr-3 pl-3.5 transition-colors"
+              style={
+                active
+                  ? 'background: var(--surface-sunken); color: var(--text); border-radius: var(--radius-ctl)'
+                  : 'color: var(--text-muted); border-radius: var(--radius-ctl)'
+              }
+              aria-current={active ? 'page' : undefined}
+            >
+              {active && (
+                <span
+                  class="absolute top-1.5 bottom-1.5 left-0 w-[3px]"
+                  style="background: var(--accent)"
+                  aria-hidden="true"
+                />
+              )}
+              <svg class="size-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                <path d={ICONS[link.icon]} />
+              </svg>
+              <span class="truncate">{link.label}</span>
+            </a>
+          </li>
+        );
+      })
+    }
+  </ul>
+
+  <div class="mt-auto border-t p-3" style="border-color: var(--border)">
+    <div class="mb-2.5 flex items-center gap-2">
+      <div class="min-w-0 flex-1">
+        <p class="truncate text-sm font-medium">{user?.name ?? 'Not signed in'}</p>
+        <p class="muted truncate text-xs">{user?.email ?? ''}</p>
+      </div>
+      <button type="button" data-theme-toggle class="btn btn-ghost btn-sm size-8 !p-0" aria-label="Toggle light or dark theme">
+        <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+          <path d={ICONS.moon} />
+        </svg>
+      </button>
+    </div>
+    <div class="flex gap-1.5">
+      <a href="/settings" class="btn btn-secondary btn-sm flex-1">Settings</a>
+      <form method="post" action="/api/auth/logout" class="flex-1">
+        <button class="btn btn-secondary btn-sm w-full">Sign out</button>
+      </form>
+    </div>
+  </div>
+</nav>

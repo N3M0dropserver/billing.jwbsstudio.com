@@ -1,0 +1,121 @@
+---
+import AppLayout from '~/layouts/AppLayout.astro';
+import InvoiceEditor from '~/components/invoices/InvoiceEditor.tsx';
+import { and, eq, isNull, or } from 'drizzle-orm';
+import { db } from '~/lib/env';
+import { getSettings } from '~/lib/queries/settings';
+import { getInvoice, editability, EDIT_REFUSAL_MESSAGE } from '~/lib/invoices/service';
+import { clients, timeEntries } from '~/lib/db/schema';
+
+const user = Astro.locals.user!;
+const database = db();
+const invoice = await getInvoice(database, user.id, Astro.params.id!);
+
+if (!invoice) return Astro.redirect('/invoices', 302);
+
+/**
+ * Refuse here as well as in the endpoint. Landing on an editor you are not
+ * allowed to save is a worse experience than being told why on the page you
+ * came from.
+ */
+const allowed = editability(invoice);
+if (!allowed.canEdit) {
+  return Astro.redirect(
+    `/invoices/${invoice.id}?error=${encodeURIComponent(EDIT_REFUSAL_MESSAGE[allowed.reason])}`,
+    302,
+  );
+}
+
+const settings = await getSettings(database, user.id);
+
+const clientRows = await database
+  .select({
+    id: clients.id, name: clients.name, country: clients.country,
+    currency: clients.currency, paymentTermsDays: clients.paymentTermsDays,
+    hourlyRate: clients.hourlyRate, gstTreatment: clients.gstTreatment,
+  })
+  .from(clients)
+  .where(and(eq(clients.userId, user.id), or(eq(clients.status, 'active'), eq(clients.status, 'lead'))))
+  .orderBy(clients.name);
+
+/**
+ * Unbilled time, plus anything already claimed by THIS invoice — otherwise
+ * re-saving an invoice built from time entries would silently drop them from
+ * the list it offers.
+ */
+const unbilledRows = await database
+  .select({
+    id: timeEntries.id, description: timeEntries.description, minutes: timeEntries.minutes,
+    clientId: timeEntries.clientId, startedAt: timeEntries.startedAt, hourlyRate: timeEntries.hourlyRate,
+  })
+  .from(timeEntries)
+  .where(
+    and(
+      eq(timeEntries.userId, user.id),
+      eq(timeEntries.billable, true),
+      or(
+        and(eq(timeEntries.billed, false), isNull(timeEntries.invoiceId)),
+        eq(timeEntries.invoiceId, invoice.id),
+      ),
+    ),
+  )
+  .orderBy(timeEntries.startedAt);
+
+const error = Astro.url.searchParams.get('error');
+---
+
+<AppLayout title={`Edit ${invoice.number}`} subtitle={invoice.client?.name ?? 'Manual entry'} width="wide">
+  <div slot="actions">
+    <a
+      href={`/invoices/${invoice.id}`}
+      class="muted card px-3.5 py-2 text-sm font-medium hover:opacity-80"
+    >Cancel</a>
+  </div>
+
+  {error === 'no-lines' && (
+    <p class="card mb-4 px-4 py-3 text-sm" style="color: var(--color-overdue)">
+      An invoice needs at least one line with something on it.
+    </p>
+  )}
+
+  <p class="muted mb-4 text-sm">
+    {invoice.number} keeps its number and its client link, so a copy already in
+    someone's inbox will show the corrected document.
+  </p>
+
+  <InvoiceEditor
+    client:load
+    clients={clientRows}
+    unbilled={unbilledRows}
+    defaults={{
+      currency: settings.defaultCurrency,
+      residenceCurrency: settings.taxResidence === 'NZ' ? 'NZD' : 'AUD',
+      jurisdiction: settings.taxResidence,
+      paymentTermsDays: settings.defaultPaymentTermsDays,
+      hourlyRate: settings.defaultHourlyRate,
+      gstRegistered:
+        settings.taxResidence === 'NZ' ? settings.nzGstRegistered : settings.auGstRegistered,
+      terms: settings.invoiceFooter,
+    }}
+    invoice={{
+      id: invoice.id,
+      clientId: invoice.clientId,
+      issuedOn: invoice.issuedOn,
+      dueOn: invoice.dueOn,
+      currency: invoice.currency,
+      jurisdiction: invoice.jurisdiction,
+      gstTreatment: invoice.gstTreatment,
+      fxRateToResidence: invoice.fxRateToResidence,
+      reference: invoice.reference,
+      notes: invoice.notes,
+      terms: invoice.terms,
+      lines: invoice.lines.map((line) => ({
+        description: line.description,
+        quantity: line.quantity,
+        unit: line.unit,
+        unitPrice: line.unitPrice,
+        taxable: line.taxable,
+      })),
+    }}
+  />
+</AppLayout>

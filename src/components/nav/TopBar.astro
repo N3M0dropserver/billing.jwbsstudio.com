@@ -1,0 +1,93 @@
+---
+import type { User } from '~/lib/db/schema';
+import { ICONS } from './links';
+
+interface Props {
+  user: User | null;
+}
+const { user } = Astro.props;
+---
+
+<!--
+  Mobile only. Search is the one thing that stays pinned to the top — the
+  destinations moved to the tab bar at the bottom, where a thumb can reach
+  them, but search is a keyboard action and belongs next to the address bar.
+-->
+<header
+  class="sticky top-0 z-40 border-b lg:hidden"
+  style="background: var(--surface-raised); border-color: var(--border)"
+>
+  <div class="flex items-center gap-2 px-3 py-2.5">
+    <a href="/" class="shrink-0" aria-label="JWBS Studio dashboard">
+      <span
+        class="grid size-9 place-items-center text-sm font-bold"
+        style="background: var(--accent); color: var(--accent-ink); border-radius: 2px"
+      >J</span>
+    </a>
+
+    <button
+      type="button"
+      data-omni-open
+      class="flex h-9 min-w-0 flex-1 items-center gap-2 border px-2.5 text-left"
+      style="border-color: var(--border-strong); background: var(--surface-sunken); border-radius: var(--radius-ctl)"
+    >
+      <svg class="size-4 shrink-0" style="color: var(--text-muted)" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+        <path d={ICONS.search} />
+      </svg>
+      <span class="label muted truncate">Search</span>
+    </button>
+
+    <button
+      type="button"
+      data-theme-toggle
+      class="grid size-9 shrink-0 place-items-center border"
+      style="border-color: var(--border); color: var(--text-muted); border-radius: var(--radius-ctl)"
+      aria-label="Toggle light or dark theme"
+    >
+      <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+        <path d={ICONS.moon} />
+      </svg>
+    </button>
+
+    <details class="relative shrink-0" data-account-menu>
+      <summary
+        class="grid size-9 cursor-pointer list-none place-items-center border"
+        style="border-color: var(--border); color: var(--text-muted); border-radius: var(--radius-ctl)"
+        aria-label="Account menu"
+      >
+        <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+          <path d={ICONS.gear} />
+        </svg>
+      </summary>
+      <div
+        class="card animate-fade-up absolute right-0 z-50 mt-2 w-56 p-3 shadow-lg"
+        style="background: var(--surface-raised)"
+      >
+        <p class="truncate text-sm font-medium">{user?.name ?? 'Not signed in'}</p>
+        <p class="muted mb-3 truncate text-xs">{user?.email ?? ''}</p>
+        <a href="/settings" class="btn btn-secondary mb-1.5 w-full">Settings</a>
+        <a href="/account/password" class="btn btn-secondary mb-1.5 w-full">Password</a>
+        <form method="post" action="/api/auth/logout">
+          <button class="btn btn-secondary w-full">Sign out</button>
+        </form>
+      </div>
+    </details>
+  </div>
+</header>
+
+<style>
+  /* Safari still paints a disclosure marker without this. */
+  summary::-webkit-details-marker {
+    display: none;
+  }
+</style>
+
+<script is:inline>
+  // A <details> menu stays open when you tap elsewhere; close it by hand.
+  document.addEventListener('click', (event) => {
+    const menu = document.querySelector('[data-account-menu][open]');
+    if (menu && event.target instanceof Node && !menu.contains(event.target)) {
+      menu.removeAttribute('open');
+    }
+  });
+</script>

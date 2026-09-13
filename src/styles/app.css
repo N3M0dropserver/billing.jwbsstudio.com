@@ -1,77 +1,138 @@
 @import 'tailwindcss';
 
 /*
- * Design tokens.
+ * Design tokens — "instrument panel".
  *
- * A restrained palette: warm neutrals for surfaces, a single deep green as
- * the brand accent, and semantic colours reserved for money states (paid,
- * owing, overdue, reserved). Financial UI earns trust by being quiet — the
- * numbers should be the loudest thing on the page.
+ * The reference is a piece of Teenage Engineering hardware: a grey anodised
+ * body, hairline rules, tiny monospaced labels shouting in uppercase, square
+ * corners, and exactly one colour — orange — reserved for the thing you are
+ * meant to press or the number you are meant to read. Everything else is
+ * greyscale. Financial UI earns trust by being quiet; the figures and the
+ * single accent are the only things allowed to be loud.
  */
 
 @theme {
-  --font-sans: 'Inter var', 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
-  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', 'Cascadia Code', monospace;
+  --font-sans:
+    'Helvetica Neue', Helvetica, Inter, ui-sans-serif, system-ui, 'Segoe UI', Roboto, Arial,
+    sans-serif;
+  --font-mono:
+    ui-monospace, 'SF Mono', SFMono-Regular, 'JetBrains Mono', Menlo, Consolas, monospace;
 
-  --color-ink-50: oklch(0.985 0.002 90);
-  --color-ink-100: oklch(0.96 0.003 90);
-  --color-ink-200: oklch(0.915 0.004 90);
-  --color-ink-300: oklch(0.845 0.005 90);
-  --color-ink-400: oklch(0.68 0.006 90);
-  --color-ink-500: oklch(0.545 0.007 90);
-  --color-ink-600: oklch(0.44 0.008 90);
-  --color-ink-700: oklch(0.355 0.008 90);
-  --color-ink-800: oklch(0.245 0.007 90);
-  --color-ink-900: oklch(0.175 0.006 90);
-  --color-ink-950: oklch(0.125 0.005 90);
+  /* The body of the machine. Warm-neutral grey, effectively no colour cast. */
+  --color-ink-0: oklch(1 0 0);
+  --color-ink-50: oklch(0.978 0.002 85);
+  --color-ink-100: oklch(0.945 0.002 85);
+  --color-ink-200: oklch(0.905 0.003 85);
+  --color-ink-300: oklch(0.85 0.003 85);
+  --color-ink-400: oklch(0.72 0.004 85);
+  --color-ink-500: oklch(0.575 0.004 85);
+  --color-ink-600: oklch(0.47 0.004 85);
+  --color-ink-700: oklch(0.37 0.004 85);
+  --color-ink-800: oklch(0.285 0.003 85);
+  --color-ink-900: oklch(0.205 0.003 85);
+  --color-ink-950: oklch(0.155 0.002 85);
+  --color-ink-1000: oklch(0.115 0.002 85);
 
-  --color-brand-50: oklch(0.965 0.02 165);
-  --color-brand-100: oklch(0.925 0.04 165);
-  --color-brand-300: oklch(0.79 0.09 165);
-  --color-brand-500: oklch(0.6 0.12 165);
-  --color-brand-600: oklch(0.52 0.115 165);
-  --color-brand-700: oklch(0.43 0.1 165);
-  --color-brand-900: oklch(0.28 0.07 165);
+  /* One accent, used sparingly. */
+  --color-accent-400: oklch(0.76 0.16 50);
+  --color-accent-500: oklch(0.7 0.19 46);
+  --color-accent-600: oklch(0.635 0.2 42);
+  --color-accent-700: oklch(0.5 0.18 40);
 
-  --color-paid: oklch(0.62 0.13 158);
-  --color-owing: oklch(0.72 0.14 75);
-  --color-overdue: oklch(0.6 0.19 25);
-  --color-reserved: oklch(0.58 0.13 265);
+  /*
+   * Money states. These are the dark-mode values — bright enough to read on
+   * near-black — and :root below darkens each one for light mode, because an
+   * amber that works on black sits at 2.5:1 on white and these colours are
+   * carrying figures, not decoration.
+   */
+  --color-paid: oklch(0.64 0.14 150);
+  --color-owing: oklch(0.72 0.14 80);
+  --color-overdue: oklch(0.605 0.2 27);
+  --color-reserved: oklch(0.62 0.12 248);
 
-  --radius-card: 0.75rem;
+  --radius-card: 4px;
+  --radius-ctl: 3px;
 }
 
 :root {
-  --surface: var(--color-ink-50);
-  --surface-raised: white;
-  --surface-sunken: var(--color-ink-100);
-  --border: var(--color-ink-200);
-  --text: var(--color-ink-900);
-  --text-muted: var(--color-ink-500);
+  --surface: var(--color-ink-100);
+  --surface-raised: var(--color-ink-0);
+  --surface-sunken: var(--color-ink-200);
+  --surface-inverse: var(--color-ink-950);
+  --text-inverse: var(--color-ink-50);
+  --border: var(--color-ink-300);
+  --border-strong: var(--color-ink-400);
+  --text: var(--color-ink-950);
+  --text-muted: oklch(0.495 0.004 85);
+
+  /* Money on a pale ground has to be darker to clear 4.5:1. */
+  --color-paid: oklch(0.48 0.14 150);
+  --color-owing: oklch(0.5 0.12 68);
+  --color-overdue: oklch(0.52 0.2 27);
+  --color-reserved: oklch(0.5 0.14 250);
+
+  /*
+   * The orange comes in two strengths. `--accent` is the fill — keys, bars,
+   * the lit tab indicator — and always carries near-black ink, the way a
+   * legend is printed on an orange key rather than knocked out of it.
+   * `--accent-text` is the darker one, the only version allowed to be read as
+   * text on a pale surface, where the bright fill would sit at 2.2:1.
+   */
+  --accent: var(--color-accent-500);
+  --accent-hover: var(--color-accent-600);
+  --accent-ink: oklch(0.16 0.02 50);
+  --accent-text: var(--color-accent-700);
   color-scheme: light;
 }
 
-:root[data-theme='dark'],
-:root:not([data-theme='light']) {
-  @media (prefers-color-scheme: dark) {
-    --surface: var(--color-ink-950);
-    --surface-raised: var(--color-ink-900);
-    --surface-sunken: oklch(0.1 0.005 90);
-    --border: var(--color-ink-800);
-    --text: var(--color-ink-100);
-    --text-muted: var(--color-ink-400);
+/* Dark is the same machine with the lights off: the greys invert, the orange
+ * lifts a little so it still reads against near-black. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --surface: oklch(0.145 0.002 85);
+    --surface-raised: oklch(0.197 0.003 85);
+    --surface-sunken: oklch(0.115 0.002 85);
+    --surface-inverse: var(--color-ink-50);
+    --text-inverse: var(--color-ink-950);
+    --border: oklch(0.305 0.004 85);
+    --border-strong: oklch(0.43 0.004 85);
+    --text: oklch(0.955 0.002 85);
+    --text-muted: oklch(0.655 0.004 85);
+    --color-paid: oklch(0.7 0.15 152);
+    --color-owing: oklch(0.78 0.14 82);
+    --color-overdue: oklch(0.66 0.19 27);
+    --color-reserved: oklch(0.68 0.12 248);
+    --accent: var(--color-accent-500);
+    --accent-hover: var(--color-accent-400);
+    --accent-ink: oklch(0.16 0.02 50);
+    --accent-text: var(--color-accent-400);
     color-scheme: dark;
   }
 }
 
 :root[data-theme='dark'] {
-  --surface: var(--color-ink-950);
-  --surface-raised: var(--color-ink-900);
-  --surface-sunken: oklch(0.1 0.005 90);
-  --border: var(--color-ink-800);
-  --text: var(--color-ink-100);
-  --text-muted: var(--color-ink-400);
+  --surface: oklch(0.145 0.002 85);
+  --surface-raised: oklch(0.197 0.003 85);
+  --surface-sunken: oklch(0.115 0.002 85);
+  --surface-inverse: var(--color-ink-50);
+  --text-inverse: var(--color-ink-950);
+  --border: oklch(0.305 0.004 85);
+  --border-strong: oklch(0.43 0.004 85);
+  --text: oklch(0.955 0.002 85);
+  --text-muted: oklch(0.655 0.004 85);
+  --color-paid: oklch(0.7 0.15 152);
+  --color-owing: oklch(0.78 0.14 82);
+  --color-overdue: oklch(0.66 0.19 27);
+  --color-reserved: oklch(0.68 0.12 248);
+  --accent: var(--color-accent-500);
+  --accent-hover: var(--color-accent-400);
+  --accent-ink: oklch(0.16 0.02 50);
+  --accent-text: var(--color-accent-400);
   color-scheme: dark;
+}
+
+html {
+  background: var(--surface);
 }
 
 body {
@@ -79,6 +140,17 @@ body {
   color: var(--text);
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
+  -webkit-text-size-adjust: 100%;
+}
+
+::selection {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+:where(a, button, [role='button'], input, select, textarea):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 /* Figures line up in columns only if the digits are the same width. */
@@ -97,19 +169,171 @@ body {
   color: var(--text-muted);
 }
 
+/*
+ * The panel label. Every caption on a TE device is a tiny monospaced word in
+ * caps, and it is the single strongest cue that this is an instrument rather
+ * than a web page. Used for table headers, stat captions, and nav.
+ */
+@utility label {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  line-height: 1.25;
+  font-weight: 500;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+@utility label-xs {
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  line-height: 1.25;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+/* Controls ------------------------------------------------------------- */
+
+@utility btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  min-height: 2.75rem;
+  padding: 0.5rem 0.9375rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-ctl);
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color 0.12s ease,
+    border-color 0.12s ease,
+    color 0.12s ease;
+}
+
+@utility btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+
+  &:hover:not(:disabled) {
+    background: var(--accent-hover);
+    border-color: var(--accent-hover);
+  }
+
+  &:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+}
+
+@utility btn-secondary {
+  background: var(--surface-raised);
+  border-color: var(--border-strong);
+  color: var(--text);
+
+  &:hover:not(:disabled) {
+    background: var(--surface-sunken);
+  }
+
+  &:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+}
+
+@utility btn-ghost {
+  color: var(--text-muted);
+
+  &:hover:not(:disabled) {
+    background: var(--surface-sunken);
+    color: var(--text);
+  }
+}
+
+@utility btn-sm {
+  min-height: 2rem;
+  padding: 0.25rem 0.625rem;
+  font-size: 0.625rem;
+}
+
+/* A segmented control — the filter tabs on the list pages. */
+@utility seg {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.25rem;
+  padding: 0.375rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-ctl);
+  background: var(--surface-raised);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  white-space: nowrap;
+
+  &:hover {
+    color: var(--text);
+  }
+}
+
+@utility seg-on {
+  background: var(--surface-inverse);
+  border-color: var(--surface-inverse);
+  color: var(--text-inverse);
+
+  &:hover {
+    color: var(--text-inverse);
+  }
+}
+
 @utility field {
   width: 100%;
-  border-radius: 0.5rem;
-  border: 1px solid var(--border);
+  min-height: 2.75rem;
+  border-radius: var(--radius-ctl);
+  border: 1px solid var(--border-strong);
   background: var(--surface-raised);
   padding: 0.5rem 0.75rem;
-  font-size: 0.875rem;
+  /* 16px keeps iOS Safari from zooming the viewport on focus. */
+  font-size: 1rem;
+  font-family: inherit;
   color: var(--text);
 }
 
+@media (min-width: 640px) {
+  .field {
+    font-size: 0.875rem;
+    min-height: 2.25rem;
+  }
+}
+
 .field:focus {
-  outline: 2px solid var(--color-brand-500);
+  outline: 2px solid var(--accent);
   outline-offset: -1px;
+  border-color: var(--accent);
+}
+
+.field::placeholder {
+  color: var(--text-muted);
+}
+
+textarea.field {
+  min-height: 0;
+}
+
+/* Hairline rules do a lot of the structural work in this design. */
+@utility hairline {
+  border-color: var(--border);
 }
 
 /*
@@ -160,17 +384,296 @@ body {
 }
 
 @keyframes fade-up {
-  from { opacity: 0; transform: translateY(4px); }
-  to { opacity: 1; transform: none; }
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 .animate-fade-up {
-  animation: fade-up 0.25s ease-out both;
+  animation: fade-up 0.2s ease-out both;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
+  *,
+  *::before,
+  *::after {
     animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+/*
+ * The email builder.
+ *
+ * Three panes: blocks, canvas, settings. The canvas is the only one that is
+ * not an ordinary app surface — it is a picture of an email, so it gets a
+ * workspace grey behind a white sheet, the way every visual editor since
+ * PageMaker has done it. The rest is the same instrument panel as everywhere
+ * else in the app.
+ */
+
+/*
+ * `@react-email/editor` ships layout only, plus a `--re-*` palette it switches
+ * on `prefers-color-scheme`. This app switches on `data-theme`, so left alone
+ * the menus go dark inside an app someone has pinned to light. Mapping the
+ * palette onto the app's own tokens makes the question moot: however the app
+ * resolved, the editor matches.
+ *
+ * `:root:root` for specificity, not superstition — the package's own `:root`
+ * and `.dark` blocks are imported from the component and land after this file,
+ * and an even fight would go to them.
+ */
+:root:root {
+  --re-bg: var(--surface-raised);
+  --re-border: var(--border);
+  --re-separator: var(--border);
+  --re-text: var(--text);
+  --re-text-muted: var(--text-muted);
+  --re-hover: color-mix(in oklab, var(--text) 6%, transparent);
+  --re-active: color-mix(in oklab, var(--text) 9%, transparent);
+  --re-pressed: var(--re-active);
+  --re-bg-hover: var(--surface-sunken);
+  --re-bg-active: var(--surface-sunken);
+  --re-tooltip-bg: var(--surface-inverse);
+  --re-tooltip-text: var(--text-inverse);
+  --re-radius: var(--radius-card);
+  --re-danger: var(--color-overdue);
+}
+
+/* The workspace the sheet sits on. Positioned, because every outline the
+   builder draws is measured against this box. */
+.builder-canvas {
+  position: relative;
+  min-height: 30rem;
+  padding: 1.5rem 1rem;
+  background: var(--surface-sunken);
+}
+
+/*
+ * The sheet stays white in dark mode, and that is not an oversight. It is a
+ * picture of an email, and the email will be white in the client's inbox.
+ * Darkening it here would mean designing against a background nobody sees.
+ */
+.builder-sheet {
+  margin: 0 auto;
+  background: #fff;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.12);
+  transition: max-width 0.15s ease-out;
+}
+
+.builder-content {
+  min-height: 26rem;
+  padding: 1.5rem;
+}
+
+.builder-panel {
+  padding: 0.5rem;
+}
+
+/* ---------------------------------------------------------------- overlay */
+
+/*
+ * Chrome drawn over the canvas. It never takes the pointer — only the two
+ * controls that need clicks turn it back on. Anything else would put a sheet
+ * of glass over the text.
+ */
+.builder-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 5;
+}
+
+.builder-hover {
+  outline: 1px dashed var(--accent);
+  outline-offset: 1px;
+}
+
+.builder-selected {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* The block's name, and the only way to select one you cannot put a cursor
+   in — a section, a column, the row holding them. */
+.builder-chip {
+  position: absolute;
+  top: -1.125rem;
+  left: 0;
+  pointer-events: auto;
+  padding: 0 0.3rem;
+  border-radius: 2px 2px 0 0;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-family: var(--font-mono);
+  font-size: 0.5625rem;
+  font-weight: 600;
+  line-height: 1.125rem;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.builder-chip-on {
+  pointer-events: none;
+  border-radius: 2px;
+}
+
+.builder-toolbar {
+  position: absolute;
+  top: -1.375rem;
+  right: 0;
+  display: flex;
+  align-items: stretch;
+  gap: 1px;
+  pointer-events: auto;
+}
+
+.builder-toolbar > button,
+.builder-grip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.25rem;
+  height: 1.125rem;
+  padding: 0 0.25rem;
+  border: 1px solid var(--accent);
+  background: var(--surface-raised);
+  color: var(--text);
+  font-size: 0.625rem;
+  line-height: 1;
+}
+
+.builder-toolbar > button:hover {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.builder-grip {
+  cursor: grab;
+  letter-spacing: -0.1em;
+}
+
+.builder-grip:active {
+  cursor: grabbing;
+}
+
+/* Where the thing you are dragging would land. */
+.builder-drop {
+  height: 2px;
+  margin-top: -1px;
+  background: var(--accent);
+  box-shadow: 0 0 0 1px color-mix(in oklab, var(--accent) 30%, transparent);
+}
+
+.builder-drop::before {
+  content: '';
+  position: absolute;
+  top: -3px;
+  left: -3px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+/* ---------------------------------------------------------------- palette */
+
+@utility block-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
+  padding: 0.625rem 0.25rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-ctl);
+  background: var(--surface-raised);
+  color: var(--text-muted);
+  font-size: 0.6875rem;
+  text-align: center;
+  cursor: grab;
+
+  &:hover {
+    border-color: var(--accent);
+    color: var(--text);
+  }
+
+  &:active {
+    cursor: grabbing;
+  }
+}
+
+/* ----------------------------------------------------------------- layers */
+
+.layer-tree,
+.layer-tree ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.layer-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.375rem;
+  width: 100%;
+  padding: 0.25rem 0.5rem;
+  border-radius: var(--radius-ctl);
+  text-align: left;
+}
+
+.layer-row:hover {
+  background: var(--surface-sunken);
+}
+
+.layer-row-on {
+  background: var(--surface-inverse);
+}
+
+.layer-label {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 0.5625rem;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.layer-excerpt {
+  overflow: hidden;
+  font-size: 0.6875rem;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--text);
+}
+
+.layer-row-on .layer-label {
+  color: color-mix(in oklab, var(--text-inverse) 70%, transparent);
+}
+
+.layer-row-on .layer-excerpt {
+  color: var(--text-inverse);
+}
+
+/* -------------------------------------------------------------- inspector */
+
+/* The inspector sits in a narrow rail; its own stylesheet does the layout,
+   this only brings the type down to the size of the labels around it. */
+.re-inspector {
+  font-size: 0.75rem;
+  color: var(--text);
+}
+
+.re-inspector [data-re-inspector-section-header] {
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--text-muted);
 }

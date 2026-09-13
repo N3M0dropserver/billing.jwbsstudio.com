@@ -4,6 +4,7 @@ import { db, appUrl, bindings } from '~/lib/env';
 import { getInvoiceByToken } from '~/lib/invoices/service';
 import { createCheckoutSession } from '~/lib/stripe';
 import { invoices } from '~/lib/db/schema';
+import { recordInvoiceEvent } from '~/lib/activity/events';
 
 export const prerender = false;
 
@@ -39,6 +40,19 @@ export const POST: APIRoute = async ({ request, redirect }) => {
     .update(invoices)
     .set({ stripePaymentLinkUrl: session.url, updatedAt: new Date().toISOString() })
     .where(eq(invoices.id, invoice.id));
+
+  // Reaching Stripe's checkout is not payment — the webhook records that. It
+  // is worth its own row because an abandoned checkout looks exactly like
+  // silence otherwise, and the two call for very different follow-ups.
+  await recordInvoiceEvent(database, {
+    invoiceId: invoice.id,
+    clientId: invoice.clientId,
+    type: 'payment-started',
+    actor: 'client',
+    detail: { amount: outstanding, currency: invoice.currency },
+    ipAddress: request.headers.get('cf-connecting-ip'),
+    userAgent: request.headers.get('user-agent'),
+  });
 
   return redirect(session.url, 303);
 };
