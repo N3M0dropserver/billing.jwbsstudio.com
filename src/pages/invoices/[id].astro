@@ -96,6 +96,12 @@ const formatDate = (iso: string) =>
       deductible — <a class="underline" href="/tax">check the tax page</a>.
     </p>
   )}
+  {Astro.url.searchParams.get('reminders') === 'paused' && (
+    <p class="card mb-4 px-4 py-3 text-sm muted">Reminders paused for this invoice.</p>
+  )}
+  {Astro.url.searchParams.get('reminders') === 'resumed' && (
+    <p class="card mb-4 px-4 py-3 text-sm muted">Reminders resumed.</p>
+  )}
   {statusChange === 'reinstate' && (
     <p class="card mb-4 px-4 py-3 text-sm muted">Reinstated.</p>
   )}
@@ -263,6 +269,25 @@ const formatDate = (iso: string) =>
       {publicUrl && (
         <Card title="Client link" subtitle="Anyone with this link can view and pay">
           <input readonly value={publicUrl} class="field text-xs" onclick="this.select()" />
+        </Card>
+      )}
+
+      {!isCancelled && invoice.status !== 'draft' && outstanding > 0 && (
+        <Card title="Automatic reminders">
+          <form method="post" action={`/api/invoices/${invoice.id}/reminders`}>
+            <input type="hidden" name="paused" value={invoice.remindersPaused ? 'no' : 'yes'} />
+            <p class="muted mb-3 text-xs">
+              {invoice.remindersPaused
+                ? 'Paused for this invoice. Nothing automatic will be sent about it.'
+                : settings.remindersEnabled
+                  ? `Chasing on the schedule set in Settings. ${invoice.remindersSent} sent so far.`
+                  : 'Automatic chasing is switched off for everything — turn it on in Settings.'}
+            </p>
+            <button
+              class="muted w-full rounded-lg border px-4 py-2 text-sm font-medium hover:opacity-80"
+              style="border-color: var(--border)"
+            >{invoice.remindersPaused ? 'Resume reminders' : 'Pause reminders for this invoice'}</button>
+          </form>
         </Card>
       )}
 

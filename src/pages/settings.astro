@@ -5,12 +5,19 @@ import { db } from '~/lib/env';
 import { getSettings } from '~/lib/queries/settings';
 import { unverifiedFigures, NZ_YEARS, AU_YEARS } from '~/lib/tax/rates';
 import { currentTaxYear } from '~/lib/queries/dashboard';
+import { parseDaysAfter } from '~/lib/invoices/reminders';
 
 const user = Astro.locals.user!;
 const s = await getSettings(db(), user.id);
 const saved = Astro.url.searchParams.get('saved') === '1';
 const range = currentTaxYear(s.taxResidence);
 const unverified = unverifiedFigures(s.taxResidence, range.year);
+
+/**
+ * The ladder is stored as JSON but typed as "7, 14, 30" — nobody should have
+ * to write brackets into a settings field.
+ */
+const reminderDaysAfterValue = parseDaysAfter(s.reminderDaysAfter).join(', ');
 ---
 
 <AppLayout title="Settings" subtitle="Business details, tax setup and invoice defaults">
@@ -239,6 +246,76 @@ const unverified = unverifiedFigures(s.taxResidence, range.year);
             Also needs STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET set as Worker secrets.
           </p>
         </div>
+      </div>
+    </Card>
+
+    <Card
+      title="Chasing late payments"
+      subtitle="Reminders sent automatically, so you do not have to be the one who asks"
+    >
+      <div class="space-y-4">
+        <label class="flex items-start gap-2.5 text-sm">
+          <input type="checkbox" name="remindersEnabled" value="yes" checked={s.remindersEnabled} class="mt-0.5" />
+          <span>
+            Send payment reminders automatically
+            <span class="muted mt-1 block text-xs">
+              Off until you turn it on. Nothing is sent to a client until you do, and a
+              reminder only ever goes to an invoice you have actually sent.
+            </span>
+          </span>
+        </label>
+
+        <div class="grid gap-3.5 sm:grid-cols-3">
+          <div>
+            <label for="reminderDaysBefore" class="mb-1.5 block text-sm font-medium">
+              Courtesy note
+            </label>
+            <div class="flex items-center gap-2">
+              <input
+                id="reminderDaysBefore" name="reminderDaysBefore" type="number" min="0" max="60"
+                value={String(s.reminderDaysBefore)} class="field"
+              />
+              <span class="muted shrink-0 text-sm">days before due</span>
+            </div>
+            <p class="muted mt-1 text-xs">0 to skip it.</p>
+          </div>
+
+          <div>
+            <label for="reminderDaysAfter" class="mb-1.5 block text-sm font-medium">
+              Then chase after
+            </label>
+            <input
+              id="reminderDaysAfter" name="reminderDaysAfter" value={reminderDaysAfterValue}
+              class="field tabular" placeholder="7, 14, 30"
+            />
+            <p class="muted mt-1 text-xs">Days overdue, comma separated.</p>
+          </div>
+
+          <div>
+            <label for="reminderMaxCount" class="mb-1.5 block text-sm font-medium">
+              At most
+            </label>
+            <div class="flex items-center gap-2">
+              <input
+                id="reminderMaxCount" name="reminderMaxCount" type="number" min="0" max="20"
+                value={String(s.reminderMaxCount)} class="field"
+              />
+              <span class="muted shrink-0 text-sm">per invoice</span>
+            </div>
+          </div>
+        </div>
+
+        <label class="flex items-center gap-2.5 text-sm">
+          <input type="checkbox" name="reminderSkipWeekends" value="yes" checked={s.reminderSkipWeekends} />
+          Hold weekend reminders until Monday
+        </label>
+
+        <p class="muted border-t pt-3 text-xs" style="border-color: var(--border)">
+          Reminders go out at 08:00 UTC daily — evening in New Zealand, so they land first thing.
+          Deploying also needs <code>wrangler secret put CRON_SECRET</code>; without it the
+          scheduled job refuses to run rather than mailing anyone. Individual clients can be
+          excluded on their own page, and a single invoice can be paused on its page.
+        </p>
       </div>
     </Card>
 

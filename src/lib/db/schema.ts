@@ -176,6 +176,29 @@ export const settings = sqliteTable('settings', {
   /** Share of each payment to move into the tax account, as a decimal. */
   taxReserveRate: real('tax_reserve_rate').notNull().default(0.33),
 
+  /* ---------------- Automatic payment reminders ---------------- */
+
+  /**
+   * Off until you turn it on. Sending mail to clients on a schedule is not
+   * something software should start doing on your behalf because it was
+   * deployed.
+   */
+  remindersEnabled: integer('reminders_enabled', { mode: 'boolean' }).notNull().default(false),
+  /** Days before the due date to send a courtesy note. 0 disables it. */
+  reminderDaysBefore: integer('reminder_days_before').notNull().default(3),
+  /**
+   * Days AFTER the due date to chase, as a JSON array. The default ladder is
+   * a week, a fortnight, then a month: enough to be useful, not so much that
+   * a client stops reading them.
+   */
+  reminderDaysAfter: text('reminder_days_after').notNull().default('[7,14,30]'),
+  /** Hard ceiling on reminders per invoice, whatever the ladder says. */
+  reminderMaxCount: integer('reminder_max_count').notNull().default(4),
+  /** Skip weekends. A Saturday chase reads as automated, because it is. */
+  reminderSkipWeekends: integer('reminder_skip_weekends', { mode: 'boolean' })
+    .notNull()
+    .default(true),
+
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 });
@@ -216,6 +239,11 @@ export const clients = sqliteTable(
     status: text('status', { enum: ['lead', 'active', 'dormant', 'archived'] })
       .notNull()
       .default('active'),
+    /**
+     * Some clients are chased by their own accounts payable calendar and a
+     * reminder only irritates them. Per-client opt-out, on by default.
+     */
+    remindersEnabled: integer('reminders_enabled', { mode: 'boolean' }).notNull().default(true),
     source: text('source').notNull().default(''),
     notes: text('notes').notNull().default(''),
     tags: text('tags').notNull().default('[]'),
@@ -334,6 +362,15 @@ export const invoices = sqliteTable(
     viewedAt: text('viewed_at'),
     remindersSent: integer('reminders_sent').notNull().default(0),
     lastReminderAt: text('last_reminder_at'),
+    /**
+     * Which rung of the ladder was last sent, e.g. `before-3` or `after-14`.
+     * Recorded so a sweep that runs twice in a day, or after a gap, does not
+     * send the same reminder again — the day count alone cannot tell you
+     * whether you already chased on day 7.
+     */
+    lastReminderStage: text('last_reminder_stage'),
+    /** Stop chasing this one specifically — a payment plan, a dispute. */
+    remindersPaused: integer('reminders_paused', { mode: 'boolean' }).notNull().default(false),
 
     stripePaymentIntentId: text('stripe_payment_intent_id'),
     stripePaymentLinkUrl: text('stripe_payment_link_url'),
