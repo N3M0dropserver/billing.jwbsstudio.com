@@ -115,6 +115,7 @@ export const POST: APIRoute = async ({ request, locals, redirect }) => {
       ),
       reminderMaxCount: clampInt(String(form.get('reminderMaxCount') ?? ''), 0, 20, 4),
       reminderSkipWeekends: flag('reminderSkipWeekends'),
+      trackEmailOpens: flag('trackEmailOpens'),
       taxReserveRate: parseRate(String(form.get('taxReserveRate') ?? '')) ?? current.taxReserveRate,
 
       updatedAt: new Date().toISOString(),

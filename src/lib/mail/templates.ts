@@ -11,6 +11,13 @@ export interface InvoiceEmailData {
   viewUrl: string;
   payUrl?: string;
   customMessage?: string;
+  /**
+   * A 1x1 image that records an open against this send. Omitted when open
+   * tracking is switched off, in which case the email carries no remote
+   * images at all. See `src/lib/activity/tracking.ts` for why an open is
+   * weak evidence.
+   */
+  trackingPixelUrl?: string;
 }
 
 const formatDate = (iso: string) =>
@@ -73,9 +80,23 @@ export function invoiceEmail(data: InvoiceEmailData): { subject: string; text: s
     <p style="margin:0;font-size:15px;">Ngā mihi,<br>${escapeHtml(data.senderName)}<br>
       <span style="color:#666;">${escapeHtml(data.businessName)}</span></p>
   </div>
+  ${trackingPixel(data.trackingPixelUrl)}
 </body></html>`;
 
   return { subject, text, html };
+}
+
+/**
+ * The open-tracking pixel.
+ *
+ * Given no URL it contributes nothing — not an empty image, not a comment —
+ * so an email sent with tracking off is byte-for-byte free of remote content.
+ * The plain-text part never carries it: there is nothing to load, and a bare
+ * tracking URL sitting in the text would be both useless and conspicuous.
+ */
+function trackingPixel(url: string | undefined): string {
+  if (!url) return '';
+  return `<img src="${escapeAttr(url)}" width="1" height="1" alt="" style="display:block;width:1px;height:1px;border:0;opacity:0;">`;
 }
 
 export function reminderEmail(

@@ -74,6 +74,13 @@ publishes a demo site on its own subdomain, and drafts the outreach email.
 Every stage is independently set to run by itself, be decided by the model, or
 stop and wait for you. See *The growth pipeline* below.
 
+**Activity log** — what you sent and what the client did with it: invoice sent,
+reminder sent, email opened, web invoice viewed, PDF downloaded, card payment
+started, payment recorded. It lives where the question gets asked: the full
+history on the invoice page, and the client's own history — invoice events
+interleaved with the calls and notes you logged — on the client page. See
+*The activity log* for what each signal is actually worth.
+
 **Time** — a timer that survives closing the tab, manual entry, and one-click
 conversion of unbilled time into an invoice.
 
@@ -536,6 +543,69 @@ of production.
 
 ---
 
+## The activity log
+
+Three logs exist, and they are not the same thing:
+
+| Table | Keyed by | Holds |
+| --- | --- | --- |
+| `activity_log` | the acting user | the internal audit trail, including every auth decision |
+| `communications` | client | calls, meetings and notes you log by hand |
+| `invoice_events` | invoice | what was sent, and what the client did with it |
+
+The third is the new one, and it exists because neither of the others can
+answer "INV-0042 went out Tuesday, the reminder Friday, and they opened both
+but have never opened the web invoice" — which is what you want to know before
+chasing a payment.
+
+There is no separate activity screen, deliberately: the log is only useful
+next to the thing it describes. The invoice page carries that invoice's
+history, with an engagement summary in the card header — "2 web views · 1 PDF
+download", or "Sent, but the client has not opened it yet". The client page
+carries theirs, merging `invoice_events` with `communications` so a logged
+phone call sits in sequence with the reminder that prompted it.
+
+### What each signal is worth
+
+In descending order of how much you should trust it:
+
+1. **Payment started** — they reached Stripe's checkout. Unambiguous, and an
+   abandoned checkout is very different from silence.
+2. **PDF downloaded** — deliberate, and usually means the invoice is on its way
+   to whoever actually pays it.
+3. **Web invoice viewed** — someone opened the public link. Strong.
+4. **Email opened** — a 1×1 image in the email was fetched. **Weak.** Treat it
+   as a hint, never as proof:
+   - Most clients block remote images by default, so *no open does not mean
+     unread*.
+   - Apple Mail Privacy Protection and corporate scanners pre-fetch every image
+     whether or not anyone opened the message, so *an open does not mean read*.
+     Where the fetch is recognisably a proxy (Gmail, Mimecast and friends) the
+     event says so.
+   - A forwarded email logs against the original send.
+
+Repeats of the same client-side event within 30 minutes collapse into one row,
+so a reload does not look like renewed interest. Anything after that window
+gets its own row, because coming back to an invoice twice in a week is a real
+signal.
+
+### Open tracking is optional
+
+**Settings → Record when a client opens an invoice email** controls it, and it
+is on by default. Switched off, invoice emails contain no remote images at all
+and the log simply has no `email-opened` rows — everything else still works,
+including the three stronger signals above, none of which need a pixel.
+
+The pixel URL carries the invoice's existing public token and the id of the
+send event, and nothing else — no address, no name. Anyone holding that URL
+could already open the invoice itself, so it discloses nothing new. The route
+(`/t/<token>/<send>.gif`) answers every request with the same image and the
+same 200, hit or miss, so it cannot be used to work out which tokens are real.
+
+Every write in this subsystem is best effort: a logging failure is written to
+the console and swallowed, because a client must never see an error page — and
+an invoice must never fail to send — over a row in an activity table.
+
 ## Email
 
 Sending uses **Cloudflare Email Service** by default, via the `send_email`
@@ -814,6 +884,7 @@ src/
       proposal.ts   outreach drafting, the daily cap, sending
       engine.ts     the stage machine — plain functions, no Worker needed
     auth/         password hashing and sessions
+    activity/     the invoice activity log: events, timelines, open tracking
     db/           Drizzle schema and client
     queries/      aggregate queries for dashboard and tax pages
   pages/          Astro routes and API endpoints
@@ -821,6 +892,7 @@ src/
 workers/
   agent/          the campaign agent — one Durable Object per run, deployed separately
 migrations/       D1 migrations
-tests/            381 tests: the tax engine, and the growth pipeline's pure parts
+tests/            679 tests: the tax engine, the growth pipeline's pure parts, the
+                  activity log, templates, quotes and bank matching
 docs/             the tax research
 ```

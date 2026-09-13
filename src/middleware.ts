@@ -42,7 +42,13 @@ function isPublic(pathname: string): boolean {
  * API requests are recorded.
  */
 function worthLogging(pathname: string): boolean {
-  return !pathname.startsWith('/_astro/') && !pathname.startsWith('/favicon');
+  return (
+    !pathname.startsWith('/_astro/') &&
+    !pathname.startsWith('/favicon') &&
+    // Tracking pixels are fetched by mail clients that have no session and
+    // never will. Nothing they do is an auth event worth a line.
+    !pathname.startsWith('/t/')
+  );
 }
 
 export const onRequest = defineMiddleware(async (context, next) => {

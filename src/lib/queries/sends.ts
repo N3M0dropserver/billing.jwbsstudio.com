@@ -14,6 +14,17 @@ import { looksLikePrefetch } from '~/lib/mail/tracking';
  */
 
 export interface NewSend {
+  /**
+   * Optional, so a caller that also writes an activity event for this send can
+   * give both records the same identity. The open pixel then only has to carry
+   * one token to update both. See src/pages/e/[token].gif.ts.
+   */
+  id?: string;
+  /**
+   * Optional for the same reason as `id`: a caller that has to know the
+   * tracking URL before it renders the body can mint the token first.
+   */
+  token?: string;
   userId: string;
   entityType: 'invoice' | 'proposal' | 'client' | 'test';
   entityId: string;
@@ -25,14 +36,14 @@ export interface NewSend {
 export async function startSend(db: Db, input: NewSend): Promise<EmailSend> {
   const now = new Date().toISOString();
   const row = {
-    id: newId(),
+    id: input.id ?? newId(),
     userId: input.userId,
     entityType: input.entityType,
     entityId: input.entityId,
     templateId: input.templateId,
     toAddress: input.toAddress,
     subject: input.subject,
-    token: newToken(18),
+    token: input.token ?? newToken(18),
     provider: '',
     providerMessageId: null,
     sentAt: now,
@@ -101,14 +112,21 @@ export async function sendsFor(
  * Unauthenticated by design — the token is the only credential, and the caller
  * is a mail client, not a session.
  */
+/**
+ * Note the open against the send this token belongs to.
+ *
+ * Returns the send as it was BEFORE the update, or null for a token that
+ * matches nothing, so the caller can decide what else this open means — the
+ * pixel route uses it to add the matching entry to an invoice's timeline.
+ */
 export async function recordOpen(
   db: Db,
   token: string,
   meta: { userAgent: string | null; ip: string | null },
-): Promise<void> {
+): Promise<EmailSend | null> {
   const rows = await db.select().from(emailSends).where(eq(emailSends.token, token)).limit(1);
   const send = rows[0];
-  if (!send) return;
+  if (!send) return null;
 
   const now = new Date().toISOString();
   const first = !send.firstOpenedAt;
@@ -125,4 +143,6 @@ export async function recordOpen(
       likelyPrefetch: first ? looksLikePrefetch(meta.userAgent, send.sentAt) : send.likelyPrefetch,
     })
     .where(eq(emailSends.id, send.id));
+
+  return send;
 }

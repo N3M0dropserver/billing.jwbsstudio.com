@@ -2,11 +2,13 @@
 import AppLayout from '~/layouts/AppLayout.astro';
 import Card from '~/components/ui/Card.astro';
 import StatusBadge from '~/components/ui/StatusBadge.astro';
+import Timeline from '~/components/activity/Timeline.astro';
 import { and, eq, desc, ne, sql } from 'drizzle-orm';
 import { db } from '~/lib/env';
-import { clients, invoices, communications, timeEntries, proposals } from '~/lib/db/schema';
+import { clients, invoices, timeEntries, proposals } from '~/lib/db/schema';
 import { deriveStatus } from '~/lib/invoices/calculate';
 import { formatMoney, formatMoneyShort } from '~/lib/tax/money';
+import { clientTimeline } from '~/lib/activity/timeline';
 
 const user = Astro.locals.user!;
 const database = db();
@@ -20,13 +22,12 @@ const clientRows = await database
 const client = clientRows[0];
 if (!client) return Astro.redirect('/clients', 302);
 
-const [invoiceRows, commsRows, proposalRows, timeTotals] = await Promise.all([
+const [invoiceRows, timeline, proposalRows, timeTotals] = await Promise.all([
   database.select().from(invoices)
     .where(and(eq(invoices.clientId, client.id), ne(invoices.status, 'void')))
     .orderBy(desc(invoices.issuedOn)).limit(50),
-  database.select().from(communications)
-    .where(eq(communications.clientId, client.id))
-    .orderBy(desc(communications.occurredAt)).limit(20),
+  // Logged calls and notes interleaved with what their invoices actually did.
+  clientTimeline(database, client.id, 40),
   database.select().from(proposals)
     .where(eq(proposals.clientId, client.id))
     .orderBy(desc(proposals.createdAt)).limit(10),
@@ -130,30 +131,20 @@ const address = [client.addressLine1, client.addressLine2, client.city, client.p
         </Card>
       )}
 
-      <Card title="Communications">
+      <Card title="Activity" subtitle="Calls and notes you logged, and what their invoices did">
         <form
           method="post"
           action={`/api/clients/${client.id}/notes`}
-          class="mb-4 flex flex-col gap-2 sm:flex-row"
+          class="mb-5 flex flex-col gap-2 sm:flex-row"
         >
           <input name="body" placeholder="Log a call, email or note…" required class="field sm:flex-1" />
           <button class="btn btn-primary">Log</button>
         </form>
-        {commsRows.length === 0 ? (
-          <p class="muted text-sm">Nothing logged yet.</p>
-        ) : (
-          <ul class="space-y-3">
-            {commsRows.map((entry) => (
-              <li class="border-b pb-3 text-sm last:border-0 last:pb-0" style="border-color: var(--border)">
-                <div class="flex items-baseline justify-between gap-3">
-                  <span class="font-medium">{entry.subject || entry.kind}</span>
-                  <span class="muted shrink-0 text-xs">{formatDate(entry.occurredAt)}</span>
-                </div>
-                {entry.body && <p class="muted mt-1 leading-relaxed">{entry.body}</p>}
-              </li>
-            ))}
-          </ul>
-        )}
+        <Timeline
+          entries={timeline}
+          showInvoice
+          emptyMessage="Nothing logged yet."
+        />
       </Card>
     </div>
 
