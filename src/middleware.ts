@@ -47,7 +47,7 @@ function worthLogging(pathname: string): boolean {
     !pathname.startsWith('/favicon') &&
     // Tracking pixels are fetched by mail clients that have no session and
     // never will. Nothing they do is an auth event worth a line.
-    !pathname.startsWith('/t/')
+    !pathname.startsWith('/e/')
   );
 }
 
