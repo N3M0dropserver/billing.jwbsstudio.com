@@ -37,13 +37,27 @@ export const POST: APIRoute = async ({ request }) => {
 
   const database = db();
   const rows = await database
-    .select({ id: invoices.id, userId: invoices.userId })
+    .select({ id: invoices.id, userId: invoices.userId, currency: invoices.currency })
     .from(invoices)
     .where(eq(invoices.id, payment.invoiceId))
     .limit(1);
 
   const invoice = rows[0];
   if (!invoice) return Response.json({ received: true, handled: false });
+
+  /**
+   * Credit the invoice only if the money arrived in the currency the invoice
+   * is denominated in. Stripe reports the charge currency, and crediting an
+   * AUD payment against an NZD invoice at face value would mark it settled
+   * for the wrong amount. Still a 200 — Stripe cannot fix this by retrying.
+   */
+  if (payment.currency && payment.currency !== invoice.currency) {
+    return Response.json({
+      received: true,
+      handled: false,
+      reason: `Paid in ${payment.currency}, invoice is in ${invoice.currency}. Record this payment by hand.`,
+    });
+  }
 
   await recordPayment(database, {
     userId: invoice.userId,

@@ -14,6 +14,8 @@ interface Props {
   clients: Array<{ id: string; name: string }>;
   defaultJurisdiction: 'NZ' | 'AU';
   gstRegistered: boolean;
+  /** Currency the tax figures are kept in — follows tax residence. */
+  residenceCurrency: 'NZD' | 'AUD';
 }
 
 const GST_RATES = { NZ: 0.15, AU: 0.10 };
@@ -23,8 +25,14 @@ const CAPITAL_THRESHOLDS = {
   AU: { limit: 20_000, label: 'AU$20,000' },
 };
 
-export default function ExpenseForm({ clients, defaultJurisdiction, gstRegistered }: Props) {
+export default function ExpenseForm({
+  clients,
+  defaultJurisdiction,
+  gstRegistered,
+  residenceCurrency,
+}: Props) {
   const [jurisdiction, setJurisdiction] = useState<'NZ' | 'AU'>(defaultJurisdiction);
+  const [fxRate, setFxRate] = useState('');
   const [category, setCategory] = useState<ExpenseCategory>('software');
   const [amount, setAmount] = useState('');
   const [businessUse, setBusinessUse] = useState('100');
@@ -122,6 +130,23 @@ export default function ExpenseForm({ clients, defaultJurisdiction, gstRegistere
               <option value="AU">Australia</option>
             </select>
           </div>
+
+          {(jurisdiction === 'NZ' ? 'NZD' : 'AUD') !== residenceCurrency && (
+            <div>
+              <label htmlFor="fxRateToResidence" className="mb-1.5 block text-sm font-medium">
+                Rate to {residenceCurrency}
+              </label>
+              <input
+                id="fxRateToResidence" name="fxRateToResidence" className="field tabular"
+                inputMode="decimal" placeholder="1.0900"
+                value={fxRate} onChange={(e) => setFxRate(e.target.value)}
+              />
+              <p className="muted mt-1 text-xs">
+                Your tax figures are kept in {residenceCurrency}. Without a rate this is deducted
+                at face value. Use the rate on the day you paid it.
+              </p>
+            </div>
+          )}
 
           <div>
             <label htmlFor="businessUsePercent" className="mb-1.5 block text-sm font-medium">

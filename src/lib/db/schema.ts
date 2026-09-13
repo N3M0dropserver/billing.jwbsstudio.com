@@ -390,6 +390,8 @@ export const payments = sqliteTable(
       .default('bank-transfer'),
     /** Merchant/processing fee deducted before the money landed. */
     fee: integer('fee').notNull().default(0),
+    /** Rate converting this payment into the tax-residence currency. */
+    fxRateToResidence: real('fx_rate_to_residence').notNull().default(1),
     reference: text('reference').notNull().default(''),
     stripeChargeId: text('stripe_charge_id'),
     notes: text('notes').notNull().default(''),
@@ -398,6 +400,18 @@ export const payments = sqliteTable(
   (t) => [
     index('payments_invoice_idx').on(t.invoiceId),
     index('payments_user_date_idx').on(t.userId, t.receivedOn),
+    /**
+     * A Stripe charge settles exactly once. `recordPayment` checks for the id
+     * before inserting, but that is a read followed by a write: one card
+     * payment fires both `checkout.session.completed` and
+     * `payment_intent.succeeded`, and Stripe retries on any non-2xx, so two
+     * deliveries can race, both read "not found", and both credit the
+     * invoice. The database is the only place that can settle it.
+     *
+     * SQLite treats NULLs as distinct in a unique index, so the many payments
+     * with no charge id — bank transfers, cash — are unaffected.
+     */
+    uniqueIndex('payments_stripe_charge_idx').on(t.stripeChargeId),
   ],
 );
 
@@ -428,6 +442,13 @@ export const expenses = sqliteTable(
 
     currency: text('currency', { enum: ['NZD', 'AUD'] }).notNull().default('NZD'),
     jurisdiction: text('jurisdiction', { enum: ['NZ', 'AU'] }).notNull().default('NZ'),
+    /**
+     * Rate converting this expense into the tax-residence currency, as it
+     * stood when the money was spent. Same reasoning as on an invoice: the
+     * rate on the day is the one the return uses, so it is stored rather
+     * than looked up later.
+     */
+    fxRateToResidence: real('fx_rate_to_residence').notNull().default(1),
 
     /** Share that is business use, 0..1. */
     businessUsePercent: real('business_use_percent').notNull().default(1),

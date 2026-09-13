@@ -82,6 +82,17 @@ export const POST: APIRoute = async ({ request, locals, redirect }) => {
   const issuedOn = String(form.get('issuedOn') ?? new Date().toISOString().slice(0, 10));
   const dueOn = String(form.get('dueOn') ?? '') || undefined;
 
+  /**
+   * An invoice in a currency other than the tax-residence currency needs a
+   * rate, or it is counted at face value in every total that follows. A blank
+   * or nonsensical entry becomes 1 and is reported as unconverted on the
+   * dashboard rather than quietly trusted.
+   */
+  const residenceCurrency = settings.taxResidence === 'NZ' ? 'NZD' : 'AUD';
+  const rawRate = Number.parseFloat(String(form.get('fxRateToResidence') ?? ''));
+  const fxRateToResidence =
+    currency === residenceCurrency ? 1 : Number.isFinite(rawRate) && rawRate > 0 ? rawRate : 1;
+
   const { id } = await createInvoice(database, settings, {
     userId: user.id,
     clientId,
@@ -94,6 +105,7 @@ export const POST: APIRoute = async ({ request, locals, redirect }) => {
     notes: String(form.get('notes') ?? ''),
     terms: String(form.get('terms') ?? ''),
     lines,
+    fxRateToResidence,
     isManualEntry: clientId === null,
     status: form.get('action') === 'draft' ? 'draft' : 'sent',
     timeEntryIds: parseIds(String(form.get('timeEntryIds') ?? '[]')),

@@ -20,6 +20,18 @@
  * them invites transcription errors and they are pure arithmetic anyway.
  *
  * All money values are in CENTS.
+ *
+ * ------------------------------------------------------------------
+ * WHEN A YEAR IS MISSING
+ * ------------------------------------------------------------------
+ * A year with no table does NOT break the app: `resolveRatesYear()` falls
+ * back to the most recent year held and flags the result provisional, which
+ * the dashboard and tax page show as a banner. That is a stopgap, not a
+ * substitute — the figures are last year's brackets against this year's
+ * income. Add the real table as soon as IRD and the ATO publish.
+ *
+ * NZ years start 1 April; AU years start 1 July. So the NZ table for a year
+ * is needed by the end of March, and the AU one by the end of June.
  */
 
 import type { Cents } from './money';
@@ -491,6 +503,56 @@ export function auRates(year: string): AuRates {
     );
   }
   return r;
+}
+
+export function hasRatesFor(jurisdiction: Jurisdiction, year: string): boolean {
+  return Boolean(jurisdiction === 'NZ' ? NZ_RATES[year] : AU_RATES[year]);
+}
+
+/**
+ * The rate table to actually compute with, for a year that may not have one.
+ *
+ * Throwing on a missing year is right for a single figure — better no answer
+ * than a made-up one. It is wrong for the dashboard, which called it on every
+ * render: the app went from working to returning 500s overnight on 1 April,
+ * with a stack trace where the home page used to be, and no indication that
+ * the cause was a missing table rather than a broken deployment.
+ *
+ * So a missing year falls back to the most recent year we DO have, and says
+ * so. The caller gets `provisional: true` and is expected to put that in
+ * front of the user — last year's brackets against this year's income is an
+ * estimate, and one that quietly drifts further from the truth the longer the
+ * table goes unmaintained. What it is not is a dead application.
+ *
+ * Years sort correctly as strings: "2026-27" < "2027-28".
+ */
+export interface ResolvedRates {
+  /** The year asked for. */
+  requestedYear: string;
+  /** The year whose table will be used — the same, unless none exists. */
+  ratesYear: string;
+  /** True when the requested year has no table of its own. */
+  provisional: boolean;
+}
+
+export function resolveRatesYear(jurisdiction: Jurisdiction, year: string): ResolvedRates {
+  const years = jurisdiction === 'NZ' ? NZ_YEARS : AU_YEARS;
+  if (hasRatesFor(jurisdiction, year)) {
+    return { requestedYear: year, ratesYear: year, provisional: false };
+  }
+
+  // The latest year at or before the one asked for; failing that — a year
+  // earlier than anything we hold — the earliest we have.
+  const earlier = years.filter((candidate) => candidate <= year);
+  const ratesYear = earlier.length > 0 ? earlier[earlier.length - 1]! : years[0];
+
+  if (!ratesYear) {
+    throw new Error(
+      `No ${jurisdiction} rate tables exist at all. src/lib/tax/rates.ts is empty or malformed.`,
+    );
+  }
+
+  return { requestedYear: year, ratesYear, provisional: true };
 }
 
 /** Every figure in a year's table that still needs confirming against the source. */

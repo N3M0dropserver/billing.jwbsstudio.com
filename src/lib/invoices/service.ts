@@ -117,6 +117,13 @@ export interface CreateInvoiceInput {
   status?: 'draft' | 'sent';
   /** Time entries to mark billed against this invoice. */
   timeEntryIds?: string[];
+  /**
+   * Rate converting this invoice into the tax-residence currency, as it stood
+   * on the issue date. 1 when the invoice is already in that currency.
+   * Stored rather than looked up later, because the rate on the day is the
+   * one the return uses.
+   */
+  fxRateToResidence?: number;
 }
 
 export async function createInvoice(
@@ -124,8 +131,16 @@ export async function createInvoice(
   setting: Settings,
   input: CreateInvoiceInput,
 ): Promise<{ id: string; number: string }> {
+  // Scoped to the owner, like every other lookup in this file. An invoice
+  // must never be raised against another user's client record.
   const client = input.clientId
-    ? (await db.select().from(clients).where(eq(clients.id, input.clientId)).limit(1))[0] ?? null
+    ? (
+        await db
+          .select()
+          .from(clients)
+          .where(and(eq(clients.id, input.clientId), eq(clients.userId, input.userId)))
+          .limit(1)
+      )[0] ?? null
     : null;
 
   const treatment =
@@ -169,6 +184,10 @@ export async function createInvoice(
       gstAmount: totals.gstAmount,
       total: totals.total,
       amountPaid: 0,
+      fxRateToResidence:
+        Number.isFinite(input.fxRateToResidence) && (input.fxRateToResidence ?? 0) > 0
+          ? input.fxRateToResidence!
+          : 1,
       reference: input.reference ?? '',
       notes: input.notes ?? '',
       terms: input.terms ?? setting.invoiceFooter,
@@ -294,6 +313,12 @@ export interface RecordPaymentInput {
   notes?: string;
 }
 
+/** A payment is denominated in the currency of the invoice it settles. */
+interface PaymentCurrency {
+  currency: 'NZD' | 'AUD';
+  fxRateToResidence: number;
+}
+
 /**
  * Record a payment and roll the invoice forward.
  *
@@ -314,28 +339,13 @@ export async function recordPayment(db: Db, input: RecordPaymentInput): Promise<
     if (existing[0]) return;
   }
 
-  await db.insert(payments).values({
-    id: newId(),
-    userId: input.userId,
-    invoiceId: input.invoiceId,
-    amount: input.amount,
-    currency: 'NZD',
-    receivedOn: input.receivedOn,
-    method: input.method,
-    fee: input.fee ?? 0,
-    reference: input.reference ?? '',
-    stripeChargeId: input.stripeChargeId ?? null,
-    notes: input.notes ?? '',
-    createdAt: now,
-  });
-
-  const totals = await db
-    .select({ paid: sql<number>`coalesce(sum(${payments.amount}), 0)` })
-    .from(payments)
-    .where(eq(payments.invoiceId, input.invoiceId));
-
-  const amountPaid = totals[0]?.paid ?? 0;
-
+  /**
+   * Read the invoice FIRST, because the payment inherits its currency from
+   * the invoice it settles. This used to write `currency: 'NZD'` as a
+   * literal, so a paid AUD invoice produced a payment record that claimed to
+   * be New Zealand dollars — and every figure built from the payments table
+   * was wrong by the exchange rate.
+   */
   const invoiceRows = await db
     .select()
     .from(invoices)
@@ -343,6 +353,48 @@ export async function recordPayment(db: Db, input: RecordPaymentInput): Promise<
     .limit(1);
   const invoice = invoiceRows[0];
   if (!invoice) return;
+
+  const denomination: PaymentCurrency = {
+    currency: invoice.currency,
+    fxRateToResidence: invoice.fxRateToResidence,
+  };
+
+  try {
+    await db.insert(payments).values({
+      id: newId(),
+      userId: input.userId,
+      invoiceId: input.invoiceId,
+      amount: input.amount,
+      currency: denomination.currency,
+      fxRateToResidence: denomination.fxRateToResidence,
+      receivedOn: input.receivedOn,
+      method: input.method,
+      fee: input.fee ?? 0,
+      reference: input.reference ?? '',
+      stripeChargeId: input.stripeChargeId ?? null,
+      notes: input.notes ?? '',
+      createdAt: now,
+    });
+  } catch (error) {
+    /**
+     * `payments_stripe_charge_idx` is unique, so a webhook that raced past
+     * the check above lands here instead of double-crediting the invoice.
+     * That is the constraint doing its job, not a failure — but only for
+     * THAT constraint. Anything else is a real error and must not be
+     * swallowed.
+     */
+    const isDuplicateCharge =
+      Boolean(input.stripeChargeId) && /UNIQUE constraint failed/i.test(String(error));
+    if (!isDuplicateCharge) throw error;
+    return;
+  }
+
+  const totals = await db
+    .select({ paid: sql<number>`coalesce(sum(${payments.amount}), 0)` })
+    .from(payments)
+    .where(eq(payments.invoiceId, input.invoiceId));
+
+  const amountPaid = totals[0]?.paid ?? 0;
 
   const status = deriveStatus({ ...invoice, amountPaid });
 

@@ -89,8 +89,15 @@ const icons: Record<string, string> = {
       }
     </ul>
 
-    <div class="mt-auto hidden border-t p-3 lg:block" style="border-color: var(--border)">
-      <div class="flex items-center gap-2">
+    {/*
+      Settings and Sign out used to be `hidden lg:block`, which meant that on
+      a phone there was no way to sign out and no route to Settings at all —
+      and Settings is where the business details every invoice depends on are
+      entered. They are visible at every width now; only the account name and
+      email, which need the room, wait for the sidebar.
+    */}
+    <div class="mt-auto border-t p-3" style="border-color: var(--border)">
+      <div class="hidden items-center gap-2 lg:flex">
         <div class="min-w-0 flex-1">
           <p class="truncate text-sm font-medium">{user?.name ?? 'Not signed in'}</p>
           <p class="muted truncate text-xs">{user?.email ?? ''}</p>
@@ -106,7 +113,7 @@ const icons: Record<string, string> = {
           </svg>
         </button>
       </div>
-      <div class="mt-2 flex gap-2">
+      <div class="flex gap-2 lg:mt-2">
         <a href="/settings" class="muted flex-1 rounded-md border px-2 py-1.5 text-center text-xs hover:opacity-80" style="border-color: var(--border)">Settings</a>
         <form method="post" action="/api/auth/logout" class="flex-1">
           <button class="muted w-full rounded-md border px-2 py-1.5 text-xs hover:opacity-80" style="border-color: var(--border)">Sign out</button>

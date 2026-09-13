@@ -22,6 +22,20 @@
       "when": 1789225165714,
       "tag": "0002_income_source_period_fx",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1789263365716,
+      "tag": "0003_expense_payment_fx",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1789263632155,
+      "tag": "0004_payment_charge_unique",
+      "breakpoints": true
     }
   ]
 }

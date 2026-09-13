@@ -28,6 +28,10 @@ export const POST: APIRoute = async ({ request, locals, redirect }) => {
       : new Date(Date.now() - minutes * 60_000).toISOString();
 
   const now = new Date().toISOString();
+  // Clamp once, then derive the end from the clamped value — otherwise a
+  // timer left running over a weekend stores `minutes` capped at a day and an
+  // `endedAt` three days later, and the two disagree about the same entry.
+  const storedMinutes = Math.min(minutes, 24 * 60);
 
   await db().insert(timeEntries).values({
     id: newId(),
@@ -35,8 +39,8 @@ export const POST: APIRoute = async ({ request, locals, redirect }) => {
     clientId: String(form.get('clientId') ?? '') || null,
     description: String(form.get('description') ?? '').slice(0, 500),
     startedAt,
-    endedAt: new Date(new Date(startedAt).getTime() + minutes * 60_000).toISOString(),
-    minutes: Math.min(minutes, 24 * 60),
+    endedAt: new Date(new Date(startedAt).getTime() + storedMinutes * 60_000).toISOString(),
+    minutes: storedMinutes,
     billable: form.get('billable') === 'yes',
     billed: false,
     createdAt: now,

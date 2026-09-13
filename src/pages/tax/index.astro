@@ -17,9 +17,17 @@ const requestedYear = Astro.url.searchParams.get('year') ?? undefined;
 const position = await buildTaxPosition(database, settings, { year: requestedYear });
 
 const isNz = settings.taxResidence === 'NZ';
-const currency = settings.defaultCurrency;
+// Every figure below has been converted into the tax-residence currency by
+// the queries, so it must be labelled with that and not the invoicing default.
+const currency = position.invoices.residenceCurrency;
 const detail = isNz ? position.result.nz : position.result.au;
-const years = isNz ? NZ_YEARS : AU_YEARS;
+
+/**
+ * The dropdown offers the years we hold rate tables for, plus the year we are
+ * actually in when that has no table yet — otherwise the current year is not
+ * selectable and the page silently shows an older one.
+ */
+const years = [...new Set([...(isNz ? NZ_YEARS : AU_YEARS), position.range.year])].sort();
 
 const yearLabel = isNz
   ? `1 April ${position.range.startsOn.slice(0, 4)} – 31 March ${position.range.endsOn.slice(0, 4)}`
@@ -35,6 +43,19 @@ const formatDate = (iso: string) =>
 ---
 
 <AppLayout title="Tax & accounting" subtitle={yearLabel} width="wide">
+  {position.range.ratesAreProvisional && (
+    <p
+      slot="actions"
+      class="w-full rounded-lg px-3.5 py-2.5 text-sm"
+      style="background: color-mix(in oklch, var(--color-overdue) 12%, transparent); color: var(--color-overdue)"
+    >
+      <strong>Provisional figures.</strong> There is no {isNz ? 'IRD' : 'ATO'} rate table for
+      {' '}{position.range.year} in this app yet, so everything here is calculated with the
+      {' '}{position.range.ratesYear} brackets, thresholds and levies. Treat it as an estimate
+      and add the real table in <code class="text-xs">src/lib/tax/rates.ts</code> when it is
+      published.
+    </p>
+  )}
   <div slot="actions" class="flex flex-wrap gap-2">
     <form method="get" class="flex gap-2">
       <select name="year" class="field w-auto text-sm" onchange="this.form.submit()">

@@ -45,6 +45,8 @@ const nzYear: TaxYearRange = {
   startsOn: '2026-04-01',
   endsOn: '2027-03-31',
   jurisdiction: 'NZ',
+  ratesYear: '2026-27',
+  ratesAreProvisional: false,
 };
 
 describe('getIncomeForYear', () => {
@@ -154,6 +156,8 @@ describe('getIncomeForYear', () => {
       startsOn: '2026-07-01',
       endsOn: '2027-06-30',
       jurisdiction: 'AU',
+      ratesYear: '2026-27',
+      ratesAreProvisional: false,
     };
     const totals = await getIncomeForYear(
       stubDb([
