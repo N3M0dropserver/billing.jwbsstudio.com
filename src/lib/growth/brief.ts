@@ -42,12 +42,108 @@ export interface ColourToken {
   role: 'background' | 'surface' | 'text' | 'muted' | 'accent' | 'border' | 'other';
 }
 
+/**
+ * The layout half of a kit.
+ *
+ * Palette and typefaces alone do not make two brand kits produce pages that
+ * look different from each other — swap the colours on a fixed template and
+ * you get the same template in new colours, which is exactly the complaint
+ * that these exist to answer. These are the knobs that change composition:
+ * proportion, rhythm, shape and how far the type is pushed.
+ *
+ * Every value is a closed set rather than free CSS. The renderer has to be
+ * able to guarantee the result is laid out properly at every width, and a
+ * kit that could inject arbitrary declarations could not promise that.
+ */
+export interface DesignTokens {
+  /** Corner treatment across the page. */
+  radius: 'square' | 'soft' | 'round';
+  /** How much air sections are given. */
+  density: 'tight' | 'regular' | 'airy';
+  /** How far display type is pushed against body type. */
+  typeScale: 'restrained' | 'balanced' | 'dramatic';
+  /** How the hero is composed. */
+  hero: 'split' | 'stacked' | 'full-bleed' | 'editorial';
+  /** How one section is told from the next. */
+  rhythm: 'rules' | 'tint' | 'plain';
+  /** How photographs are framed. */
+  imagery: 'sharp' | 'rounded' | 'arch';
+  /** Eyebrows and small labels. */
+  accent: 'quiet' | 'bold';
+  /** Button shape. */
+  button: 'pill' | 'rounded' | 'square';
+}
+
+export const DEFAULT_TOKENS: DesignTokens = {
+  radius: 'soft',
+  density: 'regular',
+  typeScale: 'balanced',
+  hero: 'split',
+  rhythm: 'rules',
+  imagery: 'rounded',
+  accent: 'bold',
+  button: 'pill',
+};
+
+/** The permitted values, used to validate whatever was saved or overridden. */
+const TOKEN_VALUES: { [K in keyof DesignTokens]: readonly DesignTokens[K][] } = {
+  radius: ['square', 'soft', 'round'],
+  density: ['tight', 'regular', 'airy'],
+  typeScale: ['restrained', 'balanced', 'dramatic'],
+  hero: ['split', 'stacked', 'full-bleed', 'editorial'],
+  rhythm: ['rules', 'tint', 'plain'],
+  imagery: ['sharp', 'rounded', 'arch'],
+  accent: ['quiet', 'bold'],
+  button: ['pill', 'rounded', 'square'],
+};
+
+export const TOKEN_OPTIONS: { [K in keyof DesignTokens]: readonly DesignTokens[K][] } = TOKEN_VALUES;
+
+/**
+ * Coerce stored or overridden tokens into a complete, valid set.
+ *
+ * Anything unrecognised falls back to the default for that field rather than
+ * failing: a kit saved by an older version of the app, or hand-edited to
+ * something that no longer exists, should still render a page.
+ */
+export function parseDesignTokens(value: unknown): DesignTokens {
+  const source =
+    typeof value === 'string'
+      ? (() => {
+          try {
+            return JSON.parse(value) as unknown;
+          } catch {
+            return null;
+          }
+        })()
+      : value;
+
+  if (!source || typeof source !== 'object' || Array.isArray(source)) return { ...DEFAULT_TOKENS };
+
+  const raw = source as Record<string, unknown>;
+  const tokens = { ...DEFAULT_TOKENS };
+
+  for (const key of Object.keys(TOKEN_VALUES) as Array<keyof DesignTokens>) {
+    const candidate = raw[key];
+    const allowed = TOKEN_VALUES[key] as readonly string[];
+    if (typeof candidate === 'string' && allowed.includes(candidate)) {
+      // Each key's value is checked against that key's own list, so the cast
+      // is sound even though TypeScript cannot follow it through the index.
+      (tokens as Record<string, string>)[key] = candidate;
+    }
+  }
+
+  return tokens;
+}
+
 export interface Brief {
   brandKitId: string | null;
   name: string;
   references: ReferenceSite[];
   typography: TypefaceSpec[];
   palette: ColourToken[];
+  /** Composition, shape and proportion. See `DesignTokens`. */
+  tokens: DesignTokens;
   sectionOrder: string[];
   /** The art-direction block, shown to the model verbatim. */
   direction: string;
@@ -104,6 +200,7 @@ export const FALLBACK_BRIEF: Brief = {
     { name: 'accent', value: '#1f6f5c', role: 'accent' },
     { name: 'border', value: '#e6e2da', role: 'border' },
   ],
+  tokens: DEFAULT_TOKENS,
   sectionOrder: DEFAULT_SECTION_ORDER,
   direction:
     'Generous whitespace, a single strong accent colour, large confident type and real photography over stock. ' +
@@ -154,6 +251,7 @@ export function briefFromKit(kit: BrandKit | null): Brief {
     references: parseArray(kit.referenceUrls, isReference),
     typography: typography.length ? typography : FALLBACK_BRIEF.typography,
     palette: palette.length ? palette : FALLBACK_BRIEF.palette,
+    tokens: parseDesignTokens(kit.designTokens),
     sectionOrder: sectionOrder.length ? sectionOrder : DEFAULT_SECTION_ORDER,
     direction: kit.prompt || FALLBACK_BRIEF.direction,
     tone: kit.toneNotes || FALLBACK_BRIEF.tone,
@@ -191,6 +289,12 @@ export function applyOverrides(brief: Brief, raw: string | null | undefined): Br
   if (palette.length) next.palette = palette;
   if (sectionOrder.length) next.sectionOrder = sectionOrder;
   if (assetKeys.length) next.assetKeys = [...brief.assetKeys, ...assetKeys];
+
+  // Tokens merge field by field rather than wholesale: overriding the hero
+  // treatment for one campaign should not silently reset the rest.
+  if (parsed.tokens && typeof parsed.tokens === 'object') {
+    next.tokens = parseDesignTokens({ ...brief.tokens, ...(parsed.tokens as object) });
+  }
 
   for (const field of ['direction', 'tone', 'avoid', 'capabilities'] as const) {
     const value = parsed[field];
@@ -238,6 +342,14 @@ export function renderBriefPrompt(brief: Brief): string {
   if (brief.sectionOrder.length) {
     lines.push(`Preferred section order: ${brief.sectionOrder.join(' → ')}.`);
   }
+
+  // The layout is fixed by the kit, not chosen by the model — but the copy
+  // has to suit it. A full-bleed hero needs a short headline; an editorial
+  // one can carry a longer one.
+  lines.push(
+    `Layout: a ${brief.tokens.hero} hero, ${brief.tokens.density} spacing, ` +
+      `${brief.tokens.typeScale} type. Write headings that suit it.`,
+  );
 
   if (brief.references.length) {
     lines.push(

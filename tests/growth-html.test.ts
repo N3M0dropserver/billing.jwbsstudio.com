@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   attr,
+  backgroundImageUrls,
   decodeEntities,
   extractPage,
   extractText,
   findSocialLinks,
+  largestFromSrcset,
   normaliseDomain,
 } from '~/lib/growth/html';
 
@@ -166,5 +168,120 @@ describe('domain normalisation', () => {
   it('returns empty for junk', () => {
     expect(normaliseDomain('')).toBe('');
     expect(normaliseDomain('not a domain at all')).toBe('');
+  });
+});
+
+describe('finding photography the way real sites hide it', () => {
+  const html = `
+    <html><body>
+      <picture>
+        <source media="(min-width: 60rem)" srcset="/img/hero-2000.jpg 2000w, /img/hero-800.jpg 800w" />
+        <img src="/img/hero-fallback.jpg" alt="The roastery" width="1600" height="900" />
+      </picture>
+      <img src="data:image/gif;base64,R0lGOD" data-src="/img/counter.jpg" alt="The counter" />
+      <img src="/img/placeholder.gif" data-lazy-src="/img/beans.jpg" alt="Beans" width="1200" />
+      <img srcset="/img/small.jpg 400w, /img/large.jpg 1600w" alt="Bags" />
+      <img src="/img/logo.svg" alt="Logo" />
+      <img src="/img/visa-badge.png" alt="Visa" width="48" height="32" />
+      <div style="background-image: url('/img/shopfront.jpg')"></div>
+      <style>.band { background: #fff url(/img/band.jpg) no-repeat; }</style>
+    </body></html>`;
+
+  const page = extractPage(html, 'https://wells.example/');
+  const sources = page.images.map((image) => image.src);
+
+  it('takes the widest candidate from a picture source', () => {
+    expect(sources).toContain('https://wells.example/img/hero-2000.jpg');
+  });
+
+  it('takes the widest candidate from a srcset', () => {
+    expect(sources).toContain('https://wells.example/img/large.jpg');
+    expect(sources).not.toContain('https://wells.example/img/small.jpg');
+  });
+
+  it('reads the real source out of lazy-loading attributes', () => {
+    expect(sources).toContain('https://wells.example/img/counter.jpg');
+    expect(sources).toContain('https://wells.example/img/beans.jpg');
+  });
+
+  it('finds CSS background images in both style blocks and attributes', () => {
+    expect(sources).toContain('https://wells.example/img/shopfront.jpg');
+    expect(sources).toContain('https://wells.example/img/band.jpg');
+  });
+
+  it('never emits a data URI as an image source', () => {
+    expect(sources.some((src) => src.startsWith('data:'))).toBe(false);
+  });
+
+  it('records declared dimensions and how each image was found', () => {
+    const beans = page.images.find((image) => image.src.endsWith('beans.jpg'));
+    expect(beans?.width).toBe(1200);
+    expect(beans?.origin).toBe('img');
+
+    const hero = page.images.find((image) => image.src.endsWith('hero-2000.jpg'));
+    expect(hero?.origin).toBe('picture');
+  });
+});
+
+describe('largestFromSrcset', () => {
+  it('prefers the widest width descriptor', () => {
+    expect(largestFromSrcset('/a.jpg 400w, /b.jpg 1600w, /c.jpg 800w')).toBe('/b.jpg');
+  });
+
+  it('prefers the highest density when widths are not given', () => {
+    expect(largestFromSrcset('/a.jpg 1x, /b.jpg 3x')).toBe('/b.jpg');
+  });
+
+  it('falls back to the only candidate when nothing is described', () => {
+    expect(largestFromSrcset('/only.jpg')).toBe('/only.jpg');
+  });
+
+  it('is empty for an empty srcset', () => {
+    expect(largestFromSrcset('')).toBe('');
+  });
+});
+
+describe('backgroundImageUrls', () => {
+  it('reads quoted, unquoted and shorthand declarations', () => {
+    expect(backgroundImageUrls(`a { background-image: url("/one.jpg") }`)).toEqual(['/one.jpg']);
+    expect(backgroundImageUrls(`a { background-image: url(/two.jpg) }`)).toEqual(['/two.jpg']);
+    expect(backgroundImageUrls(`a { background: #fff url('/three.jpg') no-repeat }`)).toEqual([
+      '/three.jpg',
+    ]);
+  });
+
+  it('ignores declarations with no url', () => {
+    expect(backgroundImageUrls('a { background: linear-gradient(red, blue) }')).toEqual([]);
+  });
+});
+
+describe('one entry per photograph', () => {
+  it('does not enter an img twice when it has both a srcset and a src', () => {
+    const page = extractPage(
+      '<img srcset="/img/large.jpg 1600w" src="/img/fallback.jpg" alt="Beans" />',
+      'https://wells.example/',
+    );
+    expect(page.images).toHaveLength(1);
+    expect(page.images[0]?.src).toBe('https://wells.example/img/large.jpg');
+  });
+
+  it('takes one source per picture, not one per format', () => {
+    const page = extractPage(
+      `<picture>
+         <source type="image/avif" srcset="/img/hero.avif 1600w" />
+         <source type="image/webp" srcset="/img/hero.webp 1600w" />
+         <img src="/img/hero.jpg" alt="" />
+       </picture>`,
+      'https://wells.example/',
+    );
+    expect(page.images.filter((image) => image.origin === 'picture')).toHaveLength(1);
+  });
+
+  it('prefers the lazy srcset over the placeholder one', () => {
+    const page = extractPage(
+      '<img srcset="/img/blur.jpg 20w" data-srcset="/img/real.jpg 1600w" alt="" />',
+      'https://wells.example/',
+    );
+    expect(page.images[0]?.src).toBe('https://wells.example/img/real.jpg');
   });
 });

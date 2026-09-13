@@ -136,11 +136,27 @@ bun run deploy   # needs wrangler auth
 - \`src/pages/index.astro\` — the page
 - \`src/layouts/Layout.astro\` — head, fonts, metadata
 - \`src/styles/site.css\` — the whole design system, one file
-- \`public/images/\` — photography carried over from their existing site
+- \`public/images/\` — the photography used on the page
+
+## The photography
+
+${
+    context.images.some((image) => image.generated)
+      ? `Some of these pictures were **generated**, because their existing site did not
+have usable photography of its own. They are marked "indicative" on the page and
+are placeholders for art direction only — they are not photographs of
+${context.businessName}, and they must be replaced before this is used for
+anything real.
+
+Generated: ${context.images.filter((image) => image.generated).length} of ${context.images.length}.`
+      : `All ${context.images.length || 'of the'} pictures were carried over from their
+existing site. They are theirs, not ours, and the rights have not been checked.`
+  }
 
 ## Before this goes live for real
 
-1. Replace the carried-over photography with images you have the rights to use.
+1. Replace every carried-over and generated image with photography you have the
+   rights to use.
 2. Confirm every claim in the copy with the client.
 3. Remove \`noindex\` from the layout.
 4. Point a real domain at it.

@@ -22,6 +22,18 @@ export interface ExtractedLink {
 export interface ExtractedImage {
   src: string;
   alt: string;
+  /** Declared pixel size, or 0 where the markup did not say. */
+  width: number;
+  height: number;
+  /**
+   * How the image was found.
+   *
+   * Worth keeping, because it predicts quality. A `<picture>` source or a
+   * `srcset` candidate is nearly always art-directed content photography; a
+   * CSS background is usually a hero; a bare `<img>` is as likely to be a
+   * badge or a payment-method logo as it is a photograph.
+   */
+  origin: 'img' | 'srcset' | 'picture' | 'background';
 }
 
 export interface ExtractedPage {
@@ -121,6 +133,165 @@ function absolute(href: string, base: string): string {
   }
 }
 
+/**
+ * The attributes a lazy-loading image hides its real source in.
+ *
+ * Ordered by how likely each is to hold the full-size file. Plain `src` comes
+ * last on purpose: on a lazy-loaded page it is usually a blurred placeholder
+ * or a transparent pixel, and the real photograph is in one of the others.
+ */
+const LAZY_SRC_ATTRS = [
+  'data-src',
+  'data-lazy-src',
+  'data-original',
+  'data-image',
+  'data-full-src',
+  'data-large-file',
+  'src',
+];
+
+/**
+ * Ordered like `LAZY_SRC_ATTRS`, and for the same reason: where a lazy loader
+ * uses both, the plain `srcset` holds the placeholders and the `data-` one
+ * holds the photographs.
+ */
+const SRCSET_ATTRS = ['data-srcset', 'data-lazy-srcset', 'srcset'];
+
+/**
+ * The widest candidate in a `srcset`.
+ *
+ * Descriptors come in two flavours — `480w` and `2x` — and a list may mix
+ * them or omit them entirely. Width wins where it is given, density is scaled
+ * so that `2x` outranks a 1000px candidate, and a bare URL scores lowest so
+ * that any described candidate beats it.
+ */
+export function largestFromSrcset(srcset: string): string {
+  let best = '';
+  let bestScore = -1;
+
+  // Split on commas that separate candidates rather than commas inside a URL
+  // (data URIs and some CDN transforms contain them).
+  for (const candidate of srcset.split(/,(?=\s*[^\s,]+\s*(?:[\d.]+[wx])?\s*(?:,|$))|,\s+/)) {
+    const parts = candidate.trim().split(/\s+/).filter(Boolean);
+    const url = parts[0];
+    if (!url) continue;
+
+    const descriptor = parts[1] ?? '';
+    const width = /^(\d+)w$/i.exec(descriptor);
+    const density = /^([\d.]+)x$/i.exec(descriptor);
+    const score = width ? Number(width[1]) : density ? Number(density[1]) * 1000 : 0;
+
+    if (score > bestScore) {
+      bestScore = score;
+      best = url;
+    }
+  }
+
+  return best;
+}
+
+/** URLs named by `background` / `background-image` declarations in some CSS. */
+export function backgroundImageUrls(css: string): string[] {
+  const found: string[] = [];
+  for (const match of css.matchAll(
+    /background(?:-image)?\s*:[^;}]*?url\(\s*(?:"([^"]*)"|'([^']*)'|([^)'"\s]+))\s*\)/gi,
+  )) {
+    const url = match[1] ?? match[2] ?? match[3] ?? '';
+    if (url) found.push(decodeEntities(url).trim());
+  }
+  return found;
+}
+
+const PIXEL_SRC = /(?:^|\/)(?:1x1|pixel|spacer|blank|placeholder|transparent)\.(?:gif|png|svg)(?:\?|$)/i;
+
+/**
+ * Every image on the page, from wherever it is hiding.
+ *
+ * Reading only `<img src>` finds nothing on a large share of small-business
+ * sites: Squarespace, Wix and most WordPress themes lazy-load their
+ * photography, art-direct it through `<picture>`, or set the hero as a CSS
+ * background. A crawl that misses all of that concludes the business has no
+ * photography, and the demo built from it has nothing to show.
+ */
+function collectImages(html: string, structure: string, baseUrl: string): ExtractedImage[] {
+  const images: ExtractedImage[] = [];
+  const seen = new Set<string>();
+
+  const add = (
+    raw: string,
+    alt: string,
+    origin: ExtractedImage['origin'],
+    width = 0,
+    height = 0,
+  ): void => {
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed.startsWith('data:') || trimmed.startsWith('blob:')) return;
+    if (PIXEL_SRC.test(trimmed)) return;
+
+    const src = absolute(trimmed, baseUrl) || trimmed;
+    if (seen.has(src)) return;
+    seen.add(src);
+
+    images.push({ src, alt, width, height, origin });
+  };
+
+  const dimension = (tag: string, name: string): number => {
+    const value = Number.parseInt(attr(tag, name), 10);
+    return Number.isFinite(value) && value > 0 ? value : 0;
+  };
+
+  // `<picture>` first: its sources are the art-directed ones, and reaching
+  // them before the `<img>` fallback means the fallback is skipped as a
+  // duplicate only when it genuinely resolves to the same file.
+  for (const block of structure.match(/<picture\b[^>]*>[\s\S]*?<\/picture\s*>/gi) ?? []) {
+    // One per block, not one per source: the sources of a `<picture>` are the
+    // same photograph in different formats and crops, and taking all of them
+    // would put the same picture in a gallery three times.
+    for (const tag of block.match(/<source\b[^>]*>/gi) ?? []) {
+      const srcset = SRCSET_ATTRS.map((name) => attr(tag, name)).find(Boolean) ?? '';
+      const best = largestFromSrcset(srcset) || attr(tag, 'src');
+      if (best) {
+        add(best, '', 'picture');
+        break;
+      }
+    }
+  }
+
+  for (const tag of structure.match(/<img\b[^>]*>/gi) ?? []) {
+    const alt = attr(tag, 'alt');
+    const width = dimension(tag, 'width');
+    const height = dimension(tag, 'height');
+
+    // One source per element, best first. Adding both the srcset winner and
+    // the `src` fallback would enter the same photograph twice under two URLs,
+    // which no amount of de-duplication downstream can tell apart.
+    const srcset = SRCSET_ATTRS.map((name) => attr(tag, name)).find(Boolean) ?? '';
+    const fromSrcset = srcset ? largestFromSrcset(srcset) : '';
+
+    if (fromSrcset) {
+      add(fromSrcset, alt, 'srcset', width, height);
+      continue;
+    }
+
+    const direct = LAZY_SRC_ATTRS.map((name) => attr(tag, name)).find(
+      (value) => value && !value.startsWith('data:'),
+    );
+    if (direct) add(direct, alt, 'img', width, height);
+  }
+
+  // CSS backgrounds, from both `<style>` blocks and inline `style` attributes.
+  // These are read from the original HTML because `structure` has had the
+  // style elements removed.
+  const css = [
+    ...(html.match(/<style\b[^>]*>([\s\S]*?)<\/style>/gi) ?? []),
+    ...(html.match(/style\s*=\s*(?:"[^"]*"|'[^']*')/gi) ?? []),
+  ].join('\n');
+
+  for (const url of backgroundImageUrls(css)) add(url, '', 'background');
+
+  return images;
+}
+
 export function extractPage(html: string, baseUrl: string): ExtractedPage {
   const head = html.slice(0, 200_000);
 
@@ -158,12 +329,7 @@ export function extractPage(html: string, baseUrl: string): ExtractedPage {
     });
   }
 
-  const images: ExtractedImage[] = [];
-  for (const tag of structure.match(/<img\b[^>]*>/gi) ?? []) {
-    const src = attr(tag, 'src') || attr(tag, 'data-src');
-    if (!src || src.startsWith('data:')) continue;
-    images.push({ src: absolute(src, baseUrl) || src, alt: attr(tag, 'alt') });
-  }
+  const images = collectImages(html, structure, baseUrl);
 
   const scripts: string[] = [];
   for (const tag of html.match(/<script\b[^>]*>/gi) ?? []) {

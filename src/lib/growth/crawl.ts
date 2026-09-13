@@ -13,7 +13,13 @@
  * we serve.
  */
 
-import { extractPage, findSocialLinks, type ExtractedPage, type SocialLink } from './html';
+import {
+  extractPage,
+  findSocialLinks,
+  type ExtractedImage,
+  type ExtractedPage,
+  type SocialLink,
+} from './html';
 
 export interface CrawlOptions {
   userAgent: string;
@@ -284,6 +290,54 @@ export function rankCandidate(path: string): number {
   return score;
 }
 
+/**
+ * Names that mean "furniture", not photography.
+ *
+ * Kept deliberately narrow. Over-filtering costs a demo its only picture,
+ * which is worse than one badge slipping through — the download step checks
+ * the real dimensions afterwards anyway.
+ */
+const FURNITURE = /\b(logo|icon|favicon|sprite|badge|avatar|payment|visa|mastercard|paypal|afterpay|flag|arrow|chevron|bullet|divider|pattern|texture|watermark)\b/i;
+
+/** Formats that are never the photograph we are looking for. */
+const NON_PHOTO = /\.(svg|gif|ico)(\?|$)/i;
+
+/**
+ * How promising an image is as demo photography, or null to discard it.
+ *
+ * The signals are all cheap and all available from markup alone: what kind of
+ * element it came from, whether the author wrote an alt, and what size they
+ * declared. Anything declared smaller than a thumbnail is furniture whatever
+ * it is called.
+ */
+export function scoreImage(image: ExtractedImage): number | null {
+  if (FURNITURE.test(image.src)) return null;
+  if (NON_PHOTO.test(image.src)) return null;
+
+  // A declared size is a fact about intent: nobody lays out a photograph at
+  // 48 square. Where only one dimension is given, judge on that alone.
+  const largest = Math.max(image.width, image.height);
+  if (largest > 0 && largest < 200) return null;
+
+  let score = 10;
+
+  // `<picture>` and `srcset` mean someone prepared this image at several
+  // sizes, which is something people do for photographs and not for badges.
+  if (image.origin === 'picture') score += 25;
+  else if (image.origin === 'srcset') score += 20;
+  else if (image.origin === 'background') score += 12;
+
+  if (image.alt.trim().length > 3) score += 8;
+  if (largest >= 1200) score += 15;
+  else if (largest >= 600) score += 8;
+
+  // Paths that name a gallery are worth more than ones that name a theme.
+  if (/\b(gallery|portfolio|photo|hero|banner|work|project|product|menu)\b/i.test(image.src)) score += 10;
+  if (/\b(theme|assets\/img\/ui|wp-includes|plugins?)\b/i.test(image.src)) score -= 8;
+
+  return score;
+}
+
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
@@ -394,11 +448,13 @@ export async function crawlSite(
 
   const images = new Map<string, number>();
   for (const page of result.pages) {
-    if (page.extracted.ogImage) images.set(page.extracted.ogImage, 100);
+    if (page.extracted.ogImage) images.set(page.extracted.ogImage, 120);
     for (const image of page.extracted.images) {
-      if (/logo|icon|sprite|pixel|spacer/i.test(image.src)) continue;
-      // An image with a real alt is usually content rather than furniture.
-      images.set(image.src, (images.get(image.src) ?? 0) + (image.alt ? 5 : 1));
+      const score = scoreImage(image);
+      if (score === null) continue;
+      // An image used on more than one page is usually a real photograph the
+      // business is proud of rather than a one-off.
+      images.set(image.src, Math.max(images.get(image.src) ?? 0, score) + (images.has(image.src) ? 4 : 0));
     }
   }
   result.images = [...images.entries()]

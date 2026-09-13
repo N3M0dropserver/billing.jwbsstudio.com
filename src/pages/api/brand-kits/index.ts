@@ -4,7 +4,7 @@ import { db, files } from '~/lib/env';
 import { brandAssets, brandKits } from '~/lib/db/schema';
 import { newId } from '~/lib/id';
 import { brandAssetKey, putObject, safeSegment } from '~/lib/growth/storage';
-import { DEFAULT_SECTION_ORDER, FALLBACK_BRIEF } from '~/lib/growth/brief';
+import { DEFAULT_SECTION_ORDER, FALLBACK_BRIEF, TOKEN_OPTIONS, parseDesignTokens } from '~/lib/growth/brief';
 
 export const prerender = false;
 
@@ -126,6 +126,18 @@ export const POST: APIRoute = async ({ request, locals, redirect }) => {
     typography: JSON.stringify(parseTypography(text('typography', 2000))),
     palette: JSON.stringify(parsePalette(text('palette', 2000))),
     sectionOrder: JSON.stringify(sectionOrder.length ? sectionOrder : DEFAULT_SECTION_ORDER),
+    // Every field is validated against its own list of permitted values, so a
+    // hand-posted form cannot put arbitrary text into the stylesheet.
+    designTokens: JSON.stringify(
+      parseDesignTokens(
+        Object.fromEntries(
+          (Object.keys(TOKEN_OPTIONS) as Array<keyof typeof TOKEN_OPTIONS>).map((key) => [
+            key,
+            text(`tokens.${key}`, 40),
+          ]),
+        ),
+      ),
+    ),
     prompt: text('prompt', 8000),
     toneNotes: text('toneNotes', 3000),
     avoid: text('avoid', 3000),

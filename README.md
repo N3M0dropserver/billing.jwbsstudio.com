@@ -208,8 +208,38 @@ egress range blocked.
 
 The model writes the *spec*; the generator writes the HTML. That split is
 deliberate: every string from the model is escaped before it reaches markup,
-and the layout, type scale and colour handling stay consistent across every
-demo because they are written once rather than re-improvised per prospect.
+and the layout, type scale and colour handling are written once rather than
+re-improvised per prospect.
+
+**Consistent is not the same as identical.** A brand kit carries composition
+tokens alongside its palette and typefaces — the hero treatment (split,
+stacked, editorial, full-bleed), spacing density, type scale, section rhythm,
+corner and button shape, and how photographs are framed. The stylesheet is a
+function of those tokens, so two kits produce pages that do not look like each
+other, and changing a kit changes every future demo built from it. They are a
+closed set of values rather than free CSS, because the renderer has to be able
+to guarantee the result still lays out properly at every width.
+
+#### Photography
+
+A concept with no pictures reads as a template with a name dropped in, and an
+empty demo was the normal case rather than the exception: the pipeline selects
+businesses whose current site is poor, and a poor site is usually poor at
+images too. So:
+
+- The crawler finds photography the way real sites actually publish it —
+  `srcset`, `<picture>` sources, lazy-loading `data-` attributes and CSS
+  background images, not just `<img src>`. Reading only `src` found nothing on
+  most Squarespace, Wix and WordPress themes.
+- Candidates are scored before anything is downloaded: how the image was
+  prepared, whether it has a written alt, its declared size, and what its path
+  suggests. Logos, badges, payment marks and icon-sized files are discarded.
+- **Their photography is always used first.** Generation only fills the frames
+  left over, is off by default, is capped per demo, and is billed per picture
+  against the campaign like any other model call.
+- Every generated picture is labelled *indicative* on the page, in its alt
+  text, in the ribbon at the top and in the exported project's README. A
+  concept sent to a stranger must never imply we photographed their premises.
 
 Each demo is produced twice:
 
@@ -284,6 +314,15 @@ To move demos onto their own subdomains, add both of these once:
 *.demo.jwbsstudio.com   CNAME   billing.jwbsstudio.com   (proxied)
 route: *.demo.jwbsstudio.com/*  →  this Worker
 ```
+
+> **The certificate is the part that catches people out.** Cloudflare's free
+> Universal SSL covers the apex and *one* level of subdomain — `*.example.com`.
+> A demo at `wells-coffee.demo.example.com` is two levels deep and is **not**
+> covered, so the DNS record and the route can both be right and the browser
+> still refuses the connection. Either add a `*.demo.example.com` certificate
+> (Advanced Certificate Manager, or Total TLS), or set `DEMO_HOST` to the apex
+> so demos land one level deep at `wells-coffee.example.com` and Universal SSL
+> covers them for nothing.
 
 `DEMO_HOST` in `wrangler.jsonc` must match. Then build a demo and press **Check
 hosting now** in Growth settings — it fetches a real demo and looks for the

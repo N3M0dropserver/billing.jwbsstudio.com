@@ -138,6 +138,16 @@ const env = bindings();
           <p>To move them onto their own subdomain, add both of these once:</p>
           <pre class="overflow-x-auto rounded-lg p-3 text-[11px]" style="background: var(--surface-sunken)">{`DNS:    *.${settings.demoHost}   CNAME   ${new URL(env.APP_URL ?? 'https://billing.jwbsstudio.com').hostname}   (proxied)
 Route:  *.${settings.demoHost}/*   ->   this Worker`}</pre>
+          <p>
+            <strong style="color: var(--text)">Check the certificate as well as the DNS.</strong>
+            Cloudflare's free Universal SSL covers the apex and one level of subdomain only, so
+            <code>{`*.${settings.demoHost.split('.').slice(1).join('.')}`}</code> is covered and
+            <code>{`*.${settings.demoHost}`}</code> is not. A demo two levels deep will fail in the
+            browser even when the record and the route are both right. Either add a
+            <code>{`*.${settings.demoHost}`}</code> certificate (Advanced Certificate Manager, or
+            Total TLS), or set the demo host to the apex so demos land one level deep and the free
+            certificate covers them.
+          </p>
           <p>Then build at least one demo and run the check — it needs a real page to fetch.</p>
         </div>
       )}
@@ -177,6 +187,44 @@ Route:  *.${settings.demoHost}/*   ->   this Worker`}</pre>
           <a href="/growth/ai" class="mt-2 inline-block text-sm" style="color: var(--color-brand-600)">See what it is costing →</a>
         </div>
       </div>
+    </Card>
+
+    <Card
+      title="Demo photography"
+      subtitle="What to do when a prospect has no usable pictures of their own"
+    >
+      <label class="flex items-start gap-3">
+        <input
+          type="checkbox"
+          name="generateDemoImages"
+          value="yes"
+          checked={settings.generateDemoImages}
+          class="mt-1"
+        />
+        <span class="text-sm leading-relaxed">
+          <span class="font-medium">Generate placeholder photography</span>
+          <span class="muted mt-1 block text-xs leading-relaxed">
+            Their own photographs are always used first. This only fills the frames left over —
+            which, on the kind of site this pipeline selects for, is usually most of them. A demo
+            with no pictures at all is the single thing that makes a concept read as a template.
+          </span>
+        </span>
+      </label>
+
+      <div class="mt-3.5 max-w-xs">
+        <label for="maxGeneratedImages" class="mb-1.5 block text-sm font-medium">At most</label>
+        <div class="flex items-center gap-2">
+          <input id="maxGeneratedImages" name="maxGeneratedImages" type="number" min="0" max="6" value={settings.maxGeneratedImages} class="field max-w-24" />
+          <span class="muted text-sm">per demo</span>
+        </div>
+      </div>
+
+      <p class="muted mt-3.5 text-xs leading-relaxed">
+        Generated pictures are billed per image, and every one is labelled
+        <strong style="color: var(--text)">“indicative”</strong> on the page, in its alt text, and
+        in the ribbon at the top. A concept sent to a stranger must never imply we photographed
+        their premises.
+      </p>
     </Card>
 
     <button class="rounded-lg px-4 py-2.5 text-sm font-medium text-white" style="background: var(--color-brand-600)">Save</button>
