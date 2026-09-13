@@ -61,6 +61,65 @@ export interface SiteAudit {
   platform: string | null;
   pagesSeen: number;
   crawledAt: string;
+
+  /**
+   * Is there any route by which this business could be written to?
+   *
+   * Measured, and kept apart from the need score on purpose. Need answers
+   * "should somebody fix this"; this answers "can we reach the person who
+   * would say yes". A business with no website and no published address is
+   * a perfect score on the first question and unusable on the second — and
+   * before this existed it went all the way to a published demo site and a
+   * drafted email before anyone found out.
+   *
+   * A website counts: the full crawl at `enrich` usually turns one up even
+   * when the directory had none.
+   */
+  contactable: boolean;
+
+  /**
+   * Measured evidence the business is actually trading.
+   *
+   * A high need score is only worth acting on when somebody is there to act
+   * with. An empty list next to a need score of 95 is a map pin, not a
+   * prospect.
+   */
+  tradingEvidence: string[];
+}
+
+/** What discovery knew about a business, for the parts of the audit that are not the site. */
+export type AuditSubject = Pick<
+  DiscoveredBusiness,
+  'name' | 'website' | 'mapsUrl' | 'reviewCount' | 'email' | 'phone' | 'openingHours'
+>;
+
+/**
+ * Can this business be reached, and is anyone home?
+ *
+ * Both are decided from what the directory published plus whatever the crawl
+ * found, so the answer is the same whether or not a model was ever asked.
+ */
+function reachability(
+  business: AuditSubject,
+  crawl: CrawlResult | null,
+): { contactable: boolean; tradingEvidence: string[] } {
+  const email = (business.email ?? '').trim() || crawl?.emails[0] || '';
+  const phone = (business.phone ?? '').trim() || crawl?.phones[0] || '';
+  const reviews = business.reviewCount ?? 0;
+
+  const tradingEvidence: string[] = [];
+  if (business.openingHours) tradingEvidence.push('Publishes trading hours.');
+  if (phone) tradingEvidence.push('Publishes a phone number.');
+  if (email) tradingEvidence.push('Publishes an email address.');
+  if (reviews >= 10) tradingEvidence.push(`${reviews} public reviews.`);
+  if (crawl?.reachable) tradingEvidence.push('Their website answers.');
+  if (crawl?.socials.length) {
+    tradingEvidence.push(`Active on ${crawl.socials.map((social) => social.platform).join(' and ')}.`);
+  }
+
+  // A website is a route even when today's sample turned up no address: the
+  // full crawl reads every page and usually finds one.
+  return { contactable: Boolean(email) || Boolean(business.website), tradingEvidence };
 }
 
 /** Site builders and CMSs, by the fingerprints they leave in the markup. */
@@ -111,7 +170,7 @@ export function detectPlatform(html: string): { name: string; penalty: number } 
  * there is nothing to crawl at all.
  */
 export function auditSite(
-  business: Pick<DiscoveredBusiness, 'name' | 'website' | 'mapsUrl' | 'reviewCount'>,
+  business: AuditSubject,
   crawl: CrawlResult | null,
   now: Date = new Date(),
 ): SiteAudit {
@@ -123,6 +182,7 @@ export function auditSite(
   if (!business.website) {
     const onSocialOnly = Boolean(crawl?.socials.length);
     return {
+      ...reachability(business, crawl),
       checks: [check('no-website', 'No website found', 95, true)],
       presenceScore: onSocialOnly ? 88 : 95,
       signal: onSocialOnly ? 'social-only' : business.mapsUrl ? 'maps-only' : 'no-website',
@@ -143,6 +203,7 @@ export function auditSite(
 
   if (!crawl || !crawl.reachable) {
     return {
+      ...reachability(business, crawl),
       checks: [check('unreachable', 'The site did not respond', 90, true, crawl?.error)],
       presenceScore: 90,
       signal: 'broken-site',
@@ -165,6 +226,7 @@ export function auditSite(
 
   if (PARKED_PATTERNS.test(page.text.slice(0, 2000)) && page.wordCount < 200) {
     return {
+      ...reachability(business, crawl),
       checks: [check('parked', 'The domain shows a placeholder', 88, true)],
       presenceScore: 88,
       signal: 'broken-site',
@@ -312,6 +374,7 @@ export function auditSite(
     : 'The site is in good shape. There is no honest problem to lead with here.';
 
   return {
+    ...reachability(business, crawl),
     checks,
     presenceScore,
     signal,
@@ -347,6 +410,11 @@ export function renderAudit(audit: SiteAudit): string {
     `presence_score: ${audit.presenceScore} (higher means more need)`,
     `platform: ${audit.platform ?? 'unknown'}`,
     `pages_seen: ${audit.pagesSeen}`,
+    // The evidence behind "dormant", which the model is asked to judge and
+    // was previously given nothing to judge it on.
+    audit.tradingEvidence.length
+      ? `trading_evidence:\n${audit.tradingEvidence.map((line) => `  - ${line}`).join('\n')}`
+      : 'trading_evidence: none found — no published hours, phone, email or reviews',
     failing.length
       ? `problems:\n${failing.map((c) => `  - ${c.label}${c.detail ? ` (${c.detail})` : ''}`).join('\n')}`
       : 'problems: none found',

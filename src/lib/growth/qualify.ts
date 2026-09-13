@@ -78,7 +78,9 @@ Score LOW for — and this matters more than anything else:
   - a chain branch with no authority to commission anything
   - dormant, closing, or too small to pay for anything
 
-ABILITY TO PAY IS NOT THE QUESTION. A national brand can obviously pay and is a BAD prospect — they have a brand guide, an agency and no interest in a concept from someone they have never met. If scale_score is above 60, fit_score must be below 30 and you should almost always set skip.
+ABILITY TO PAY IS NOT THE QUESTION. A national brand can obviously pay and is a BAD prospect — they have a brand guide, an agency and no interest in a concept from someone they have never met. Scale is a ceiling on fit, and it is applied in code after you answer: above a scale_score of 45 your number is lowered, and by 85 it is lowered to almost nothing. Score it honestly and expect the ceiling; above 60 you should almost always set skip as well.
+
+trading_evidence tells you whether anyone is actually there. An empty list next to a high presence_score is a business that may have stopped trading, not an opportunity — set skip.
 
 objective: what a new site should do for THEM.
   conversion  - they need enquiries, bookings or sales

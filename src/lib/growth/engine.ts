@@ -435,6 +435,7 @@ async function stageDiscover(
         context: business.context ?? '',
         brandWikidata: business.brandWikidata ?? '',
         operator: business.operator ?? '',
+        openingHours: business.openingHours ?? '',
       }),
       stage: 'discover',
       status: 'new',
@@ -502,12 +503,23 @@ async function stageShortlist(
     .where(and(eq(prospects.campaignId, campaign.id), eq(prospects.stage, 'shortlist')))
     .orderBy(desc(prospects.score));
 
-  // The ceiling is enforced here as well as at assessment: a prospect whose
-  // scale was raised by a later lookup must not survive on a stale score.
+  /**
+   * The ceiling is enforced here as well as at assessment: a prospect whose
+   * scale was raised by a later lookup must not survive on a stale score.
+   *
+   * `skip` is read directly rather than inferred from the score of zero it
+   * produces. The floor is a user setting and can be set to zero, and a
+   * floor of zero would otherwise turn every ruled-out prospect — chains
+   * included — back into a candidate.
+   */
   const eligible = assessed.filter(
-    (p) => p.score >= campaign.scoreFloor && p.scaleScore <= campaign.scaleCeiling,
+    (p) =>
+      readFindings(p).skip !== true &&
+      p.score >= campaign.scoreFloor &&
+      p.scaleScore <= campaign.scaleCeiling,
   );
   const ruledOutOnSize = assessed.filter((p) => p.scaleScore > campaign.scaleCeiling).length;
+  const ruledOutOnJudgement = assessed.filter((p) => readFindings(p).skip === true).length;
   const mode = policy.shortlist;
 
   let chosen: Prospect[] = [];
@@ -574,7 +586,7 @@ async function stageShortlist(
     mode === 'ai' ? 'decision' : 'info',
     `Shortlisted ${chosen.length} of ${assessed.length}` +
       (ruledOutOnSize ? `, with ${ruledOutOnSize} ruled out on size.` : '.'),
-    { reasoning, selected: chosen.map((p) => p.businessName), ruledOutOnSize },
+    { reasoning, selected: chosen.map((p) => p.businessName), ruledOutOnSize, ruledOutOnJudgement },
   );
 
   if (chosen.length === 0) {
@@ -590,7 +602,9 @@ async function stageShortlist(
       'warn',
       ruledOutOnSize === assessed.length
         ? `Every business found was too large (scale ceiling ${campaign.scaleCeiling}). This niche in this region is chains. Try a smaller town, or raise the ceiling if you want to approach them anyway.`
-        : `Nothing cleared the score floor of ${campaign.scoreFloor}. Lower it, or try another niche.`,
+        : ruledOutOnJudgement === assessed.length
+          ? 'Every business found was ruled out: too large, unreachable, or with nothing measurably wrong to write to them about. Try another niche or another town.'
+          : `Nothing cleared the score floor of ${campaign.scoreFloor}. Lower it, or try another niche.`,
     );
     return { more: false, waitingOn: null, finished: true, message: 'Nothing worth pursuing.' };
   }
@@ -620,6 +634,9 @@ async function assessProspect(
       website: prospect.website || undefined,
       mapsUrl: prospect.mapsUrl || undefined,
       reviewCount: prospect.reviewCount,
+      email: prospect.email || undefined,
+      phone: prospect.phone || undefined,
+      openingHours: String(findings.openingHours ?? '') || undefined,
     },
     crawl,
   );
@@ -674,12 +691,25 @@ async function assessProspect(
   const overCeiling = scale.score > campaign.scaleCeiling;
 
   /**
-   * Do not spend a model call on a business the measurements have already
-   * ruled out. This is the single largest saving in the stage — a run over a
-   * high street full of chain branches used to pay to be told so one at a
-   * time.
+   * Three ways the measurements settle a prospect before the model is asked.
+   *
+   * Each one is a business no answer could rescue, so paying for an opinion
+   * about it is waste — and, worse, an opinion is something an enthusiastic
+   * model can talk itself past.
+   *
+   *   overCeiling   — larger than this campaign is willing to approach.
+   *   unreachable   — no website and no address. Nothing to crawl, nowhere
+   *                   to send. It used to reach a published demo site before
+   *                   anybody found out.
+   *   cannotQualify — even a perfect fit could not lift the combined score
+   *                   over the floor, because the need is too low. Their site
+   *                   is fine; there is no honest case to make.
    */
-  const qualification = overCeiling
+  const unreachable = !audit.contactable;
+  const cannotQualify = combineScores(audit.presenceScore, 100) < campaign.scoreFloor;
+  const settledByMeasurement = overCeiling || unreachable || cannotQualify;
+
+  const qualification = settledByMeasurement
     ? null
     : await qualifyProspect(ctx.ai, {
         businessName: prospect.businessName,
@@ -695,13 +725,25 @@ async function assessProspect(
       });
 
   const fitScore = qualification?.ok ? qualification.data.fitScore : 0;
-  const skip = overCeiling || (qualification?.ok === true && qualification.data.skip);
+
+  /**
+   * `scale.decisive` is in here rather than only inside `qualifyProspect`
+   * because a model call that fails returns no opinion at all — and without
+   * this line a catalogued chain with a neglected site scored on need alone
+   * and went forward the moment the model was unavailable.
+   */
+  const skip =
+    settledByMeasurement || scale.decisive || (qualification?.ok === true && qualification.data.skip);
 
   const reasoning = overCeiling
     ? scale.summary
-    : qualification?.ok
-      ? qualification.data.reasoning
-      : (qualification?.error ?? '');
+    : unreachable
+      ? 'No website and no email address. There is nothing to crawl and nowhere to send a proposal — ring them instead.'
+      : cannotQualify
+        ? `Need is only ${audit.presenceScore}; even a perfect fit could not clear the floor of ${campaign.scoreFloor}. There is no honest problem to write to them about.`
+        : qualification?.ok
+          ? qualification.data.reasoning
+          : (qualification?.error ?? '');
 
   await ctx.db
     .update(prospects)
@@ -724,10 +766,12 @@ async function assessProspect(
         reasoning,
         objective: qualification?.ok ? qualification.data.objective : 'conversion',
         skip,
+        unreachable,
+        tradingEvidence: audit.tradingEvidence,
         tooBig: overCeiling || (qualification?.ok === true && qualification.data.tooBig),
         prominence: prominence.checked.length ? prominence : undefined,
       }).slice(0, 20_000),
-      notes: overCeiling ? scale.summary : qualification?.ok ? qualification.data.angle : '',
+      notes: settledByMeasurement ? reasoning : qualification?.ok ? qualification.data.angle : '',
       domain: prospect.domain || normaliseDomain(prospect.website),
       socialLinks: JSON.stringify(crawl?.socials ?? []),
       email: prospect.email || crawl?.emails[0] || '',
@@ -739,11 +783,23 @@ async function assessProspect(
     ctx,
     campaign,
     'shortlist',
-    overCeiling ? 'decision' : 'info',
+    settledByMeasurement ? 'decision' : qualification?.ok === false ? 'warn' : 'info',
     overCeiling
       ? `${prospect.businessName}: ruled out on size (scale ${scale.score}, ceiling ${campaign.scaleCeiling}). ${scale.summary}`
-      : `${prospect.businessName}: need ${audit.presenceScore}, fit ${fitScore}, scale ${scale.score}${skip ? ' — skip' : ''}.`,
-    { summary: audit.summary, scale: scale.summary, modelCalled: !overCeiling },
+      : unreachable
+        ? `${prospect.businessName}: ruled out — no website and no email address, so there is nowhere to send anything.`
+        : cannotQualify
+          ? `${prospect.businessName}: ruled out — need ${audit.presenceScore} cannot clear the floor of ${campaign.scoreFloor} at any fit. Not asked.`
+          : qualification?.ok === false
+            ? `${prospect.businessName}: the model could not be asked (${qualification.error}), so fit is unscored and they are ranked on need alone.`
+            : `${prospect.businessName}: need ${audit.presenceScore}, fit ${fitScore}, scale ${scale.score}${skip ? ' — skip' : ''}.`,
+    {
+      summary: audit.summary,
+      scale: scale.summary,
+      modelCalled: !settledByMeasurement,
+      contactable: audit.contactable,
+      tradingEvidence: audit.tradingEvidence,
+    },
     prospect.id,
   );
 }
@@ -822,17 +878,20 @@ async function stageEnrich(
 
   // Re-audit with everything the full crawl saw. The one-page audit that got
   // this prospect shortlisted was a sample; this is the real picture.
+  const findings = readFindings(prospect);
+
   const audit = auditSite(
     {
       name: prospect.businessName,
       website: prospect.website || undefined,
       mapsUrl: prospect.mapsUrl || undefined,
       reviewCount: enrichment.reviewCount,
+      email: enrichment.contact.email || prospect.email || undefined,
+      phone: enrichment.contact.phone || prospect.phone || undefined,
+      openingHours: String(findings.openingHours ?? '') || undefined,
     },
     enrichment.crawl,
   );
-
-  const findings = readFindings(prospect);
 
   await ctx.db
     .update(prospects)
@@ -1075,10 +1134,16 @@ async function stageBuild(
 
   const audit = readAudit(prospect);
 
-  // Under `ai`, the model's own judgement about whether there is an honest
-  // case to make is respected here rather than at the shortlist, because by
-  // now there is a real plan to judge.
-  if (policy.build === 'ai' && audit.observations.length === 0) {
+  /**
+   * Nothing measurable is wrong with their site.
+   *
+   * This is checked here rather than at the shortlist because by now there is
+   * a real plan to judge, and it is checked under every mode rather than only
+   * under `ai`: "just do it" is an instruction to stop asking, not permission
+   * to open a cold email with something invented. The prospect stays visible
+   * and can be pushed through by hand from the prospect page.
+   */
+  if (audit.observations.length === 0) {
     await ctx.db.update(prospects).set({ stage: 'build', updatedAt: now }).where(eq(prospects.id, prospect.id));
     await logEvent(
       ctx,
@@ -1371,8 +1436,9 @@ async function stagePropose(
     return { more: true, waitingOn: null, finished: false, message: `Drafted for ${prospect.businessName}.` };
   }
 
-  // `ai` will not write to somebody when there is nothing measurable to say.
-  if (policy.propose === 'ai' && audit.observations.length === 0) {
+  // Nothing measurable to say means nothing honest to open with, whatever
+  // the mode. The draft is kept so it can be read, and simply not sent.
+  if (audit.observations.length === 0) {
     await logEvent(
       ctx,
       campaign,
@@ -1551,6 +1617,8 @@ export function readAudit(prospect: Pick<Prospect, 'audit' | 'businessName'>): S
     summary: '',
     observations: [],
     context: [],
+    contactable: false,
+    tradingEvidence: [],
     platform: null,
     pagesSeen: 0,
     crawledAt: new Date().toISOString(),

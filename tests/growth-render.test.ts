@@ -42,7 +42,8 @@ const PLAN: DesignPlanDraft = {
 
 const AUDIT: SiteAudit = {
   checks: [], presenceScore: 40, signal: 'other', summary: '', observations: [],
-  context: [], platform: null, pagesSeen: 1, crawledAt: '2026-09-12T00:00:00Z',
+  context: [], contactable: true, tradingEvidence: [], platform: null, pagesSeen: 1,
+  crawledAt: '2026-09-12T00:00:00Z',
 };
 
 describe('escaping', () => {

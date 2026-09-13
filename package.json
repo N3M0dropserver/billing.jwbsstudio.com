@@ -17,6 +17,7 @@
         "typecheck": "tsc --noEmit",
         "test": "vitest run",
         "test:watch": "vitest",
+        "leads": "bun run scripts/lead-bench.ts",
         "db:generate": "drizzle-kit generate",
         "db:migrate:local": "wrangler d1 migrations apply jwbs-billing --local",
         "db:migrate:remote": "wrangler d1 migrations apply jwbs-billing --remote",

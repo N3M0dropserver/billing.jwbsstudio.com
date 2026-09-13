@@ -43,6 +43,10 @@ const failing = audit.checks.filter((check) => check.failed);
 const scale = parseJson<ScaleAssessment | null>(prospect.scale, null);
 const scaleHits = scale?.signals.filter((signal) => signal.hit && signal.weight > 0) ?? [];
 const tooBig = findings.tooBig === true;
+const unreachable = findings.unreachable === true;
+const tradingEvidence = Array.isArray(findings.tradingEvidence)
+  ? (findings.tradingEvidence as unknown[]).map((line) => String(line))
+  : audit.tradingEvidence ?? [];
 ---
 
 <AppLayout title={prospect.businessName} subtitle={`${prospect.niche} · ${prospect.region}`} width="wide">
@@ -185,6 +189,12 @@ const tooBig = findings.tooBig === true;
       </Card>
 
       <Card title="Contact">
+        {unreachable && (
+          <p class="mb-3 rounded-lg px-3 py-2 text-xs leading-relaxed" style="background: color-mix(in oklch, var(--color-overdue) 12%, transparent); color: var(--color-overdue)">
+            No website and no email address. There is nothing to crawl for a contact and nowhere
+            to send a proposal — this one is a phone call, not a campaign.
+          </p>
+        )}
         <dl class="space-y-2 text-sm">
           {prospect.website && (
             <div><dt class="muted text-xs">Site</dt><dd class="truncate"><a href={prospect.website} target="_blank" rel="noopener nofollow">{prospect.domain || prospect.website}</a></dd></div>
@@ -207,6 +217,20 @@ const tooBig = findings.tooBig === true;
             <div><dt class="muted text-xs">Rating</dt><dd class="tabular">{prospect.rating} ({prospect.reviewCount})</dd></div>
           )}
         </dl>
+
+        <div class="mt-4 border-t pt-3" style="border-color: var(--border)">
+          <p class="muted mb-1.5 text-xs font-semibold uppercase tracking-wide">Signs they are trading</p>
+          {tradingEvidence.length === 0 ? (
+            <p class="muted text-xs leading-relaxed">
+              None found. No published hours, phone, email or reviews — which is what a business
+              that has quietly stopped looks like.
+            </p>
+          ) : (
+            <ul class="muted space-y-1 text-xs leading-relaxed">
+              {tradingEvidence.map((line) => <li>{line}</li>)}
+            </ul>
+          )}
+        </div>
       </Card>
 
       <Card title="Status">

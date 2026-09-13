@@ -81,8 +81,13 @@ brief → discover → shortlist → enrich → plan → build → propose
 | **shortlist** | Audits each one's site, measures their size, and ranks them | The model picks, and records why | Takes the top of the ranking |
 | **enrich** | Crawls the site, finds contacts, socials, reviews, photography | — | Researches everyone selected |
 | **plan** | Writes the design and page spec | The model writes the plan | Lays out a scaffold, no model call |
-| **build** | Generates the demo and publishes it | Skips anyone with no honest angle | Builds for everyone planned |
-| **propose** | Drafts the outreach email and sends it | Holds back anyone with nothing verifiable to say | Sends to everyone, up to the cap |
+| **build** | Generates the demo and publishes it | Builds for everyone planned | Builds for everyone planned |
+| **propose** | Drafts the outreach email and sends it | Sends to everyone drafted, up to the cap | Sends to everyone drafted, up to the cap |
+
+Anyone with **no honest angle** — nothing measurably wrong with their site — is
+skipped at **build** and never sent at **propose**, under every mode. `Just do
+it` is an instruction to stop asking, not permission to open a cold email with
+something invented.
 
 `Ask me` on any stage does the work and then stops, so you see the results
 before anything moves on. The defaults leave **build** and **propose** on
@@ -134,8 +139,37 @@ prospects because a café shares a word with something famous is not.
 The audit also produces a list of **verified observations** — the problems in
 words that can go into an email unchanged. This is what the outreach is written
 from. When that list is empty, there is genuinely nothing honest to lead with,
-and under `AI decides` the pipeline says so and moves on rather than inventing
-a flaw.
+and the pipeline says so and moves on rather than inventing a flaw.
+
+### Reachable, and actually trading
+
+Need answers "should somebody fix this". It does not answer "is there anyone to
+say yes". A business with no website scores 95 for need and is a fine prospect
+when the directory carries an email — *no website* is the pitch. The same
+business with no email and no site is a map pin: nothing to crawl, nowhere to
+send, and before this was measured it reached a published demo subdomain and a
+drafted email before anyone found out.
+
+So the audit measures two more things alongside the score: whether the business
+is **contactable** at all, and what **evidence there is that they are trading**
+— published hours, a phone number, an email, public reviews, a site that
+answers. An unreachable prospect is ruled out at the shortlist, before a model
+call is paid for.
+
+### What the model is never allowed to decide
+
+Three rulings are made from measurements and cannot be argued out of, because
+each is a case where an enthusiastic model used to talk its way through:
+
+- **too large** — above the size ceiling, or decisively a chain (a Wikidata
+  entry, three or more branches). Enforced even when the model call fails,
+  which is what used to let a catalogued chain through on need alone.
+- **unreachable** — no website and no email address.
+- **no honest angle** — need so low that even a perfect fit could not clear the
+  score floor. There is no problem to write to them about.
+
+None of the three costs a model call, and none of them is undone by a score
+floor of zero.
 
 ### Where the businesses come from
 

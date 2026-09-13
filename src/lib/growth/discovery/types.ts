@@ -53,6 +53,15 @@ export interface DiscoveredBusiness {
   operator?: string;
   /** How many branches the search found in this region. */
   branchCount?: number;
+
+  /**
+   * Published trading hours, as the source wrote them.
+   *
+   * The cheapest evidence there is that a business is actually open. It
+   * separates a going concern with no website — a good prospect — from a
+   * map pin somebody left behind, which is not one.
+   */
+  openingHours?: string;
 }
 
 export interface DiscoveryOutcome {

@@ -329,6 +329,7 @@ export function elementToBusiness(element: OverpassElement): DiscoveredBusiness 
     brand: (tags.brand ?? '').trim() || undefined,
     brandWikidata: (tags['brand:wikidata'] ?? '').trim() || undefined,
     operator: (tags.operator ?? '').trim() || undefined,
+    openingHours: (tags.opening_hours ?? '').trim() || undefined,
     website: website || undefined,
     email: (tags.email ?? tags['contact:email'] ?? '').trim() || undefined,
     phone: (tags.phone ?? tags['contact:phone'] ?? '').trim() || undefined,
