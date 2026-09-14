@@ -1095,7 +1095,11 @@ async function stageBuild(
 
   const brief = await resolveBrief(ctx, campaign);
   const settingsRow = await loadSettings(ctx, campaign.userId);
-  const demoHost = settingsRow.demoHost || 'demo.jwbsstudio.com';
+  // The saved setting wins; `DEMO_HOST` is the deployment's default for an
+  // account that has never opened the settings page. Falling back to a
+  // hardcoded host instead would publish demos somewhere the route does not
+  // cover, which looks exactly like a hosting failure.
+  const demoHost = settingsRow.demoHost || ctx.env.DEMO_HOST || 'demo.jwbsstudio.com';
 
   const { label, host } = await allocateSubdomain(prospect.businessName, demoHost, async (candidate) => {
     const rows = await ctx.db

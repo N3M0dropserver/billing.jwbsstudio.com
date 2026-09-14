@@ -7,7 +7,7 @@
  * which is what a proposal email needs.
  *
  * DNS is the only part that needs arranging once, up front. A wildcard
- * record plus a wildcard Worker route covers every demo forever:
+ * record plus a matching Worker route covers every demo forever:
  *
  *     *.demo.jwbsstudio.com   CNAME   billing.jwbsstudio.com   (proxied)
  *     route: *.demo.jwbsstudio.com/*  →  this Worker
@@ -15,6 +15,30 @@
  * With that in place `createDnsRecord` is never needed. It exists for the
  * case where you would rather create each record explicitly — set
  * CLOUDFLARE_API_TOKEN and CLOUDFLARE_ZONE_ID and it is used automatically.
+ *
+ * ## Why the host is a pattern rather than a parent domain
+ *
+ * `wells-coffee.demo.jwbsstudio.com` is two labels below the zone apex, and
+ * Cloudflare's free Universal SSL covers only one. The certificate is the part
+ * that catches people out: the DNS record and the route can both be right and
+ * the browser still refuses the connection.
+ *
+ * Putting demos one label deep fixes that for nothing, but `*.jwbsstudio.com`
+ * as a *route* would swallow `www` and everything else on the zone. A
+ * hyphenated label is both: `wells-coffee-demo.jwbsstudio.com` is one label
+ * deep, so Universal SSL covers it, and `*-demo.jwbsstudio.com/*` as a route
+ * cannot match `www`.
+ *
+ * So the setting is a pattern. `*` is where the business's label goes, and it
+ * is written exactly as the Worker route is written:
+ *
+ *     demo.jwbsstudio.com     →  wells-coffee.demo.jwbsstudio.com
+ *     *-demo.jwbsstudio.com   →  wells-coffee-demo.jwbsstudio.com
+ *
+ * The one thing a hyphenated pattern cannot do is be a DNS record. A DNS
+ * wildcard is a whole label — `*.jwbsstudio.com` is valid, `*-demo.
+ * jwbsstudio.com` is not, and would be stored as a literal name that matches
+ * nothing. See `demoDnsRecord`.
  */
 
 import { contentTypeFor, demoPrefixFor, demoSourcePrefix, putObject } from './storage';
@@ -67,18 +91,116 @@ export async function allocateSubdomain(
   taken: (host: string) => Promise<boolean>,
 ): Promise<{ label: string; host: string }> {
   const base = slugifyBusiness(businessName);
-  const candidates = isReservedLabel(base) ? [`${base}-studio`] : [base];
+
+  /**
+   * A reserved label only collides when the demo's label stands on its own.
+   * Under a suffix pattern it cannot: `www-demo` is not `www`, so there is
+   * nothing to steer around.
+   */
+  const standsAlone = demoHostPattern(demoHost).split('.')[0] === '*';
+  const candidates = isReservedLabel(base) && standsAlone ? [`${base}-studio`] : [base];
 
   for (let suffix = 2; suffix <= 40; suffix++) candidates.push(`${base}-${suffix}`);
 
   for (const label of candidates) {
-    const host = `${label}.${demoHost}`.toLowerCase();
+    const host = demoHostFor(label, demoHost);
     if (!(await taken(host))) return { label, host };
   }
 
   // Forty collisions on one name is not a naming problem any more.
   const label = `${base}-${Math.random().toString(36).slice(2, 7)}`;
-  return { label, host: `${label}.${demoHost}`.toLowerCase() };
+  return { label, host: demoHostFor(label, demoHost) };
+}
+
+/* ------------------------------------------------------------------ */
+/* Where a demo host comes from                                        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Normalise whatever is in the setting into a pattern containing exactly one
+ * `*`, which is where the business's label goes.
+ *
+ * A value with no `*` is the old form — a parent domain that labels are
+ * prefixed onto — and is read as `*.<value>` so both spellings describe the
+ * same thing and nothing that was already configured changes meaning.
+ */
+export function demoHostPattern(setting: string): string {
+  const clean = setting.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+  if (!clean) return '';
+  return clean.includes('*') ? clean : `*.${clean}`;
+}
+
+/**
+ * Validate a demo host setting, returning '' when it is not usable.
+ *
+ * `*` is permitted in the first label only, and only once: it is where the
+ * business's label goes. This decides what hostnames the app will generate,
+ * publish under and ask Cloudflare to create records for, so it is strict —
+ * a setting that is merely *nearly* a hostname produces demos nobody can
+ * reach, and the failure shows up much later than the typo.
+ */
+export function cleanDemoHost(value: string): string {
+  const host = value.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+  if (!host) return '';
+
+  const [first, ...rest] = host.split('.');
+  // A bare label is not a host to put demos under; it would make the demo the
+  // apex of somebody's zone.
+  if (rest.length === 0) return '';
+  if ((first!.match(/\*/g) ?? []).length > 1) return '';
+
+  /**
+   * The label the business's name goes into. It may be the whole label (`*`),
+   * or fused to a fixed part on either side (`*-demo`, `demo-*`) — the second
+   * form is the one that keeps a demo a single label deep while staying
+   * impossible to confuse with `www`.
+   */
+  const plain = '[a-z0-9]([a-z0-9-]*[a-z0-9])?';
+  const wildcardLabel = new RegExp(`^(\\*|\\*-${plain}|${plain}-\\*|${plain})$`);
+  const plainLabel = new RegExp(`^${plain}$`);
+
+  if (!wildcardLabel.test(first!)) return '';
+  if (!rest.every((part) => plainLabel.test(part))) return '';
+
+  return host;
+}
+
+/** The host one demo is served at. */
+export function demoHostFor(label: string, setting: string): string {
+  const pattern = demoHostPattern(setting);
+  if (!pattern) return label.toLowerCase();
+  // Only the first `*` is a placeholder; a second one is a typo, not a second
+  // slot, and leaving it in the host makes that obvious rather than silent.
+  return pattern.replace('*', label).toLowerCase();
+}
+
+/** The Worker route that has to exist for the pattern to be served. */
+export function demoRoute(setting: string): string {
+  const pattern = demoHostPattern(setting);
+  return pattern ? `${pattern}/*` : '';
+}
+
+/**
+ * The DNS record that makes the pattern resolve.
+ *
+ * A DNS wildcard is a whole label, so `*-demo.example.com` cannot be a record
+ * — it would be stored as a literal name matching nothing. The wildcard that
+ * *does* cover it is one at the level above, which is why this returns
+ * something broader than the route for a suffix pattern.
+ *
+ * `exact` says whether the record matches the pattern or merely contains it.
+ * When it does not, the record catches names the route will not serve, and the
+ * alternative is a record per demo — which is what `createDnsRecord` is for.
+ */
+export function demoDnsRecord(setting: string): { name: string; exact: boolean } {
+  const pattern = demoHostPattern(setting);
+  if (!pattern) return { name: '', exact: false };
+
+  const [first, ...rest] = pattern.split('.');
+  if (first === '*') return { name: pattern, exact: true };
+
+  // A `*` inside a label: the nearest valid wildcard is the parent.
+  return { name: rest.length ? `*.${rest.join('.')}` : pattern, exact: false };
 }
 
 export interface PublishResult {
@@ -191,6 +313,8 @@ export function parseDemoPath(pathname: string): { host: string; rest: string } 
  */
 export async function checkDemoHosting(
   host: string,
+  /** The configured pattern, so a failure can name the record that is missing. */
+  setting = '',
 ): Promise<{ ok: boolean; detail: string }> {
   try {
     const response = await fetch(demoSubdomainUrl(host), {
@@ -215,11 +339,15 @@ export async function checkDemoHosting(
 
     return { ok: true, detail: `${host} served the demo.` };
   } catch (error) {
+    const record = demoDnsRecord(setting || host.split('.').slice(1).join('.'));
     return {
       ok: false,
       detail:
-        `${host} could not be reached (${error}). Add a proxied wildcard DNS record for ` +
-        `*.${host.split('.').slice(1).join('.')} and a matching Worker route.`,
+        `${host} could not be reached (${error}). Check three things, in this order: ` +
+        `a proxied DNS record covering it (${record.name}), a Worker route for ` +
+        `${demoRoute(setting) || 'the demo pattern'}, and a certificate that covers ` +
+        `${host} — Universal SSL stops one label below the zone apex, and a name deeper ` +
+        `than that fails here even when the record and the route are both correct.`,
     };
   }
 }

@@ -5,15 +5,11 @@ import { settings } from '~/lib/db/schema';
 import { getSettings } from '~/lib/queries/settings';
 import { policyFromForm, serialisePolicy } from '~/lib/growth/policy';
 import { toProviderName } from '~/lib/growth/discovery/index';
+import { cleanDemoHost } from '~/lib/growth/publish';
 
 export const prerender = false;
 
 /** Hostname-ish, so a typo does not produce demo hosts nobody can reach. */
-function cleanHost(value: string): string {
-  const host = value.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
-  return /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(host) ? host : '';
-}
-
 export const POST: APIRoute = async ({ request, locals, redirect }) => {
   const user = locals.user;
   if (!user) return redirect('/login', 302);
@@ -26,7 +22,7 @@ export const POST: APIRoute = async ({ request, locals, redirect }) => {
   const cap = Number.parseInt(String(form.get('outreachDailyCap') ?? ''), 10);
   const cacheHours = Number.parseInt(String(form.get('aiCacheTtlHours') ?? ''), 10);
   const maxImages = Number.parseInt(String(form.get('maxGeneratedImages') ?? ''), 10);
-  const host = cleanHost(text('demoHost', 200));
+  const host = cleanDemoHost(text('demoHost', 200));
   const provider =
     toProviderName(form.get('growthDiscoveryProvider')) ?? current.growthDiscoveryProvider;
 

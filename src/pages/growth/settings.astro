@@ -8,6 +8,12 @@ import { brandKits } from '~/lib/db/schema';
 import { getSettings } from '~/lib/queries/settings';
 import { resolvePolicy } from '~/lib/growth/policy';
 import { PROVIDERS } from '~/lib/growth/discovery/index';
+import {
+  demoDnsRecord,
+  demoHostFor,
+  demoHostPattern,
+  demoRoute,
+} from '~/lib/growth/publish';
 
 const user = Astro.locals.user!;
 const database = db();
@@ -21,6 +27,21 @@ const policy = resolvePolicy(null, settings.growthPolicy);
 const saved = Astro.url.searchParams.get('saved');
 const error = Astro.url.searchParams.get('error');
 const env = bindings();
+/**
+ * What the demo host setting works out to, shown rather than described.
+ *
+ * `demoDepth` is how many labels below the registrable domain a demo lands.
+ * Two or more is the case Universal SSL does not cover, and is the whole
+ * reason the setting accepts a pattern.
+ */
+const demoPattern = demoHostPattern(settings.demoHost);
+const demoRecord = demoDnsRecord(settings.demoHost);
+const exampleHost = demoHostFor('wells-coffee', settings.demoHost);
+const appHost = new URL(env.APP_URL ?? 'https://billing.jwbsstudio.com').hostname;
+// Registrable domain is assumed to be the last two labels, which is true for
+// this zone and wrong for a .co.nz — so this only ever softens the wording.
+const demoDepth = Math.max(1, exampleHost.split('.').length - 2);
+
 ---
 
 <AppLayout title="Growth defaults" subtitle="What every new run starts from">
@@ -136,17 +157,31 @@ const env = bindings();
             never contains a dead link.
           </p>
           <p>To move them onto their own subdomain, add both of these once:</p>
-          <pre class="overflow-x-auto rounded-lg p-3 text-[11px]" style="background: var(--surface-sunken)">{`DNS:    *.${settings.demoHost}   CNAME   ${new URL(env.APP_URL ?? 'https://billing.jwbsstudio.com').hostname}   (proxied)
-Route:  *.${settings.demoHost}/*   ->   this Worker`}</pre>
+          <pre class="overflow-x-auto rounded-lg p-3 text-[11px]" style="background: var(--surface-sunken)">{`DNS:    ${demoRecord.name}   CNAME   ${appHost}   (proxied)
+Route:  ${demoRoute(settings.demoHost)}   ->   this Worker`}</pre>
+          {!demoRecord.exact && (
+            <p>
+              <strong style="color: var(--text)">The DNS record is broader than the route.</strong>
+              A DNS wildcard is a whole label, so <code>{demoPattern}</code> cannot itself be a
+              record — it would be stored as a literal name that matches nothing. The record above
+              is the nearest one that covers it. Existing records win over a wildcard, so
+              <code>www</code> and the rest of the zone are unaffected, and the route still serves
+              only the demos. If you would rather not have the wildcard at all, set
+              <code>CLOUDFLARE_API_TOKEN</code> and <code>CLOUDFLARE_ZONE_ID</code> and a record is
+              created per demo instead.
+            </p>
+          )}
           <p>
             <strong style="color: var(--text)">Check the certificate as well as the DNS.</strong>
-            Cloudflare's free Universal SSL covers the apex and one level of subdomain only, so
-            <code>{`*.${settings.demoHost.split('.').slice(1).join('.')}`}</code> is covered and
-            <code>{`*.${settings.demoHost}`}</code> is not. A demo two levels deep will fail in the
-            browser even when the record and the route are both right. Either add a
-            <code>{`*.${settings.demoHost}`}</code> certificate (Advanced Certificate Manager, or
-            Total TLS), or set the demo host to the apex so demos land one level deep and the free
-            certificate covers them.
+            Cloudflare's free Universal SSL covers the zone apex and one label below it. A demo at
+            <code>{exampleHost}</code> is {demoDepth} label{demoDepth === 1 ? '' : 's'} deep, so it
+            is {demoDepth > 1 ? 'not covered' : 'covered'}.
+            {demoDepth > 1 && (
+              <> Either add a <code>{demoRecord.name}</code> certificate (Advanced Certificate
+              Manager, or Total TLS), or use a suffix pattern such as
+              <code>{`*-demo.${settings.demoHost.split('.').slice(-2).join('.')}`}</code>, which
+              keeps every demo one label deep and cannot match <code>www</code>.</>
+            )}
           </p>
           <p>Then build at least one demo and run the check — it needs a real page to fetch.</p>
         </div>

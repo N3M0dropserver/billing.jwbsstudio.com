@@ -308,23 +308,41 @@ openable. Which one goes in the outreach email is decided at build time and
 recorded on the demo, so a proposal can never contain a link that has never
 resolved.
 
-To move demos onto their own subdomains, add both of these once:
+`DEMO_HOST` is a **pattern**, and `*` is where the business's label goes:
 
 ```
-*.demo.jwbsstudio.com   CNAME   billing.jwbsstudio.com   (proxied)
-route: *.demo.jwbsstudio.com/*  →  this Worker
+DEMO_HOST=*-demo.jwbsstudio.com   →  wells-coffee-demo.jwbsstudio.com
+DEMO_HOST=demo.jwbsstudio.com     →  wells-coffee.demo.jwbsstudio.com
 ```
 
-> **The certificate is the part that catches people out.** Cloudflare's free
-> Universal SSL covers the apex and *one* level of subdomain — `*.example.com`.
-> A demo at `wells-coffee.demo.example.com` is two levels deep and is **not**
-> covered, so the DNS record and the route can both be right and the browser
-> still refuses the connection. Either add a `*.demo.example.com` certificate
-> (Advanced Certificate Manager, or Total TLS), or set `DEMO_HOST` to the apex
-> so demos land one level deep at `wells-coffee.example.com` and Universal SSL
-> covers them for nothing.
+A value with no `*` is read as `*.<value>`, so both spellings describe the same
+thing and an existing setting does not change meaning.
 
-`DEMO_HOST` in `wrangler.jsonc` must match. Then build a demo and press **Check
+The pattern exists because of the certificate, which is the part that catches
+people out. Cloudflare's free Universal SSL covers the zone apex and **one**
+label below it. `wells-coffee.demo.jwbsstudio.com` is two labels deep and is
+not covered, so the DNS record and the route can both be right and the browser
+still refuses the connection. A hyphenated label is one label deep — covered
+for nothing — while a route of `*-demo.jwbsstudio.com/*` still cannot match
+`www` or anything else on the zone.
+
+Then add both of these once, written exactly as the settings page shows them:
+
+```
+*.jwbsstudio.com        CNAME   billing.jwbsstudio.com   (proxied)
+route: *-demo.jwbsstudio.com/*  →  this Worker
+```
+
+> **The DNS record is broader than the route, and has to be.** A DNS wildcard
+> is a whole label: `*.jwbsstudio.com` is valid, `*-demo.jwbsstudio.com` is
+> not — it would be stored as a literal name matching nothing. The wildcard
+> above is the nearest record that covers the pattern. Explicit records win
+> over a wildcard, so `www`, `billing` and the rest of the zone are unaffected,
+> and the route still serves only the demos.
+>
+> If you would rather not have a zone-wide wildcard at all, set
+> `CLOUDFLARE_API_TOKEN` (Zone:DNS:Edit, nothing else) and `CLOUDFLARE_ZONE_ID`
+> and a proxied record is created per demo at build time instead. Then build a demo and press **Check
 hosting now** in Growth settings — it fetches a real demo and looks for the
 ribbon that only a generated page carries, so a route that is missing and a
 host that is empty are told apart rather than both reading as a 404. Once it
