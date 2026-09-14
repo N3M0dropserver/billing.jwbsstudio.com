@@ -263,6 +263,31 @@ Route:  ${demoRoute(settings.demoHost)}   ->   this Worker`}</pre>
         in the ribbon at the top. A concept sent to a stranger must never imply we photographed
         their premises.
       </p>
+
+      <div class="mt-3.5 rounded-lg border p-3.5" style="border-color: var(--border)">
+        <p class="text-sm font-medium">Where “their own photographs” come from</p>
+        <p class="muted mt-1.5 text-xs leading-relaxed">
+          Their website, when they have one. When they do not — which is most of what a run
+          selects — the only real pictures of them anywhere we can reach are the ones on their
+          Google listing, along with their reviews and their hours. Those come back only from the
+          <strong style="color: var(--text)">Google Places</strong> source above, and only with
+          <code>GOOGLE_PLACES_API_KEY</code> set.
+          {settings.growthDiscoveryProvider !== 'google-places' && (
+            <span style="color: var(--color-owing)">
+              {' '}This run source is set to {PROVIDERS.find((p) => p.name === settings.growthDiscoveryProvider)?.label ?? settings.growthDiscoveryProvider},
+              which carries none of them — every demo will be built from generated photography or
+              from type alone.
+            </span>
+          )}
+          {settings.growthDiscoveryProvider === 'google-places' && !env.GOOGLE_PLACES_API_KEY && (
+            <span style="color: var(--color-owing)"> The key is not set, so nothing will come back at all.</span>
+          )}
+        </p>
+        <p class="muted mt-2 text-xs leading-relaxed">
+          Asking for photographs, reviews and hours moves a Places search into its Enterprise
+          tier, so it costs more per run than a search without them.
+        </p>
+      </div>
     </Card>
 
     <button class="rounded-lg px-4 py-2.5 text-sm font-medium text-white" style="background: var(--color-brand-600)">Save</button>
