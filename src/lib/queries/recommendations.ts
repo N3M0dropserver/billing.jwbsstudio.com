@@ -5,9 +5,11 @@
  * the numbers and can be tested without a database.
  */
 
-import { and, eq, gte, inArray, sql } from 'drizzle-orm';
+import { and, eq, gte, inArray, isNull, sql } from 'drizzle-orm';
 import type { Db } from '~/lib/db';
 import {
+  agentMemories,
+  agentSkills,
   aiCalls,
   campaignEvents,
   campaigns,
@@ -33,7 +35,17 @@ export async function gatherSignals(
 ): Promise<RunSignals> {
   const since = new Date(Date.now() - windowDays * 86_400_000).toISOString();
 
-  const [runRows, callRows, warningRows, built, selected, drafted, withImages] = await Promise.all([
+  const [
+    runRows,
+    callRows,
+    warningRows,
+    built,
+    selected,
+    drafted,
+    withImages,
+    skillRows,
+    memoryRows,
+  ] = await Promise.all([
     db
       .select({ n: sql<number>`count(*)` })
       .from(campaigns)
@@ -102,6 +114,22 @@ export async function gatherSignals(
       .selectDistinct({ prospectId: prospectArtifacts.prospectId })
       .from(prospectArtifacts)
       .where(and(eq(prospectArtifacts.userId, userId), eq(prospectArtifacts.kind, 'image'))),
+
+    /**
+     * The agent's own state. Counted over all time rather than the window: a
+     * skill written six weeks ago is still in force today, and a proposal
+     * nobody has read does not stop being work because it has aged.
+     */
+    db
+      .select({ status: agentSkills.status, n: sql<number>`count(*)` })
+      .from(agentSkills)
+      .where(eq(agentSkills.userId, userId))
+      .groupBy(agentSkills.status),
+
+    db
+      .select({ n: sql<number>`count(*)` })
+      .from(agentMemories)
+      .where(and(eq(agentMemories.userId, userId), isNull(agentMemories.retiredAt))),
   ]);
 
   const haveImages = new Set(withImages.map((row) => row.prospectId));
@@ -112,6 +140,7 @@ export async function gatherSignals(
   }
 
   const selection = selected[0] ?? { total: 0, withEmail: 0, withoutWebsite: 0 };
+  const skillsByStatus = new Map(skillRows.map((row) => [row.status, row.n]));
 
   return {
     runs: runRows[0]?.n ?? 0,
@@ -136,6 +165,14 @@ export async function gatherSignals(
       demoHostVerified: settings.demoHostVerified,
     },
     draftedProposals: drafted[0]?.n ?? 0,
+    brain: {
+      activeSkills: skillsByStatus.get('active') ?? 0,
+      proposedSkills: skillsByStatus.get('proposed') ?? 0,
+      memories: memoryRows[0]?.n ?? 0,
+      memoryEnabled: settings.agentMemoryEnabled,
+      skillsEnabled: settings.agentSkillsEnabled,
+      selfImprove: settings.agentSelfImprove,
+    },
   };
 }
 

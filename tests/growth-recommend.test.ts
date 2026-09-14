@@ -34,6 +34,14 @@ function signals(overrides: Partial<RunSignals> = {}): RunSignals {
       demoHostVerified: true,
     },
     draftedProposals: 0,
+    brain: {
+      activeSkills: 4,
+      proposedSkills: 0,
+      memories: 12,
+      memoryEnabled: true,
+      skillsEnabled: true,
+      selfImprove: 'propose',
+    },
     ...overrides,
   };
 }
@@ -145,6 +153,58 @@ describe('prospects with nowhere to send an email', () => {
       signals({ selectedCount: 10, selectedWithEmail: 1, selectedWithoutWebsite: 0 }),
     );
     expect(found.find((r) => r.id === 'no-email-to-write-to')?.action).toContain('crawl');
+  });
+});
+
+describe("the agent's own state", () => {
+  const brain = (over: Partial<RunSignals['brain']>) =>
+    signals({ brain: { ...signals().brain, ...over } });
+
+  /** A proposed skill does nothing until approved, so it is work sitting idle. */
+  it('surfaces skills the agent wrote and is waiting on', () => {
+    const found = recommend(brain({ proposedSkills: 3 }));
+    const rec = found.find((r) => r.id === 'skills-awaiting-approval');
+
+    expect(rec?.title).toContain('3 skills');
+    expect(rec?.href).toBe('/growth/skills');
+  });
+
+  it('says so when skills are on and there are none', () => {
+    expect(ids(brain({ activeSkills: 0 }))).toContain('no-skills-at-all');
+  });
+
+  it('says so when skills exist but none of them load', () => {
+    const found = ids(brain({ skillsEnabled: false, activeSkills: 6 }));
+    expect(found).toContain('skills-written-but-off');
+    expect(found).not.toContain('no-skills-at-all');
+  });
+
+  it('does not ask for skills when the whole feature is off and there are none', () => {
+    const found = ids(brain({ skillsEnabled: false, activeSkills: 0 }));
+    expect(found).not.toContain('no-skills-at-all');
+    expect(found).not.toContain('skills-written-but-off');
+  });
+
+  /**
+   * Reflection runs at the end of a run, so an empty memory after several
+   * runs usually means they are not reaching the end.
+   */
+  it('reads an empty memory after several runs as runs not finishing', () => {
+    expect(ids(signals({ runs: 5, brain: { ...signals().brain, memories: 0 } }))).toContain(
+      'memory-on-but-empty',
+    );
+  });
+
+  it('gives a new install time before saying that', () => {
+    expect(ids(signals({ runs: 1, brain: { ...signals().brain, memories: 0 } }))).not.toContain(
+      'memory-on-but-empty',
+    );
+  });
+
+  it('stays quiet about memory when it is switched off deliberately', () => {
+    expect(
+      ids(signals({ runs: 9, brain: { ...signals().brain, memories: 0, memoryEnabled: false } })),
+    ).not.toContain('memory-on-but-empty');
   });
 });
 

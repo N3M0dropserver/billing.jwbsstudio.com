@@ -72,6 +72,16 @@ export interface RunSignals {
   };
   /** Proposals drafted and waiting to be sent by hand. */
   draftedProposals: number;
+  /** The agent's own state: what it knows, what it is waiting on. */
+  brain: {
+    activeSkills: number;
+    /** Skills it wrote for itself that do nothing until approved. */
+    proposedSkills: number;
+    memories: number;
+    memoryEnabled: boolean;
+    skillsEnabled: boolean;
+    selfImprove: string;
+  };
 }
 
 const SEVERITY_ORDER: Record<Severity, number> = { blocking: 0, quality: 1, opportunity: 2 };
@@ -217,6 +227,66 @@ export function recommend(signals: RunSignals): Recommendation[] {
         signature: `${without}/${signals.selectedCount}`,
       });
     }
+  }
+
+  if (signals.brain.proposedSkills > 0) {
+    out.push({
+      id: 'skills-awaiting-approval',
+      severity: 'quality',
+      title: `${signals.brain.proposedSkills} skill${signals.brain.proposedSkills === 1 ? '' : 's'} waiting for you to approve`,
+      detail:
+        'The agent looked back at a run and wrote down a way of working it wants to keep. A ' +
+        'proposed skill does nothing at all until it is approved, so this is work sitting idle.',
+      action: 'Read them and approve or discard. Each one says why it was written.',
+      href: '/growth/skills',
+      linkLabel: 'Review them',
+      signature: String(signals.brain.proposedSkills),
+    });
+  }
+
+  if (signals.brain.skillsEnabled && signals.brain.activeSkills === 0 && signals.runs > 0) {
+    out.push({
+      id: 'no-skills-at-all',
+      severity: 'quality',
+      title: 'The agent has no skills',
+      detail:
+        'Skills are switched on but none exist, so every prospect gets the same general ' +
+        'instructions whatever trade they are in — a cafe and a plumber are written the same way.',
+      action:
+        'Install the starter set, or write one for the trade you run most. ' +
+        'docs/AGENT-SKILLS-SEED.md has eight ready to paste.',
+      href: '/growth/skills',
+      linkLabel: 'Skills',
+      signature: '0',
+    });
+  }
+
+  if (!signals.brain.skillsEnabled && signals.brain.activeSkills > 0) {
+    out.push({
+      id: 'skills-written-but-off',
+      severity: 'quality',
+      title: `${signals.brain.activeSkills} skills written, and none of them load`,
+      detail: 'Loading skills into the pipeline is switched off, so every one of them is inert.',
+      action: 'Turn skills back on, or archive the ones you no longer want.',
+      href: '/growth/settings',
+      linkLabel: 'Growth defaults',
+      signature: String(signals.brain.activeSkills),
+    });
+  }
+
+  if (signals.brain.memoryEnabled && signals.brain.memories === 0 && signals.runs > 2) {
+    out.push({
+      id: 'memory-on-but-empty',
+      severity: 'opportunity',
+      title: 'Memory is on but nothing has been remembered',
+      detail:
+        `${signals.runs} runs have finished and the agent has written down nothing it learned. ` +
+        'Reflection runs at the end of a run, so this usually means runs are not reaching the end.',
+      action: 'Check whether recent runs completed, or are stopping at a gate part way through.',
+      href: '/growth',
+      linkLabel: 'Review the runs',
+      signature: String(signals.runs),
+    });
   }
 
   /* -- Things that are merely being left on the table -------------- */

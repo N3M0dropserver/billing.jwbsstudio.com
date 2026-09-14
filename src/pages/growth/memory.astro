@@ -1,5 +1,6 @@
 ---
 import AppLayout from '~/layouts/AppLayout.astro';
+import GrowthNav from '~/components/growth/GrowthNav.astro';
 import Card from '~/components/ui/Card.astro';
 import EmptyState from '~/components/ui/EmptyState.astro';
 import { and, desc, eq, isNotNull, isNull, like, or, sql } from 'drizzle-orm';
@@ -62,6 +63,8 @@ const KIND_LABELS: Record<string, string> = {
 ---
 
 <AppLayout title="Memory" subtitle="What the agent has learned, and what you have told it" width="wide">
+  <GrowthNav current="memory" />
+
   <div slot="actions" class="flex gap-2">
     <a href="/growth/skills" class="muted rounded-lg border px-3 py-2 text-sm" style="border-color: var(--border)">Skills</a>
     <a href="/growth/research" class="muted rounded-lg border px-3 py-2 text-sm" style="border-color: var(--border)">Research</a>

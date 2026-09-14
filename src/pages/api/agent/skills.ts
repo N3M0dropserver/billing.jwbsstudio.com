@@ -4,11 +4,13 @@ import { CAMPAIGN_STAGES } from '~/lib/db/schema';
 import {
   deleteSkill,
   getSkill,
+  getSkillBySlug,
   revertSkill,
   saveSkill,
   setSkillLock,
   setSkillStatus,
 } from '~/lib/agent/skills';
+import { STARTER_SKILLS } from '~/lib/agent/starter-skills';
 
 export const prerender = false;
 
@@ -43,6 +45,31 @@ export const POST: APIRoute = async ({ request, locals, redirect }) => {
 
   try {
     switch (action) {
+      /**
+       * Install the starter set.
+       *
+       * Only the ones that are not already there, matched by slug, so pressing
+       * it twice does not wipe an edit. They go in as ordinary user-authored
+       * skills: editable, versioned and deletable like any other.
+       */
+      case 'install-starters': {
+        let installed = 0;
+
+        for (const starter of STARTER_SKILLS) {
+          if (await getSkillBySlug(database, user.id, starter.slug!)) continue;
+          const result = await saveSkill(database, {
+            userId: user.id,
+            author: 'user',
+            status: 'active',
+            note: 'Installed from the starter set.',
+            ...starter,
+          });
+          if (result.ok) installed++;
+        }
+
+        return redirect(`/growth/skills?installed=${installed}`, 302);
+      }
+
       case 'save': {
         const existing = id ? await getSkill(database, user.id, id) : null;
 

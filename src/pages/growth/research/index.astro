@@ -1,5 +1,6 @@
 ---
 import AppLayout from '~/layouts/AppLayout.astro';
+import GrowthNav from '~/components/growth/GrowthNav.astro';
 import Card from '~/components/ui/Card.astro';
 import EmptyState from '~/components/ui/EmptyState.astro';
 import { bindings, db } from '~/lib/env';
@@ -29,6 +30,8 @@ const STATUS_COLOURS: Record<string, string> = {
 ---
 
 <AppLayout title="Research" subtitle="Send the agent to go and find something out">
+  <GrowthNav current="research" />
+
   <div slot="actions" class="flex gap-2">
     <a href="/growth/memory" class="muted rounded-lg border px-3 py-2 text-sm" style="border-color: var(--border)">Memory</a>
     <a href="/growth/skills" class="muted rounded-lg border px-3 py-2 text-sm" style="border-color: var(--border)">Skills</a>
