@@ -1,8 +1,20 @@
 import { describe, expect, it } from 'vitest';
-import { escape, renderDemoPage, renderStylesheet, type DemoContext } from '~/lib/growth/render';
+import {
+  escape,
+  renderDemoPage,
+  renderStylesheet,
+  sectionHasSubstance,
+  type DemoContext,
+} from '~/lib/growth/render';
 import { renderAstroProject } from '~/lib/growth/project';
 import { FALLBACK_BRIEF, parseDesignTokens } from '~/lib/growth/brief';
-import { normalisePlan, type DesignPlanDraft, type PlanInput } from '~/lib/growth/qualify';
+import {
+  renderFacts,
+  normalisePlan,
+  type DesignPlanDraft,
+  type PlanInput,
+  type PlanSection,
+} from '~/lib/growth/qualify';
 import type { SiteAudit } from '~/lib/growth/assess';
 
 const CONTEXT: DemoContext = {
@@ -211,6 +223,15 @@ describe('plan normalisation', () => {
     businessName: 'Wells Coffee', niche: 'coffee roasters', region: 'Wellington',
     brief: FALLBACK_BRIEF, audit: AUDIT, objective: 'awareness', angle: '',
     siteContent: '', contact: { email: 'hello@wells.test', phone: '', address: '' },
+    facts: {
+      category: '',
+      address: '',
+      openingHours: [],
+      rating: null,
+      reviewCount: 0,
+      reviewSummary: '',
+      hasWebsite: true,
+    },
     // normalisePlan never calls the model, so the tracking context is unused.
     usage: { db: null as never, userId: 'u1', operation: 'plan' },
   };
@@ -343,13 +364,27 @@ describe('generated photography is disclosed', () => {
 });
 
 describe('a hero headline is never just the business name', () => {
-  const input = {
+  const input: PlanInput = {
     businessName: 'Goodco',
     niche: 'coffee roasters',
     region: 'Sydney',
     angle: 'Show the roastery and let people order a bag without ringing up.',
-    objective: 'conversion' as const,
-  } as PlanInput;
+    objective: 'conversion',
+    brief: FALLBACK_BRIEF,
+    audit: AUDIT,
+    siteContent: '',
+    contact: { email: '', phone: '', address: '' },
+    facts: {
+      category: '',
+      address: '',
+      openingHours: [],
+      rating: null,
+      reviewCount: 0,
+      reviewSummary: '',
+      hasWebsite: true,
+    },
+    usage: { db: null as never, userId: 'u1', operation: 'plan' },
+  };
 
   it('replaces a headline that only repeats the name', () => {
     const plan = normalisePlan(
@@ -380,5 +415,88 @@ describe('a hero headline is never just the business name', () => {
     );
     expect(plan.sections[0]?.heading).toBe('Roasted in Marrickville');
     expect(plan.sections[0]?.notes).toBe('');
+  });
+});
+
+describe('a section with nothing in it is not drawn', () => {
+  const bare = (id: string, type: string): PlanSection => ({
+    id, type, heading: 'What We Offer', subheading: '', body: '',
+    items: [], cta: null, imageHint: '', notes: '',
+  });
+
+  const noImages = { ...CONTEXT, images: [] };
+
+  it('drops a heading with no body, items or picture under it', () => {
+    expect(sectionHasSubstance(bare('offer', 'services'), noImages)).toBe(false);
+  });
+
+  it('keeps it once it has items', () => {
+    const withItems = { ...bare('offer', 'services'), items: [{ title: 'Wholesale', body: 'For cafés.' }] };
+    expect(sectionHasSubstance(withItems, noImages)).toBe(true);
+  });
+
+  it('keeps it once it has copy', () => {
+    expect(sectionHasSubstance({ ...bare('a', 'about'), body: 'Roasting since 2014.' }, noImages)).toBe(true);
+  });
+
+  it('keeps it when a picture was assigned to it', () => {
+    const context = {
+      ...CONTEXT,
+      images: [{ src: 'images/01.jpg', alt: '', generated: false, sectionId: 'offer', role: 'feature' as const }],
+    };
+    expect(sectionHasSubstance(bare('offer', 'services'), context)).toBe(true);
+  });
+
+  it('always keeps the hero, which carries the name and the action', () => {
+    expect(sectionHasSubstance(bare('hero', 'hero'), noImages)).toBe(true);
+  });
+
+  it('keeps contact whenever there is a detail to show, plan copy or not', () => {
+    expect(sectionHasSubstance(bare('c', 'contact'), noImages)).toBe(true);
+    const nothing = { ...noImages, contact: { email: '', phone: '', address: '' }, openingHours: [] };
+    expect(sectionHasSubstance(bare('c', 'contact'), nothing)).toBe(false);
+  });
+
+  it('leaves the page without the empty band, and without a nav link to it', () => {
+    const plan: DesignPlanDraft = {
+      ...PLAN,
+      sections: [PLAN.sections[0]!, bare('offer', 'services'), PLAN.sections[2]!],
+    };
+    const page = renderDemoPage(plan, FALLBACK_BRIEF, noImages);
+
+    expect(page).not.toContain('What We Offer');
+    expect(page).not.toContain('id="offer"');
+  });
+});
+
+describe('what the planner is told when there is no website', () => {
+  const facts = {
+    category: 'Cafe',
+    address: '25 Burton St, Darlinghurst',
+    openingHours: ['Mo-Fr 07:00-16:00'],
+    rating: 4.6,
+    reviewCount: 312,
+    reviewSummary: '',
+    hasWebsite: false,
+  };
+
+  it('renders the facts we hold rather than nothing', () => {
+    const block = renderFacts(facts);
+    expect(block).toContain('25 Burton St');
+    expect(block).toContain('Mo-Fr 07:00-16:00');
+    expect(block).toContain('4.6 from 312 reviews');
+  });
+
+  it('says nothing at all when we know nothing, rather than empty labels', () => {
+    expect(
+      renderFacts({
+        category: '', address: '', openingHours: [], rating: null,
+        reviewCount: 0, reviewSummary: '', hasWebsite: false,
+      }),
+    ).toBe('');
+  });
+
+  it('reports a review count even without a rating', () => {
+    expect(renderFacts({ ...facts, rating: null })).toContain('312 reviews');
   });
 });

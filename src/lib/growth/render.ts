@@ -546,6 +546,41 @@ function frameHtml(image: DemoPageImage, eager = false, className = 'frame'): st
 /* Sections                                                            */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Would this section render as anything more than a heading?
+ *
+ * A band containing one heading and nothing else is the clearest possible
+ * signal that a page was generated and not finished — the "What We Offer"
+ * with no offers under it. The plan is asked not to produce them; this is
+ * what guarantees one never reaches the page, whatever came back.
+ *
+ * The hero always stays: it carries the name and the call to action even when
+ * the model gave it nothing else. Contact stays whenever there is a detail to
+ * put in it, which comes from the prospect record rather than the plan.
+ */
+export function sectionHasSubstance(section: PlanSection, context: DemoContext): boolean {
+  if (section.type === 'hero') return true;
+
+  if (section.type === 'contact' || section.type === 'location') {
+    return Boolean(
+      section.body.trim() ||
+        context.contact.email ||
+        context.contact.phone ||
+        context.contact.address ||
+        context.openingHours.length,
+    );
+  }
+
+  if (section.items.length > 0) return true;
+  if (section.body.trim()) return true;
+  if (imagesFor(context, section.id).length > 0) return true;
+
+  // A gallery draws on whatever the page has, not only on what was assigned.
+  if (section.type === 'gallery' && context.images.length > 0) return true;
+
+  return false;
+}
+
 function paragraphs(body: string): string {
   return body
     .split(/\n{2,}/)
@@ -842,7 +877,10 @@ export function renderDemoPage(
   brief: Brief,
   context: DemoContext,
 ): string {
-  const navTargets = plan.sections
+  // Filtered once, so the nav cannot point at a section that was dropped.
+  const sections = plan.sections.filter((section) => sectionHasSubstance(section, context));
+
+  const navTargets = sections
     .filter((section) => section.type !== 'hero' && section.heading)
     .slice(0, 4);
 
@@ -850,7 +888,7 @@ export function renderDemoPage(
     .map((href) => `    <link rel="stylesheet" href="${escape(href)}" />`)
     .join('\n');
 
-  const sections = plan.sections
+  const body = sections
     .map((section, index) => renderSection(section, context, index, brief.tokens))
     .join('\n\n');
 
@@ -885,7 +923,7 @@ ${navTargets.map((section) => `          <a href="#${escape(section.id)}">${esca
     </header>
 
     <main id="main">
-${sections}
+${body}
     </main>
 
     <footer class="site-foot">
