@@ -10,7 +10,6 @@ import { brandKits, campaigns, demoSites, proposals, prospects } from '~/lib/db/
 import { STAGE_LABELS } from '~/lib/growth/policy';
 import { bindings } from '~/lib/env';
 import { getSettings } from '~/lib/queries/settings';
-import { loadSkills } from '~/lib/queries/skills';
 import { liveRecommendations } from '~/lib/queries/recommendations';
 
 const user = Astro.locals.user!;
@@ -39,16 +38,12 @@ const [prospectCount, demoCount, proposalCount] = totals.map((rows) => rows[0]?.
  * Computed here rather than cached: the run data is the truth, and a stored
  * copy of a suggestion would outlive the problem it was made about.
  */
-const [settingsRow, skills] = await Promise.all([
-  getSettings(database, user.id),
-  loadSkills(database, user.id),
-]);
+const settingsRow = await getSettings(database, user.id);
 
 const recommendations = await liveRecommendations(
   database,
   user.id,
   settingsRow,
-  skills,
   Boolean(bindings().GOOGLE_PLACES_API_KEY),
 );
 

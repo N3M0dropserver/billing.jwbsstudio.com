@@ -70,8 +70,6 @@ export interface RunSignals {
     aiCacheTtlHours: number;
     demoHostVerified: boolean;
   };
-  /** Skills in force, by stage, counting only the enabled ones. */
-  skillsByStage: Record<string, number>;
   /** Proposals drafted and waiting to be sent by hand. */
   draftedProposals: number;
 }
@@ -217,26 +215,6 @@ export function recommend(signals: RunSignals): Recommendation[] {
         href: '/growth',
         linkLabel: 'Review the runs',
         signature: `${without}/${signals.selectedCount}`,
-      });
-    }
-  }
-
-  for (const [stage, label] of [
-    ['plan', 'design'],
-    ['imagery', 'build'],
-  ] as const) {
-    if ((signals.skillsByStage[stage] ?? 0) === 0) {
-      out.push({
-        id: `no-skills:${stage}`,
-        severity: 'opportunity',
-        title: `No ${label} skills are switched on`,
-        detail:
-          `Nothing is adding trade-specific know-how at the ${label} stage, so every prospect ` +
-          'gets the same general instructions whatever they do for a living.',
-        action: `Turn on a built-in ${label} skill, or write one for the trade you run most.`,
-        href: '/growth/skills',
-        linkLabel: 'Skills',
-        signature: '0',
       });
     }
   }

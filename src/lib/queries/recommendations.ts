@@ -20,7 +20,6 @@ import {
 } from '~/lib/db/schema';
 import { newId } from '~/lib/id';
 import { applyDismissals, recommend, type Recommendation, type RunSignals } from '~/lib/growth/recommend';
-import type { AgentSkill } from '~/lib/growth/skills';
 
 /** How far back a recommendation looks. Long enough to cover a few runs. */
 export const WINDOW_DAYS = 30;
@@ -29,7 +28,6 @@ export async function gatherSignals(
   db: Db,
   userId: string,
   settings: Settings,
-  skills: AgentSkill[],
   placesKeySet: boolean,
   windowDays = WINDOW_DAYS,
 ): Promise<RunSignals> {
@@ -113,12 +111,6 @@ export async function gatherSignals(
     if (!haveImages.has(prospectId)) builtWithoutImages++;
   }
 
-  const skillsByStage: Record<string, number> = {};
-  for (const skill of skills) {
-    if (!skill.enabled) continue;
-    skillsByStage[skill.stage] = (skillsByStage[skill.stage] ?? 0) + 1;
-  }
-
   const selection = selected[0] ?? { total: 0, withEmail: 0, withoutWebsite: 0 };
 
   return {
@@ -143,7 +135,6 @@ export async function gatherSignals(
       aiCacheTtlHours: settings.aiCacheTtlHours,
       demoHostVerified: settings.demoHostVerified,
     },
-    skillsByStage,
     draftedProposals: drafted[0]?.n ?? 0,
   };
 }
@@ -153,11 +144,10 @@ export async function liveRecommendations(
   db: Db,
   userId: string,
   settings: Settings,
-  skills: AgentSkill[],
   placesKeySet: boolean,
 ): Promise<Recommendation[]> {
   try {
-    const signals = await gatherSignals(db, userId, settings, skills, placesKeySet);
+    const signals = await gatherSignals(db, userId, settings, placesKeySet);
     const dismissals = await db
       .select({
         recommendationId: growthDismissals.recommendationId,

@@ -23,7 +23,6 @@ import { trackedGenerateJson, type AiUsageContext } from '../ai/usage';
 import { sendMail, type SendResult } from '../mail/index';
 import type { SiteAudit } from './assess';
 import { withContract, type PromptOverrides } from './prompts';
-import { renderSkills, selectSkills, type AgentSkill, type SkillContext } from './skills';
 import type { DesignPlanDraft } from './qualify';
 
 export interface ProposalDraft {
@@ -50,10 +49,6 @@ export interface ProposalInput {
   usage: AiUsageContext;
   /** Edited system prompts, where the user has any. */
   prompts?: PromptOverrides;
-  /** Every skill in force. The matching ones are appended to the prompt. */
-  skills?: AgentSkill[];
-  /** How this prospect is described to the skill matcher. */
-  skillContext?: SkillContext;
 }
 
 export async function draftProposal(
@@ -91,13 +86,7 @@ export async function draftProposal(
   const result = await trackedGenerateJson<{ subject?: unknown; body?: unknown; page_body?: unknown }>(
     ai,
     {
-      system: withContract(
-        'outreach',
-        input.prompts?.outreach,
-        input.skillContext
-          ? renderSkills(selectSkills(input.skills ?? [], 'outreach', input.skillContext))
-          : '',
-      ),
+      system: withContract('outreach', input.prompts?.outreach),
       prompt,
       model: MODELS.text,
       maxTokens: 1200,

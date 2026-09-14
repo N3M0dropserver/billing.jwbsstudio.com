@@ -1592,43 +1592,6 @@ export const aiPrompts = sqliteTable(
 export type AiPrompt = typeof aiPrompts.$inferSelect;
 
 /**
- * Know-how the agent applies to some prospects rather than all of them.
- *
- * A row here either overrides a built-in from `src/lib/growth/skills.ts` — by
- * carrying the same slug — or is a skill of the user's own. The built-ins stay
- * in source so that improving one reaches everybody who has not deliberately
- * changed it, and so "reset" means deleting a row rather than restoring text
- * from a backup.
- */
-export const agentSkills = sqliteTable(
-  'agent_skills',
-  {
-    id: id(),
-    userId: text('user_id')
-      .notNull()
-      .references(() => users.id, { onDelete: 'cascade' }),
-    /** Stable across renames. Shares the namespace with the built-in slugs. */
-    slug: text('slug').notNull(),
-    name: text('name').notNull(),
-    /** Which model call it is appended to: qualify, plan, imagery, outreach. */
-    stage: text('stage').notNull(),
-    summary: text('summary').notNull().default(''),
-    /** The know-how itself, as instructions to a model. */
-    instructions: text('instructions').notNull().default(''),
-    /** When it applies: `{ niches, objectives, website }`, as JSON. */
-    matchRules: text('match_rules').notNull().default('{}'),
-    enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
-    /** True when this row is an edit of a skill shipped in source. */
-    overridesBuiltIn: integer('overrides_built_in', { mode: 'boolean' }).notNull().default(false),
-    createdAt: createdAt(),
-    updatedAt: updatedAt(),
-  },
-  (t) => [uniqueIndex('agent_skills_user_slug_idx').on(t.userId, t.slug)],
-);
-
-export type AgentSkillRow = typeof agentSkills.$inferSelect;
-
-/**
  * Recommendations the user has waved away.
  *
  * The recommendations themselves are computed from what runs actually did, so

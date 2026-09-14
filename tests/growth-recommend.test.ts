@@ -33,7 +33,6 @@ function signals(overrides: Partial<RunSignals> = {}): RunSignals {
       aiCacheTtlHours: 72,
       demoHostVerified: true,
     },
-    skillsByStage: { plan: 3, imagery: 2, qualify: 1, outreach: 1 },
     draftedProposals: 0,
     ...overrides,
   };
@@ -149,14 +148,6 @@ describe('prospects with nowhere to send an email', () => {
   });
 });
 
-describe('skills', () => {
-  it('suggests turning some on when a stage has none', () => {
-    const found = ids(signals({ skillsByStage: { imagery: 2 } }));
-    expect(found).toContain('no-skills:plan');
-    expect(found).not.toContain('no-skills:imagery');
-  });
-});
-
 describe('ordering', () => {
   it('puts what is broken above what is merely untidy', () => {
     const found = recommend(
@@ -212,7 +203,6 @@ describe('every recommendation', () => {
         selectedCount: 10,
         selectedWithEmail: 0,
         selectedWithoutWebsite: 10,
-        skillsByStage: {},
         draftedProposals: 6,
         settings: {
           generateDemoImages: false,
