@@ -615,6 +615,25 @@ npm run deploy
 npm run user:add -- --email you@example.com --name "Your Name" --remote
 ```
 
+`npm run deploy` deploys the agent Worker first and then this one, and the
+order is not optional: the app binds its Durable Objects out of
+`jwbs-growth-agent` by `script_name`, and Cloudflare resolves those class names
+against the **deployed** copy of that Worker. Deploying the app against a stale
+agent fails with
+
+```
+Cannot create binding for class 'ResearchAgent'
+that is not exported by script 'jwbs-growth-agent'  [code: 10061]
+```
+
+**If you deploy from Cloudflare Workers Builds, set its deploy command to
+`bun run deploy`.** The default is `npx wrangler deploy`, which deploys this
+Worker alone — fine until a new agent class is added, and then every build
+fails on the line above until the agent Worker is deployed by hand.
+`tests/worker-bindings.test.ts` checks the two configurations agree with each
+other, but nothing in the repository can tell whether what is deployed is
+current.
+
 Then set your business details, tax residence, GST registration and bank details
 in **Settings** — the invoices depend on them.
 
