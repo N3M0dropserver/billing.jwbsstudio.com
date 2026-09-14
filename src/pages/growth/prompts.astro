@@ -1,0 +1,115 @@
+---
+/**
+ * The instructions the pipeline runs on.
+ *
+ * These prompts are the product. They decide who gets written to, what every
+ * demo says and how the email reads, and until this page existed the only way
+ * to change any of it was to edit three source files and deploy. Someone
+ * watching a run produce pages they did not like had nothing to turn.
+ *
+ * The default is always shown next to the edit, because the useful question
+ * is never "what does this say" but "what have I changed" — and because a
+ * prompt someone has broken needs an obvious way back.
+ */
+import AppLayout from '~/layouts/AppLayout.astro';
+import Card from '~/components/ui/Card.astro';
+import GrowthNav from '~/components/growth/GrowthNav.astro';
+import { db } from '~/lib/env';
+import { PROMPT_SPECS, MAX_PROMPT_LENGTH } from '~/lib/growth/prompts';
+import { loadPromptOverrides } from '~/lib/queries/prompts';
+
+const user = Astro.locals.user!;
+const overrides = await loadPromptOverrides(db(), user.id);
+
+const saved = Astro.url.searchParams.get('saved');
+const reset = Astro.url.searchParams.get('reset');
+const open = Astro.url.searchParams.get('open');
+
+const edited = PROMPT_SPECS.filter((spec) => overrides[spec.key]).length;
+---
+
+<AppLayout
+  title="AI instructions"
+  subtitle="What the pipeline is told to do, at each point where it asks a model"
+>
+  <GrowthNav current="prompts" />
+
+  {saved && <p class="muted mb-4 rounded-lg px-4 py-3 text-sm" style="background: var(--surface-sunken)" role="status">Saved. The next run uses it — a run already going picks it up on its next stage.</p>}
+  {reset && <p class="muted mb-4 rounded-lg px-4 py-3 text-sm" style="background: var(--surface-sunken)" role="status">Back to the default.</p>}
+
+  <div class="mb-4 rounded-lg border p-4 text-sm leading-relaxed" style="border-color: var(--border)">
+    <p>
+      Each of these is the system prompt for one model call. Editing one changes every run from
+      here on; there is no per-campaign version.
+      {edited === 0
+        ? ' Nothing is edited yet, so all four are running on their defaults.'
+        : ` ${edited} of ${PROMPT_SPECS.length} ${edited === 1 ? 'is' : 'are'} edited.`}
+    </p>
+    <p class="muted mt-2 text-xs leading-relaxed">
+      The <strong style="color: var(--text)">shape of the answer is not yours to change</strong> and
+      is not shown in the box. It is appended to whatever you write, so a rewrite cannot stop plans
+      parsing or emails arriving. Everything else — what to look for, what to refuse, how to write
+      — is.
+    </p>
+  </div>
+
+  <div class="space-y-4">
+    {
+      PROMPT_SPECS.map((spec) => {
+        const override = overrides[spec.key] ?? '';
+        const value = override || spec.instructions;
+        return (
+          <Card
+            title={spec.label}
+            subtitle={`${spec.stage} stage${override ? ' · edited' : ' · default'}`}
+          >
+            <p class="muted mb-3 text-xs leading-relaxed">{spec.description}</p>
+
+            <form method="post" action="/api/growth-prompts" class="space-y-3">
+              <input type="hidden" name="key" value={spec.key} />
+              <div>
+                <label for={`prompt-${spec.key}`} class="sr-only">{spec.label}</label>
+                <textarea
+                  id={`prompt-${spec.key}`}
+                  name="instructions"
+                  rows="14"
+                  maxlength={MAX_PROMPT_LENGTH}
+                  class="field font-mono text-xs leading-relaxed"
+                  spellcheck="false"
+                >{value}</textarea>
+              </div>
+
+              <details open={open === spec.key}>
+                <summary class="muted cursor-pointer text-xs">
+                  What gets appended, and cannot be edited
+                </summary>
+                <pre class="mt-2 overflow-x-auto rounded-lg p-3 text-[11px] leading-relaxed" style="background: var(--surface-sunken)">{spec.contract}</pre>
+              </details>
+
+              <div class="flex flex-wrap items-center gap-2">
+                <button class="rounded-lg px-4 py-2 text-sm font-medium text-white" style="background: var(--color-brand-600)">
+                  Save
+                </button>
+                {override && (
+                  <button
+                    name="action"
+                    value="reset"
+                    class="muted rounded-lg border px-3 py-2 text-sm"
+                    style="border-color: var(--border)"
+                  >
+                    Reset to default
+                  </button>
+                )}
+                {override && (
+                  <span class="muted text-xs">
+                    Resetting also means later improvements to the default reach you again.
+                  </span>
+                )}
+              </div>
+            </form>
+          </Card>
+        );
+      })
+    }
+  </div>
+</AppLayout>

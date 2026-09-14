@@ -22,6 +22,7 @@ import { MODELS, type AiResult } from '../ai/index';
 import { trackedGenerateJson, type AiUsageContext } from '../ai/usage';
 import { sendMail, type SendResult } from '../mail/index';
 import type { SiteAudit } from './assess';
+import { withContract, type PromptOverrides } from './prompts';
 import type { DesignPlanDraft } from './qualify';
 
 export interface ProposalDraft {
@@ -46,29 +47,9 @@ export interface ProposalInput {
   capabilities: string;
   /** Where to book the cost of this call. */
   usage: AiUsageContext;
+  /** Edited system prompts, where the user has any. */
+  prompts?: PromptOverrides;
 }
-
-const SYSTEM = `You write a short cold email from a freelance designer to a business they have never spoken to, about a concept site they have already built for them.
-
-You are given VERIFIED observations about the business's current site. Use one or two of them. Do not invent any others, and do not exaggerate the ones you are given.
-
-Structure:
-- One opening line that is specific to this business and true. Not a compliment sandwich, not "I hope this finds you well".
-- One or two sentences naming what you noticed, plainly, without insulting them. They may have built that site themselves.
-- One sentence saying you built a concept and where it is. Make clear it is speculative and unasked-for — that is the honest framing and it is also what makes it interesting rather than presumptuous.
-- One low-friction ask. A look, a reply, fifteen minutes. Never a hard sell, never a deadline, never false scarcity.
-
-Rules:
-- Under 150 words for the email body. Nobody reads more from a stranger.
-- No superlatives, no "passionate", no "leverage", no "in today's digital landscape", no "just following up", no "circling back".
-- Do not claim to be a customer of theirs, or to have been referred.
-- Do not promise results, traffic, rankings or revenue.
-- Plain text. No markdown, no headings, no bullet points.
-- Write like one person emailing another.
-
-Also write "page_body": the same pitch with room to breathe, 150-250 words, for a page they land on after clicking. Same rules.
-
-Return ONLY JSON: {"subject":"...","body":"...","page_body":"..."}`;
 
 export async function draftProposal(
   ai: Ai,
@@ -104,7 +85,13 @@ export async function draftProposal(
 
   const result = await trackedGenerateJson<{ subject?: unknown; body?: unknown; page_body?: unknown }>(
     ai,
-    { system: SYSTEM, prompt, model: MODELS.text, maxTokens: 1200, temperature: 0.75 },
+    {
+      system: withContract('outreach', input.prompts?.outreach),
+      prompt,
+      model: MODELS.text,
+      maxTokens: 1200,
+      temperature: 0.75,
+    },
     input.usage,
   );
 

@@ -18,6 +18,7 @@
 
 import { MODELS, type AiResult } from '../ai/index';
 import { trackedGenerateJson, type AiUsageContext } from '../ai/usage';
+import { withContract, type PromptOverrides } from './prompts';
 import type { SiteAudit } from './assess';
 import { renderAudit } from './assess';
 import type { ScaleAssessment } from './scale';
@@ -43,6 +44,8 @@ export interface QualifyInput {
   context: string;
   /** Where to book the cost of this call. */
   usage: AiUsageContext;
+  /** Edited system prompts, where the user has any. */
+  prompts?: PromptOverrides;
 }
 
 export interface Qualification {
@@ -58,43 +61,6 @@ export interface Qualification {
   /** Skipped specifically for being beyond a freelancer's cold approach. */
   tooBig: boolean;
 }
-
-const QUALIFY_SYSTEM = `You assess small businesses as prospects for a FREELANCE brand and web designer working across New Zealand and Australia.
-
-The designer's approach is to build a business a concept site they did not ask for, then email it to them cold. Everything below follows from that. It works on an owner-operated business where the owner reads their own email and can say yes on the spot. It does not work on anyone larger, no matter how much they could afford it.
-
-You are given a MEASURED audit of their website and a MEASURED assessment of how large the business already is. Reason from both. Do not invent problems or facts neither one lists.
-
-fit_score (0-100) answers ONE question: would an unsolicited concept site from a freelancer land well here?
-
-Score HIGH for:
-  - owner-operated, one location, the owner is plausibly the person reading the email
-  - clearly trading and taking money, but with nobody whose job is design
-  - work that photographs and presents well
-
-Score LOW for — and this matters more than anything else:
-  - ANY sign of an established operation: multiple branches, a recognised brand, a careers page, a press page, a franchise, a marketing stack, an agency credit in the footer
-  - a business that already has an agency or an in-house designer, who will not welcome a stranger's redesign
-  - a chain branch with no authority to commission anything
-  - dormant, closing, or too small to pay for anything
-
-ABILITY TO PAY IS NOT THE QUESTION. A national brand can obviously pay and is a BAD prospect — they have a brand guide, an agency and no interest in a concept from someone they have never met. If scale_score is above 60, fit_score must be below 30 and you should almost always set skip.
-
-objective: what a new site should do for THEM.
-  conversion  - they need enquiries, bookings or sales
-  awareness   - people do not know they exist
-  credibility - people find them but do not trust what they see
-
-angle: ONE concrete sentence naming what you would pitch, specific to this business. Not "improve their online presence". Something you could say out loud on a phone call.
-
-skip: true when you would not write to them at all — too large, already well served, dormant, a chain branch, or a site already good enough that there is no honest case to make.
-
-too_big: true when the reason to skip is specifically that they are beyond a freelancer's cold approach.
-
-Be honest and be willing to say no. A list of forty prospects where thirty are bad is worse than a list of ten.
-
-Return ONLY JSON:
-{"fit_score":0,"reasoning":"...","angle":"...","objective":"conversion","skip":false,"too_big":false}`;
 
 export async function qualifyProspect(
   ai: Ai,
@@ -140,7 +106,13 @@ export async function qualifyProspect(
     too_big?: unknown;
   }>(
     ai,
-    { system: QUALIFY_SYSTEM, prompt, model: MODELS.text, maxTokens: 700, temperature: 0.3 },
+    {
+      system: withContract('qualify', input.prompts?.qualify),
+      prompt,
+      model: MODELS.text,
+      maxTokens: 700,
+      temperature: 0.3,
+    },
     input.usage,
   );
 
@@ -221,29 +193,13 @@ export interface ShortlistDecision {
   reasoning: string;
 }
 
-const SHORTLIST_SYSTEM = `You are choosing which prospects a FREELANCE designer should spend the next few hours on. Each one selected gets a concept site built for them and a cold email.
-
-You are given a scored list.
-  need  - measured, how bad the state of their website is
-  fit   - judged, how well a cold concept site would land
-  scale - measured, how large the business already is
-
-Pick the ones worth pursuing, up to the limit given.
-
-Never select anything with scale above 60. Those are established operations with an agency or an in-house designer; a stranger's concept site is an imposition, not an opportunity, and it costs the designer their credibility to send one.
-
-Pick FEWER than the limit when fewer deserve it. An unfilled shortlist is a perfectly good answer; padding it wastes the designer's afternoon and puts a bad email in a stranger's inbox.
-
-Prefer variety of angle over a run of near-identical businesses.
-
-Return ONLY JSON: {"selected":["id","id"],"reasoning":"one short paragraph on why these and not the others"}`;
-
 export async function shortlistProspects(
   ai: Ai,
   candidates: ShortlistCandidate[],
   limit: number,
   idealClient: string,
   usage: AiUsageContext,
+  prompts?: PromptOverrides,
 ): Promise<AiResult<ShortlistDecision>> {
   if (candidates.length === 0) return { ok: true, data: { selectedIds: [], reasoning: 'Nothing to choose from.' } };
 
@@ -257,7 +213,7 @@ export async function shortlistProspects(
   const result = await trackedGenerateJson<{ selected?: unknown; reasoning?: unknown }>(
     ai,
     {
-      system: SHORTLIST_SYSTEM,
+      system: withContract('shortlist', prompts?.shortlist),
       prompt: [
         idealClient ? `The client I am after: ${idealClient}` : '',
         `Pick at most ${limit}.`,
@@ -322,41 +278,6 @@ export interface DesignPlanDraft {
   meta: { title: string; description: string };
 }
 
-const PLAN_SYSTEM = `You write the page spec for a one-page demo site a designer will show a business they have never spoken to.
-
-You are given a brief (the designer's own style, which you must work inside), what is wrong with the business's current site, and what their existing site says about them.
-
-Hard rules:
-- Every factual claim in the copy must come from their existing material. If their site does not say they have been trading since 1994, you do not say it. Where you need a fact you do not have, write the sentence so it does not need one.
-- No invented awards, statistics, client names, testimonials or years.
-- Work inside the brief's section order, palette and typefaces. Do not introduce new fonts or colours.
-- One primary action for the whole page. Everything else is secondary.
-- Copy in the brief's voice. Short sentences. No superlatives.
-
-objective must match what this business actually needs: conversion, awareness or credibility.
-
-Sections: use between 4 and 7. Each has a type from: hero, intro, services, gallery, testimonials, about, location, contact, cta, stats, process.
-Use testimonials ONLY where you have been given real quotes — from their own site, or from the reviews below. Quote them as written and attribute them to the name given. Never write one.
-
-WRITE A PAGE, NOT AN OUTLINE. A section with a heading and one short sentence under it is the most common way this goes wrong, and it produces something that reads like a template with a name dropped in. Specifically:
-
-- The hero heading is a proposition, not the business name. The name is already in the header and the footer. "Goodco" is a failure; "Roasted in Marrickville, delivered Tuesday" is not.
-- Every hero has a body: one or two sentences saying what they do and for whom.
-- intro and about sections carry at least two full sentences of real copy drawn from their material. Separate paragraphs with a blank line.
-- services, process and stats sections carry at least three items, and every item has a body, not just a title. An item with an empty body is worse than no item.
-- Name the specific things their own copy names — the suburb, the trade, the products, the years they list, the way they work. Specificity is the whole difference between a concept that reads as written for them and one that reads as generated.
-
-imageHint is not optional and is not decoration. Write, for every section that could carry a photograph, the single picture that belongs there, described as you would to a photographer: the subject, the framing, and what it has to show. Where the business has no photography of its own, this is what gets made instead, so a vague hint produces a vague picture.
-
-Return ONLY JSON:
-{
- "summary":"one line on what this site is for",
- "strategy":"two or three sentences on why this layout serves them",
- "objective":"conversion",
- "meta":{"title":"...","description":"..."},
- "sections":[{"id":"hero","type":"hero","heading":"...","subheading":"...","body":"...","items":[{"title":"...","body":"..."}],"cta":{"label":"...","href":"#contact"},"imageHint":"what photograph belongs here","notes":"direction for the designer"}]
-}`;
-
 export interface PlanFacts {
   /** What the directory called them. */
   category: string;
@@ -418,6 +339,8 @@ export interface PlanInput {
   facts: PlanFacts;
   /** Where to book the cost of this call. */
   usage: AiUsageContext;
+  /** Edited system prompts, where the user has any. */
+  prompts?: PromptOverrides;
 }
 
 /**
@@ -504,7 +427,13 @@ export async function draftDesignPlan(
 
   const result = await trackedGenerateJson<Record<string, unknown>>(
     ai,
-    { system: PLAN_SYSTEM, prompt, model: MODELS.text, maxTokens: 3000, temperature: 0.6 },
+    {
+      system: withContract('plan', input.prompts?.plan),
+      prompt,
+      model: MODELS.text,
+      maxTokens: 3000,
+      temperature: 0.6,
+    },
     input.usage,
   );
 

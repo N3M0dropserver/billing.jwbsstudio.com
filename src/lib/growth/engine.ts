@@ -50,6 +50,7 @@ import { normaliseDomain } from './html';
 import { assessScale, type ScaleAssessment } from './scale';
 import { checkProminence, EMPTY_PROMINENCE, type SearchProviderName } from './search';
 import { nextStage, resolvePolicy, type StageMode, type StagePolicy } from './policy';
+import type { PromptOverrides } from './prompts';
 import {
   draftDesignPlan,
   normalisePlan,
@@ -81,6 +82,12 @@ export interface EngineContext {
    * caller so a stage does not have to fetch it on every call.
    */
   aiCacheTtlHours?: number;
+  /**
+   * The user's edited system prompts, where they have any. Read by the caller
+   * for the same reason: a tick makes several calls and they all want these.
+   * Absent means every prompt runs on its default.
+   */
+  prompts?: PromptOverrides;
 }
 
 export interface StepResult {
@@ -544,6 +551,7 @@ async function stageShortlist(
       campaign.targetCount,
       campaign.idealClient,
       usageFor(ctx, campaign, 'shortlist', 'shortlist'),
+      ctx.prompts,
     );
 
     if (decision.ok && decision.data.selectedIds.length) {
@@ -707,6 +715,7 @@ async function assessProspect(
         siteSummary,
         context: String(findings.context ?? ''),
         usage: usageFor(ctx, campaign, 'qualify', 'shortlist', prospect.id),
+        prompts: ctx.prompts,
       });
 
   const fitScore = qualification?.ok ? qualification.data.fitScore : 0;
@@ -974,6 +983,7 @@ async function stagePlan(
       hasWebsite: Boolean(prospect.website),
     },
     usage: usageFor(ctx, campaign, 'plan', 'plan', prospect.id),
+    prompts: ctx.prompts,
   };
 
   let draft: DesignPlanDraft;
@@ -1536,6 +1546,7 @@ async function stagePropose(
     signature: settingsRow.outreachSignature,
     capabilities: brief.capabilities,
     usage: usageFor(ctx, campaign, 'proposal', 'propose', prospect.id),
+    prompts: ctx.prompts,
   });
 
   if (!draft.ok) {

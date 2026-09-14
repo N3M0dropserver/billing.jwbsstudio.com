@@ -1,0 +1,43 @@
+---
+/**
+ * The section's own navigation.
+ *
+ * Everything that steers a run — the instructions, the style directions, the
+ * defaults, what it is costing — lived only in the action row on the Growth
+ * index, which wraps off the side of a phone and reads as four buttons about
+ * the page you are already on. A run producing pages you do not like is a run
+ * you should be able to turn something on, and that means the things you turn
+ * have to be visible from wherever you noticed.
+ */
+const { current } = Astro.props as { current: string };
+
+const LINKS = [
+  { href: '/growth', label: 'Runs', key: 'runs' },
+  { href: '/growth/prompts', label: 'Instructions', key: 'prompts' },
+  { href: '/growth/brand', label: 'Style directions', key: 'brand' },
+  { href: '/growth/settings', label: 'Defaults', key: 'settings' },
+  { href: '/growth/ai', label: 'AI usage', key: 'ai' },
+];
+---
+
+<nav
+  class="-mx-1 mb-4 flex gap-1 overflow-x-auto pb-1"
+  aria-label="Growth"
+>
+  {
+    LINKS.map((link) => (
+      <a
+        href={link.href}
+        aria-current={link.key === current ? 'page' : undefined}
+        class="shrink-0 rounded-lg border px-3 py-1.5 text-sm whitespace-nowrap"
+        style={
+          link.key === current
+            ? 'border-color: transparent; background: var(--color-brand-600); color: #fff'
+            : 'border-color: var(--border); color: var(--text-muted)'
+        }
+      >
+        {link.label}
+      </a>
+    ))
+  }
+</nav>

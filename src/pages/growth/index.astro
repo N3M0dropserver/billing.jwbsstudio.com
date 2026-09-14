@@ -1,6 +1,7 @@
 ---
 import AppLayout from '~/layouts/AppLayout.astro';
 import Card from '~/components/ui/Card.astro';
+import GrowthNav from '~/components/growth/GrowthNav.astro';
 import EmptyState from '~/components/ui/EmptyState.astro';
 import { desc, eq, sql } from 'drizzle-orm';
 import { db } from '~/lib/env';
@@ -39,12 +40,9 @@ const STATUS_COLOURS: Record<string, string> = {
 ---
 
 <AppLayout title="Growth" subtitle="Find businesses worth helping, and show them what you would do" width="wide">
-  <div slot="actions" class="flex gap-2">
-    <a href="/growth/ai" class="muted rounded-lg border px-3 py-2 text-sm" style="border-color: var(--border)">AI usage</a>
-    <a href="/growth/settings" class="muted rounded-lg border px-3 py-2 text-sm" style="border-color: var(--border)">Defaults</a>
-    <a href="/growth/brand" class="muted rounded-lg border px-3 py-2 text-sm" style="border-color: var(--border)">Style directions</a>
-    <a href="/growth/new" class="rounded-lg px-4 py-2 text-sm font-medium text-white" style="background: var(--color-brand-600)">New run</a>
-  </div>
+  <GrowthNav current="runs" />
+
+  <a slot="actions" href="/growth/new" class="rounded-lg px-4 py-2 text-sm font-medium text-white" style="background: var(--color-brand-600)">New run</a>
 
   <div class="grid gap-4 lg:grid-cols-3">
     <div class="space-y-4 lg:col-span-2">

@@ -1558,6 +1558,39 @@ export const aiCache = sqliteTable(
   (t) => [index('ai_cache_expiry_idx').on(t.expiresAt)],
 );
 
+/**
+ * Edited versions of the pipeline's system prompts.
+ *
+ * One row per user per prompt, and only where it has been changed — an absent
+ * row means the default in `src/lib/growth/prompts.ts` is in force, which is
+ * also what "Reset" writes by deleting the row. Keeping the defaults in source
+ * rather than seeding them here means a deployed improvement to a prompt
+ * reaches everybody who has not deliberately overridden it.
+ */
+export const aiPrompts = sqliteTable(
+  'ai_prompts',
+  {
+    id: text('id').primaryKey(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    /** Which prompt: qualify, shortlist, plan, outreach. */
+    promptKey: text('prompt_key').notNull(),
+    /**
+     * The instructions, without the contract. The shape of the answer is
+     * appended at call time and is not the user's to change — a run whose
+     * plans stopped parsing because someone rewrote the JSON example would be
+     * a bad way to learn that.
+     */
+    instructions: text('instructions').notNull().default(''),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [uniqueIndex('ai_prompts_user_key_idx').on(t.userId, t.promptKey)],
+);
+
+export type AiPrompt = typeof aiPrompts.$inferSelect;
+
 /* ------------------------------------------------------------------ */
 /* Audit                                                               */
 /* ------------------------------------------------------------------ */

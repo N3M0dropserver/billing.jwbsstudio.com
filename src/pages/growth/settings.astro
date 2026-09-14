@@ -1,6 +1,7 @@
 ---
 import AppLayout from '~/layouts/AppLayout.astro';
 import Card from '~/components/ui/Card.astro';
+import GrowthNav from '~/components/growth/GrowthNav.astro';
 import StagePolicy from '~/components/growth/StagePolicy.astro';
 import { eq } from 'drizzle-orm';
 import { bindings, db } from '~/lib/env';
@@ -45,6 +46,8 @@ const demoDepth = Math.max(1, exampleHost.split('.').length - 2);
 ---
 
 <AppLayout title="Growth defaults" subtitle="What every new run starts from">
+  <GrowthNav current="settings" />
+
   <form method="post" action="/api/growth-settings" class="space-y-4">
     {saved && <p class="muted rounded-lg px-4 py-3 text-sm" style="background: var(--surface-sunken)" role="status">Saved.</p>}
     {error && <p class="rounded-lg px-4 py-3 text-sm" style="background: color-mix(in oklch, var(--color-owing) 12%, transparent); color: var(--color-owing)" role="alert">{error}</p>}

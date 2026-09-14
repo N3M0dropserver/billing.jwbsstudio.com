@@ -31,6 +31,8 @@ import { eq } from 'drizzle-orm';
 import { getDb } from '../../../src/lib/db/index';
 import { settings } from '../../../src/lib/db/schema';
 import { describeError } from '../../../src/lib/errors';
+import { loadPromptOverrides } from '../../../src/lib/queries/prompts';
+import type { PromptOverrides } from '../../../src/lib/growth/prompts';
 import {
   decideGate,
   loadCampaign,
@@ -79,36 +81,43 @@ export class CampaignAgent extends Agent<Env, CampaignState> {
     error: '',
   };
 
-  private context(cacheTtlHours?: number): EngineContext {
+  private context(runtime?: { cacheTtlHours: number; prompts: PromptOverrides }): EngineContext {
     return {
       db: getDb(this.env.DB),
       bucket: this.env.FILES,
       ai: this.env.AI,
       env: this.env,
       appUrl: this.env.APP_URL || 'https://billing.jwbsstudio.com',
-      aiCacheTtlHours: cacheTtlHours,
+      aiCacheTtlHours: runtime?.cacheTtlHours,
+      prompts: runtime?.prompts,
     };
   }
 
   /**
-   * The user's AI cache setting, read once per tick rather than per call.
+   * What the user has set, read once per tick rather than per call.
    *
-   * A tick makes several model calls and they all want the same number; a
-   * read each time would be a D1 round trip for a value that cannot change
-   * mid-tick.
+   * A tick makes several model calls and they all want the same cache window
+   * and the same edited prompts; reading each time would be two D1 round
+   * trips for values that cannot change mid-tick.
    */
-  private async cacheTtl(): Promise<number> {
-    if (!this.state.userId) return 0;
+  private async runtimeSettings(): Promise<{ cacheTtlHours: number; prompts: PromptOverrides }> {
+    if (!this.state.userId) return { cacheTtlHours: 0, prompts: {} };
+
+    const db = getDb(this.env.DB);
+    let cacheTtlHours = 0;
+
     try {
-      const rows = await getDb(this.env.DB)
+      const rows = await db
         .select({ hours: settings.aiCacheTtlHours })
         .from(settings)
         .where(eq(settings.userId, this.state.userId))
         .limit(1);
-      return rows[0]?.hours ?? 0;
+      cacheTtlHours = rows[0]?.hours ?? 0;
     } catch {
-      return 0;
+      cacheTtlHours = 0;
     }
+
+    return { cacheTtlHours, prompts: await loadPromptOverrides(db, this.state.userId) };
   }
 
   private note(message: string): Array<{ at: string; message: string }> {
@@ -154,7 +163,7 @@ export class CampaignAgent extends Agent<Env, CampaignState> {
     const campaignId = payload?.campaignId || this.state.campaignId;
     if (!campaignId) return;
 
-    const ctx = this.context(await this.cacheTtl());
+    const ctx = this.context(await this.runtimeSettings());
     let result: StepResult;
 
     try {
