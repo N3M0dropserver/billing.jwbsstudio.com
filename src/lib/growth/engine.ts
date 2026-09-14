@@ -34,6 +34,7 @@ import {
   type Prospect,
 } from '../db/schema';
 import { newId, newToken } from '../id';
+import { describeError } from '../errors';
 import { trackedGenerate, type AiUsageContext } from '../ai/usage';
 import { applyOverrides, briefFromKit, type Brief } from './brief';
 import { auditSite, combineScores, type SiteAudit } from './assess';
@@ -261,7 +262,7 @@ export async function step(ctx: EngineContext, campaignId: string): Promise<Step
         return await finish(ctx, campaign, 'Nothing left to do.');
     }
   } catch (error) {
-    const message = String(error);
+    const message = describeError(error);
     await logEvent(ctx, campaign, campaign.stage, 'error', 'The stage threw.', { error: message });
     await touch(ctx, campaign.id, {
       status: 'failed',
@@ -1299,7 +1300,7 @@ async function stageBuild(
   } catch (error) {
     await ctx.db
       .update(demoSites)
-      .set({ status: 'failed', buildError: String(error).slice(0, 1000), updatedAt: now })
+      .set({ status: 'failed', buildError: describeError(error).slice(0, 1000), updatedAt: now })
       .where(eq(demoSites.id, demoId));
     await ctx.db.update(prospects).set({ stage: 'build', updatedAt: now }).where(eq(prospects.id, prospect.id));
     await logEvent(ctx, campaign, 'build', 'error', `Build failed for ${prospect.businessName}: ${error}`, {}, prospect.id);

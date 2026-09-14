@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   buildOverpassQuery,
   escapeOverpassRegex,
@@ -7,6 +7,7 @@ import {
   toProviderName,
   getProvider,
 } from '~/lib/growth/discovery/index';
+import { runOverpass } from '~/lib/growth/discovery/overpass';
 
 describe('niche to OSM tags', () => {
   it('prefers the more specific match', () => {
@@ -115,5 +116,95 @@ describe('the registry', () => {
     expect(getProvider('overpass').unavailableReason({ ...base, region: '' })).toContain('region');
     expect(getProvider('google-places').unavailableReason(base)).toContain('GOOGLE_PLACES_API_KEY');
     expect(getProvider('manual').unavailableReason(base)).toContain('Paste');
+  });
+});
+
+describe('asking Overpass', () => {
+  const ok = (elements: unknown[]) =>
+    new Response(JSON.stringify({ elements }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+
+  const hostsAsked = (calls: unknown[][]) => calls.map(([url]) => new URL(String(url)).host);
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /** No real waiting, and no real clock, so the budget is testable. */
+  const options = { sleep: async () => {}, now: () => 0 };
+
+  it('moves to the next mirror when one times out behind its proxy', async () => {
+    // 524 is what started this: kumi accepted the query and Cloudflare gave
+    // up waiting for it. Nothing about that says the query is wrong.
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response('', { status: 504 }))
+      .mockResolvedValueOnce(new Response('', { status: 524 }))
+      .mockResolvedValueOnce(ok([{ type: 'node', id: 1, tags: { name: 'Kebabs' } }]));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await runOverpass('query', 'agent', options);
+
+    expect(result).toEqual({ elements: [{ type: 'node', id: 1, tags: { name: 'Kebabs' } }] });
+    expect(hostsAsked(fetchMock.mock.calls)).toHaveLength(3);
+  });
+
+  it('goes round the mirrors a second time before giving up', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response('', { status: 524 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await runOverpass('query', 'agent', options);
+
+    const hosts = new Set(hostsAsked(fetchMock.mock.calls));
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(hosts.size);
+    expect(result).toHaveProperty('error');
+    const { error } = result as { error: string };
+    // The message names every mirror and how it failed, not just the last one.
+    for (const host of hosts) expect(error).toContain(host);
+    expect(error).toContain('524');
+    expect(error).toMatch(/temporary/i);
+  });
+
+  it('does not shop a rejected query around', async () => {
+    // 400 is Overpass rejecting the QL itself. Every mirror runs the same
+    // engine, so three more attempts only waste three more requests.
+    const fetchMock = vi.fn().mockResolvedValue(new Response('parse error', { status: 400 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await runOverpass('bad query', 'agent', options);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect((result as { error: string }).error).toContain('400');
+  });
+
+  it('treats a partial answer as a failure rather than a small region', async () => {
+    // Overpass reports its own timeout in `remark` on a 200, usually with a
+    // handful of elements. Accepting that silently discards the region.
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            remark: 'runtime error: Query timed out',
+            elements: [{ type: 'node', id: 1 }],
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(ok([{ type: 'node', id: 2 }]));
+    vi.stubGlobal('fetch', fetchMock);
+
+    expect(await runOverpass('query', 'agent', options)).toEqual({
+      elements: [{ type: 'node', id: 2 }],
+    });
+  });
+
+  it('reports a mirror that cannot be reached at all', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('connection reset')));
+
+    const { error } = (await runOverpass('query', 'agent', options)) as { error: string };
+    expect(error).toContain('connection reset');
   });
 });

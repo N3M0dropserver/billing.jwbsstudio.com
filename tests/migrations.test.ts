@@ -1,8 +1,18 @@
 import { describe, it, expect } from 'vitest';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 // The generate-time script itself, so the rules are asserted where they live.
 import { makeIdempotent, sweepMigrations } from '../scripts/idempotent-migrations.mjs';
+// And the repair tool, for the same reason: one model of what a migration
+// does to a database, used by the test and by `bun run db:drift` alike.
+import {
+  addColumnSql,
+  applyMigration,
+  diffSchemas,
+  readLiveSchema,
+  readSchema,
+} from '../scripts/d1-drift.mjs';
 
 const MIGRATIONS = join(process.cwd(), 'migrations');
 
@@ -68,5 +78,131 @@ describe('the rewrite itself', () => {
   it('does not touch a column or value that merely reads like a statement', () => {
     const insert = "INSERT INTO `t` (`note`) VALUES ('drop table later');";
     expect(makeIdempotent(insert)).toBe(insert);
+  });
+});
+
+/**
+ * The failure this suite was extended for.
+ *
+ * `0010_growth_engine.sql` was `0002_growth_engine.sql` until it was merged
+ * and renumbered. Every database that had already applied it under the old
+ * name ran it again under the new one — and because the guards let the
+ * re-run get past the CREATEs, it reached the `prospects` rebuild and
+ * replaced the table with its 2026-era shape, dropping the four columns
+ * `0011` had added to it. `0011` re-ran too, and aborted on a column it had
+ * already added long before it reached the ones it needed to put back.
+ *
+ * Guards alone cannot prevent that; only statement ORDER can. A migration
+ * that both alters an existing table and rebuilds one must do the altering
+ * first, so a re-run dies on `duplicate column name` while the rebuild is
+ * still ahead of it.
+ */
+describe('re-applying a migration cannot narrow the schema', () => {
+  const migrated = () => {
+    const db = new DatabaseSync(':memory:');
+    for (const [, text] of sql) applyMigration(db, text);
+    return db;
+  };
+
+  it('models the state wrangler leaves behind', () => {
+    // Guards against the rest of this block passing because the helper
+    // silently applied nothing.
+    const schema = readSchema(migrated());
+    expect(schema.tables.get('prospects')?.has('scale_score')).toBe(true);
+    expect(schema.tables.size).toBeGreaterThan(20);
+  });
+
+  it.each(sql)('%s leaves every column in place when run twice', (_file, text) => {
+    const db = migrated();
+    const before = readSchema(db);
+
+    // An abort is fine — that is the migration refusing to run twice, which
+    // is the desired outcome. Losing a column is not.
+    applyMigration(db, text);
+    const after = readSchema(db);
+
+    for (const [table, columns] of before.tables) {
+      expect(`${table}: ${[...after.tables.get(table)?.keys() ?? []].join(',')}`).toBe(
+        `${table}: ${[...columns.keys()].join(',')}`,
+      );
+    }
+  });
+});
+
+/**
+ * `bun run db:drift` is read in a moment of confusion, so it has to survive
+ * what a real D1 contains: Cloudflare's own tables, which are in
+ * `sqlite_master` and which `PRAGMA table_info` is not allowed to look at.
+ */
+describe('reading a live database', () => {
+  /** A database damaged exactly the way production was. */
+  const damaged = () => {
+    const db = new DatabaseSync(':memory:');
+    for (const [, text] of sql) applyMigration(db, text);
+    // Re-run the growth migration in the order it had when this happened:
+    // the ALTERs last, so the rebuild is reached and goes through.
+    const fixed = sql.find(([file]) => file === '0010_growth_engine.sql')?.[1] ?? '';
+    const alters = fixed.indexOf('-- Everything that cannot be re-run safely');
+    const rebuild = fixed.indexOf('DROP TABLE IF EXISTS `prospect_searches`');
+    expect([alters, rebuild].every((at) => at > 0 && alters < rebuild)).toBe(true);
+    const asItWas =
+      fixed.slice(0, alters) +
+      fixed.slice(rebuild) +
+      '\n--> statement-breakpoint\n' +
+      fixed.slice(alters, rebuild);
+    applyMigration(db, asItWas);
+    db.exec('CREATE TABLE IF NOT EXISTS _cf_METADATA (key INTEGER PRIMARY KEY, value BLOB)');
+    return db;
+  };
+
+  /** Stands in for wrangler, refusing the internal table the way D1 does. */
+  const execFor = (db: DatabaseSync, { batched = true } = {}) => {
+    const asked: string[] = [];
+    const exec = async (query: string) => {
+      asked.push(query);
+      if (query.includes('_cf_METADATA')) throw new Error('no such table: _cf_METADATA');
+      if (!batched && query.includes('pragma_table_info')) throw new Error('not supported');
+      return db.prepare(query).all();
+    };
+    return { exec, asked };
+  };
+
+  it('never asks about a table D1 will not answer for', async () => {
+    const db = damaged();
+    const { exec, asked } = execFor(db);
+
+    const live = await readLiveSchema({ remote: false }, exec);
+
+    expect(asked.some((query) => query.includes('_cf_METADATA'))).toBe(false);
+    expect(live.tables.has('_cf_METADATA')).toBe(false);
+    expect(live.tables.get('prospects')?.has('scale_score')).toBe(false);
+  });
+
+  it('finds the columns the rebuild took, either way round', async () => {
+    const expected = readSchema(
+      (() => {
+        const clean = new DatabaseSync(':memory:');
+        for (const [, text] of sql) applyMigration(clean, text);
+        return clean;
+      })(),
+    );
+
+    for (const batched of [true, false]) {
+      const { exec } = execFor(damaged(), { batched });
+      const diff = diffSchemas(expected, await readLiveSchema({ remote: false }, exec));
+
+      expect(diff.missingColumns.map((missing) => `${missing.table}.${missing.column.name}`)).toEqual(
+        ['prospects.scale_score', 'prospects.scale', 'prospects.brand', 'prospects.branch_count'],
+      );
+      // And the repair is SQL that runs.
+      const db = damaged();
+      for (const missing of diff.missingColumns) {
+        const statement = addColumnSql(missing);
+        // Every one of these columns has a default, so ADD COLUMN can carry it.
+        expect(statement).toBeTruthy();
+        db.exec(statement as string);
+      }
+      expect(diffSchemas(expected, readSchema(db)).missingColumns).toEqual([]);
+    }
   });
 });

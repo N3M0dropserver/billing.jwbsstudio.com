@@ -49,7 +49,10 @@ export const POST: APIRoute = async ({ request, params, locals, redirect }) => {
           .set({
             status: 'running',
             startedAt: campaign.startedAt ?? new Date().toISOString(),
+            // Also the retry path for a failed run: clear the last failure and
+            // the completion stamp, or the page keeps reporting both.
             error: '',
+            completedAt: null,
           })
           .where(eq(campaigns.id, id));
         await startCampaign(env, id, user.id);

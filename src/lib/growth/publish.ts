@@ -43,6 +43,7 @@
 
 import { contentTypeFor, demoPrefixFor, demoSourcePrefix, putObject } from './storage';
 import type { GeneratedFile } from './render';
+import { describeError } from '../errors';
 
 /** Words that must not become a demo host on a domain we also use ourselves. */
 const RESERVED = new Set([
@@ -487,6 +488,6 @@ export async function createDnsRecord(
 
     return { ok: true, recordId: body.result?.id ?? '' };
   } catch (error) {
-    return { ok: false, error: String(error) };
+    return { ok: false, error: describeError(error) };
   }
 }
