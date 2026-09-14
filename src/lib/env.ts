@@ -49,6 +49,12 @@ export function campaignAgent(): DurableObjectNamespace {
   return e.CAMPAIGN_AGENT;
 }
 
+/**
+ * The demo host pattern for this deployment.
+ *
+ * A pattern rather than a parent domain — see `growth/publish.ts`. A value
+ * with no `*` still works and means the same as it always did.
+ */
 export function demoHost(): string {
   return bindings().DEMO_HOST || 'demo.jwbsstudio.com';
 }

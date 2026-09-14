@@ -44,7 +44,7 @@ export const POST: APIRoute = async ({ locals, redirect }) => {
     return redirect(`/growth/settings?error=${encodeURIComponent(detail)}`, 302);
   }
 
-  const result = await checkDemoHosting(demo.host);
+  const result = await checkDemoHosting(demo.host, current.demoHost);
 
   await database
     .update(settings)

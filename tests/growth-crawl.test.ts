@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { parseRobots, rankCandidate, robotsAllows } from '~/lib/growth/crawl';
+import { parseRobots, rankCandidate, robotsAllows, scoreImage } from '~/lib/growth/crawl';
+import type { ExtractedImage } from '~/lib/growth/html';
 
 const UA = 'JWBSStudioGrowth/1.0 (+https://billing.jwbsstudio.com)';
 
@@ -78,5 +79,48 @@ describe('page ranking', () => {
   it('ranks boilerplate below everything', () => {
     expect(rankCandidate('/privacy')).toBeLessThan(0);
     expect(rankCandidate('/terms')).toBeLessThan(0);
+  });
+});
+
+describe('scoreImage', () => {
+  const image = (overrides: Partial<ExtractedImage> = {}): ExtractedImage => ({
+    src: 'https://wells.example/img/beans.jpg',
+    alt: '',
+    width: 0,
+    height: 0,
+    origin: 'img',
+    ...overrides,
+  });
+
+  it('discards furniture by name', () => {
+    expect(scoreImage(image({ src: 'https://wells.example/logo.png' }))).toBeNull();
+    expect(scoreImage(image({ src: 'https://wells.example/visa-badge.png' }))).toBeNull();
+    expect(scoreImage(image({ src: 'https://wells.example/img/avatar-1.jpg' }))).toBeNull();
+  });
+
+  it('discards formats that are never photography', () => {
+    expect(scoreImage(image({ src: 'https://wells.example/img/hero.svg' }))).toBeNull();
+  });
+
+  it('discards anything laid out at icon size', () => {
+    expect(scoreImage(image({ width: 48, height: 48 }))).toBeNull();
+  });
+
+  it('ranks a prepared picture above a bare one', () => {
+    const bare = scoreImage(image())!;
+    expect(scoreImage(image({ origin: 'picture' }))!).toBeGreaterThan(bare);
+    expect(scoreImage(image({ origin: 'srcset' }))!).toBeGreaterThan(bare);
+  });
+
+  it('ranks a large image above a small one', () => {
+    expect(scoreImage(image({ width: 1600 }))!).toBeGreaterThan(scoreImage(image({ width: 300 }))!);
+  });
+
+  it('rewards a written alt, which furniture rarely has', () => {
+    expect(scoreImage(image({ alt: 'Beans cooling' }))!).toBeGreaterThan(scoreImage(image())!);
+  });
+
+  it('keeps an image with no declared size at all', () => {
+    expect(scoreImage(image())).not.toBeNull();
   });
 });

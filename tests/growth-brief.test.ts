@@ -3,9 +3,11 @@ import {
   applyOverrides,
   briefFromKit,
   DEFAULT_SECTION_ORDER,
+  DEFAULT_TOKENS,
   FALLBACK_BRIEF,
   fontLinks,
   fontStack,
+  parseDesignTokens,
   renderBriefPrompt,
 } from '~/lib/growth/brief';
 import type { BrandKit } from '~/lib/db/schema';
@@ -114,5 +116,45 @@ describe('font handling', () => {
   it('deduplicates', () => {
     const face = FALLBACK_BRIEF.typography[0]!;
     expect(fontLinks({ ...FALLBACK_BRIEF, typography: [face, { ...face, role: 'accent' }] })).toHaveLength(1);
+  });
+});
+
+describe('design tokens', () => {
+  it('falls back to the defaults for anything missing or unrecognised', () => {
+    expect(parseDesignTokens('{}')).toEqual(DEFAULT_TOKENS);
+    expect(parseDesignTokens(null)).toEqual(DEFAULT_TOKENS);
+    expect(parseDesignTokens('not json')).toEqual(DEFAULT_TOKENS);
+    expect(parseDesignTokens({ hero: 'spinning-carousel' }).hero).toBe(DEFAULT_TOKENS.hero);
+  });
+
+  it('keeps the values it recognises', () => {
+    const tokens = parseDesignTokens({ hero: 'full-bleed', density: 'airy', radius: 'square' });
+    expect(tokens.hero).toBe('full-bleed');
+    expect(tokens.density).toBe('airy');
+    expect(tokens.radius).toBe('square');
+    // Untouched fields keep their defaults rather than being blanked.
+    expect(tokens.button).toBe(DEFAULT_TOKENS.button);
+  });
+
+  it('reads them from a saved kit', () => {
+    const brief = briefFromKit(
+      kitOf({ designTokens: JSON.stringify({ hero: 'editorial', typeScale: 'dramatic' }) }),
+    );
+    expect(brief.tokens.hero).toBe('editorial');
+    expect(brief.tokens.typeScale).toBe('dramatic');
+  });
+
+  it('merges a per-run override field by field', () => {
+    const base = { ...FALLBACK_BRIEF, tokens: parseDesignTokens({ hero: 'editorial', density: 'airy' }) };
+    const next = applyOverrides(base, JSON.stringify({ tokens: { hero: 'full-bleed' } }));
+
+    expect(next.tokens.hero).toBe('full-bleed');
+    // The rest of the kit's composition survives the override.
+    expect(next.tokens.density).toBe('airy');
+  });
+
+  it('tells the model what layout the copy has to suit', () => {
+    const brief = { ...FALLBACK_BRIEF, tokens: parseDesignTokens({ hero: 'full-bleed' }) };
+    expect(renderBriefPrompt(brief)).toContain('full-bleed hero');
   });
 });

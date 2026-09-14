@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { escape, renderDemoPage, renderStylesheet, type DemoContext } from '~/lib/growth/render';
 import { renderAstroProject } from '~/lib/growth/project';
-import { FALLBACK_BRIEF } from '~/lib/growth/brief';
+import { FALLBACK_BRIEF, parseDesignTokens } from '~/lib/growth/brief';
 import { normalisePlan, type DesignPlanDraft, type PlanInput } from '~/lib/growth/qualify';
 import type { SiteAudit } from '~/lib/growth/assess';
 
@@ -11,7 +11,9 @@ const CONTEXT: DemoContext = {
   region: 'Wellington',
   contact: { email: 'hello@wells.test', phone: '04 555 0198', address: '12 Wallis St' },
   socials: [{ platform: 'instagram', url: 'https://instagram.com/wells' }],
-  images: ['/images/00.jpg'],
+  images: [
+    { src: 'images/00.jpg', alt: '', generated: false, sectionId: 'hero', role: 'hero' as const },
+  ],
   openingHours: ['Mo-Fr 07:00-15:00'],
   designerName: 'JWBS Studio',
   designerUrl: 'https://jwbsstudio.com',
@@ -250,5 +252,133 @@ describe('plan normalisation', () => {
   it('survives a model returning the wrong shape entirely', () => {
     expect(() => normalisePlan({ sections: 'not an array' }, input)).not.toThrow();
     expect(() => normalisePlan({ sections: [null, 3, 'x'] }, input)).not.toThrow();
+  });
+});
+
+describe('the kit decides the composition, not just the colours', () => {
+  const briefWith = (tokens: Parameters<typeof parseDesignTokens>[0]) => ({
+    ...FALLBACK_BRIEF,
+    tokens: parseDesignTokens(tokens),
+  });
+
+  it('two kits that differ only in tokens produce different stylesheets', () => {
+    const quiet = renderStylesheet(briefWith({ density: 'tight', typeScale: 'restrained', radius: 'square' }));
+    const loud = renderStylesheet(briefWith({ density: 'airy', typeScale: 'dramatic', radius: 'round' }));
+    expect(quiet).not.toBe(loud);
+  });
+
+  it('puts the density and type scale into custom properties', () => {
+    const css = renderStylesheet(briefWith({ density: 'airy', typeScale: 'dramatic' }));
+    expect(css).toContain('--section-gap: clamp(5rem, 12vw, 10rem)');
+    expect(css).toContain('--h1: clamp(3rem, 1.5rem + 6.8vw, 7.5rem)');
+  });
+
+  it('squares the corners when the kit asks for it', () => {
+    const css = renderStylesheet(briefWith({ radius: 'square', button: 'square' }));
+    expect(css).toContain('--radius-card: 0');
+    expect(css).toContain('--radius-button: 0');
+  });
+
+  it('separates sections the way the kit asks and not two ways at once', () => {
+    const rules = renderStylesheet(briefWith({ rhythm: 'rules' }));
+    expect(rules).toContain('.section + .section { border-top:');
+    expect(rules).not.toContain('.section--tint { background:');
+
+    const tint = renderStylesheet(briefWith({ rhythm: 'tint' }));
+    expect(tint).toContain('.section--tint { background:');
+    expect(tint).not.toContain('.section + .section { border-top:');
+  });
+
+  it('renders each hero treatment differently', () => {
+    const treatments = ['split', 'stacked', 'editorial', 'full-bleed'] as const;
+    const pages = treatments.map((hero) => renderDemoPage(PLAN, briefWith({ hero }), CONTEXT));
+
+    expect(new Set(pages).size).toBe(treatments.length);
+    expect(pages[0]).toContain('hero--split');
+    expect(pages[1]).toContain('hero--stacked');
+    expect(pages[2]).toContain('hero--editorial');
+    expect(pages[3]).toContain('hero--bleed');
+  });
+
+  it('falls back to a stacked hero when there is no picture to frame', () => {
+    const page = renderDemoPage(PLAN, briefWith({ hero: 'full-bleed' }), { ...CONTEXT, images: [] });
+    expect(page).toContain('hero--stacked');
+    expect(page).not.toContain('hero--bleed');
+  });
+});
+
+describe('generated photography is disclosed', () => {
+  const generated = {
+    ...CONTEXT,
+    images: [
+      {
+        src: 'images/00.jpg',
+        alt: 'Indicative photograph, generated for this concept — not Wells Coffee’s own.',
+        generated: true,
+        sectionId: 'hero',
+        role: 'hero' as const,
+      },
+    ],
+  };
+
+  it('says so in the ribbon', () => {
+    const page = renderDemoPage(PLAN, FALLBACK_BRIEF, generated);
+    expect(page).toContain('generated for this concept');
+  });
+
+  it('marks the picture itself', () => {
+    expect(renderDemoPage(PLAN, FALLBACK_BRIEF, generated)).toContain('Indicative image');
+  });
+
+  it('says nothing about generated images when every picture is theirs', () => {
+    const page = renderDemoPage(PLAN, FALLBACK_BRIEF, CONTEXT);
+    expect(page).not.toContain('Indicative image');
+    expect(page).not.toContain('generated for this concept');
+  });
+
+  it('still carries the unsolicited-concept ribbon either way', () => {
+    expect(renderDemoPage(PLAN, FALLBACK_BRIEF, generated)).toContain('unsolicited concept');
+    expect(renderDemoPage(PLAN, FALLBACK_BRIEF, CONTEXT)).toContain('unsolicited concept');
+  });
+});
+
+describe('a hero headline is never just the business name', () => {
+  const input = {
+    businessName: 'Goodco',
+    niche: 'coffee roasters',
+    region: 'Sydney',
+    angle: 'Show the roastery and let people order a bag without ringing up.',
+    objective: 'conversion' as const,
+  } as PlanInput;
+
+  it('replaces a headline that only repeats the name', () => {
+    const plan = normalisePlan(
+      { sections: [{ id: 'hero', type: 'hero', heading: 'Goodco' }] },
+      input,
+    );
+    expect(plan.sections[0]?.heading).not.toBe('Goodco');
+    expect(plan.sections[0]?.heading).toContain('roastery');
+  });
+
+  it('replaces an empty headline too', () => {
+    const plan = normalisePlan({ sections: [{ id: 'hero', type: 'hero', heading: '' }] }, input);
+    expect(plan.sections[0]?.heading).toBeTruthy();
+  });
+
+  it('says in the notes that it stepped in', () => {
+    const plan = normalisePlan(
+      { sections: [{ id: 'hero', type: 'hero', heading: 'goodco' }] },
+      input,
+    );
+    expect(plan.sections[0]?.notes).toContain('Headline replaced');
+  });
+
+  it('leaves a real headline alone', () => {
+    const plan = normalisePlan(
+      { sections: [{ id: 'hero', type: 'hero', heading: 'Roasted in Marrickville' }] },
+      input,
+    );
+    expect(plan.sections[0]?.heading).toBe('Roasted in Marrickville');
+    expect(plan.sections[0]?.notes).toBe('');
   });
 });

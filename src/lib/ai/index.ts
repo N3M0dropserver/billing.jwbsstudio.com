@@ -14,6 +14,8 @@ export const MODELS = {
   fast: '@cf/meta/llama-3.1-8b-instruct',
   /** Reads images — receipts, at present. */
   vision: '@cf/meta/llama-3.2-11b-vision-instruct',
+  /** Makes images — placeholder photography for demo sites. */
+  image: '@cf/black-forest-labs/flux-1-schnell',
 } as const;
 
 export type AiResult<T> =
@@ -123,4 +125,80 @@ export function extractJson(text: string): string | null {
   }
 
   return null;
+}
+
+/* ------------------------------------------------------------------ */
+/* Images                                                              */
+/* ------------------------------------------------------------------ */
+
+export interface GeneratedImage {
+  body: ArrayBuffer;
+  contentType: string;
+}
+
+export interface ImageOptions {
+  prompt: string;
+  model?: string;
+  /**
+   * Denoising steps. Schnell-class models are tuned for four and get no
+   * better above eight, so this is capped rather than trusted.
+   */
+  steps?: number;
+}
+
+/** Decode standard base64 without Buffer, which Workers do not have. */
+function base64ToArrayBuffer(base64: string): ArrayBuffer {
+  const binary = atob(base64.replace(/^data:[^,]*,/, ''));
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes.buffer;
+}
+
+/**
+ * Generate one image.
+ *
+ * Workers AI is inconsistent about how it hands an image back: the flux
+ * models return JSON with a base64 string, the diffusion ones return a raw
+ * PNG stream. Both shapes are handled here so callers get bytes either way.
+ */
+export async function generateImage(
+  ai: Ai,
+  options: ImageOptions,
+): Promise<AiResult<GeneratedImage>> {
+  const model = options.model ?? MODELS.image;
+
+  try {
+    const response = (await ai.run(model as Parameters<Ai['run']>[0], {
+      prompt: options.prompt.slice(0, 2000),
+      steps: Math.min(Math.max(options.steps ?? 4, 1), 8),
+    } as never)) as { image?: string } | ReadableStream | ArrayBuffer | Uint8Array;
+
+    if (response && typeof response === 'object' && 'image' in response && typeof response.image === 'string') {
+      const body = base64ToArrayBuffer(response.image);
+      if (body.byteLength === 0) return { ok: false, error: 'The model returned an empty image.' };
+      return { ok: true, data: { body, contentType: 'image/jpeg' }, raw: { bytes: body.byteLength } };
+    }
+
+    if (response instanceof ReadableStream) {
+      const body = await new Response(response).arrayBuffer();
+      if (body.byteLength === 0) return { ok: false, error: 'The model returned an empty image.' };
+      return { ok: true, data: { body, contentType: 'image/png' }, raw: { bytes: body.byteLength } };
+    }
+
+    if (response instanceof ArrayBuffer) {
+      return { ok: true, data: { body: response, contentType: 'image/png' }, raw: { bytes: response.byteLength } };
+    }
+
+    if (response instanceof Uint8Array) {
+      const body = response.buffer.slice(
+        response.byteOffset,
+        response.byteOffset + response.byteLength,
+      ) as ArrayBuffer;
+      return { ok: true, data: { body, contentType: 'image/png' }, raw: { bytes: body.byteLength } };
+    }
+
+    return { ok: false, error: 'The model returned an image in a shape we do not handle.' };
+  } catch (error) {
+    return { ok: false, error: String(error) };
+  }
 }

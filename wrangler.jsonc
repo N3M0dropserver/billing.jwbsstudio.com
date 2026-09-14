@@ -69,12 +69,19 @@
         "MAIL_PROVIDER": "cloudflare",
         "MAIL_FROM": "invoices@jwbsstudio.com",
         "MAIL_FROM_NAME": "JWBS Studio",
-        // Generated demo sites are served from this Worker on any subdomain
-        // of this host. Point a proxied wildcard at the app and add a
-        // matching Worker route:
-        //   *.demo.jwbsstudio.com  CNAME  billing.jwbsstudio.com  (proxied)
-        //   route: *.demo.jwbsstudio.com/*
-        "DEMO_HOST": "demo.jwbsstudio.com"
+        // Generated demo sites are served from this Worker. `*` is where the
+        // business's label goes, and the value is written the same way as the
+        // Worker route. A suffix pattern keeps each demo one label below the
+        // apex, which is as deep as Cloudflare's free Universal SSL reaches,
+        // while a route of `*-demo.…` cannot match `www`.
+        //
+        //   *.jwbsstudio.com  CNAME  billing.jwbsstudio.com  (proxied)
+        //   route: *-demo.jwbsstudio.com/*
+        //
+        // The DNS wildcard is necessarily broader than the route — a wildcard
+        // record is a whole label — but explicit records win over it, so the
+        // rest of the zone is unaffected. See README.
+        "DEMO_HOST": "*-demo.jwbsstudio.com"
     },
     // Cloudflare Email Service. The sending domain must use Cloudflare DNS and
     // be onboarded to Email Service before this can reach arbitrary recipients

@@ -77,7 +77,9 @@ describe('generated pages work at either address', () => {
     region: 'Wellington',
     contact: { email: 'hello@wells.test', phone: '', address: '' },
     socials: [],
-    images: ['images/00.jpg'],
+    images: [
+      { src: 'images/00.jpg', alt: '', generated: false, sectionId: 'hero', role: 'hero' as const },
+    ],
     openingHours: [],
     designerName: 'JWBS Studio',
     designerUrl: 'https://jwbsstudio.com',

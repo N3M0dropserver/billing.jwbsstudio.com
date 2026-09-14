@@ -338,6 +338,16 @@ objective must match what this business actually needs: conversion, awareness or
 Sections: use between 4 and 7. Each has a type from: hero, intro, services, gallery, testimonials, about, location, contact, cta, stats, process.
 Use testimonials ONLY if their existing site has real quotes you can carry over.
 
+WRITE A PAGE, NOT AN OUTLINE. A section with a heading and one short sentence under it is the most common way this goes wrong, and it produces something that reads like a template with a name dropped in. Specifically:
+
+- The hero heading is a proposition, not the business name. The name is already in the header and the footer. "Goodco" is a failure; "Roasted in Marrickville, delivered Tuesday" is not.
+- Every hero has a body: one or two sentences saying what they do and for whom.
+- intro and about sections carry at least two full sentences of real copy drawn from their material. Separate paragraphs with a blank line.
+- services, process and stats sections carry at least three items, and every item has a body, not just a title. An item with an empty body is worse than no item.
+- Name the specific things their own copy names — the suburb, the trade, the products, the years they list, the way they work. Specificity is the whole difference between a concept that reads as written for them and one that reads as generated.
+
+imageHint is not optional and is not decoration. Write, for every section that could carry a photograph, the single picture that belongs there, described as you would to a photographer: the subject, the framing, and what it has to show. Where the business has no photography of its own, this is what gets made instead, so a vague hint produces a vague picture.
+
 Return ONLY JSON:
 {
  "summary":"one line on what this site is for",
@@ -453,6 +463,28 @@ export function normalisePlan(raw: Record<string, unknown>, input: PlanInput): D
     });
 
     if (sections.length >= 9) break;
+  }
+
+  /**
+   * A hero headline that is just the business name is the failure mode the
+   * prompt names first, and the model still produces it often enough to be
+   * worth catching. The name sits in the header and the footer already;
+   * repeating it as the one line on the first screen wastes the only place a
+   * stranger is certain to read.
+   */
+  const hero = sections.find((section) => section.type === 'hero');
+  if (hero) {
+    const heading = hero.heading.trim().toLowerCase();
+    const name = input.businessName.trim().toLowerCase();
+    if (heading === name || heading === '') {
+      hero.heading = input.angle
+        ? input.angle.replace(/\.$/, '').slice(0, 120)
+        : `${input.niche} in ${input.region}`;
+      hero.subheading = hero.subheading || input.businessName;
+      hero.notes = [hero.notes, 'Headline replaced: the model returned the business name.']
+        .filter(Boolean)
+        .join(' ');
+    }
   }
 
   const objective = str(raw.objective, 20);

@@ -4,7 +4,7 @@ import Card from '~/components/ui/Card.astro';
 import { and, eq } from 'drizzle-orm';
 import { db } from '~/lib/env';
 import { brandAssets, brandKits } from '~/lib/db/schema';
-import { briefFromKit, DEFAULT_SECTION_ORDER, FALLBACK_BRIEF } from '~/lib/growth/brief';
+import { DEFAULT_SECTION_ORDER, FALLBACK_BRIEF, TOKEN_OPTIONS, briefFromKit } from '~/lib/growth/brief';
 
 const user = Astro.locals.user!;
 const id = Astro.params.id!;
@@ -32,6 +32,23 @@ const saved = Astro.url.searchParams.get('saved');
 const referencesText = brief.references.map((r) => (r.note ? `${r.url} — ${r.note}` : r.url)).join('\n');
 const typographyText = brief.typography.map((t) => `${t.role}: ${t.family}${t.url ? ` ${t.url}` : ''}`).join('\n');
 const paletteText = brief.palette.map((c) => `${c.name} ${c.value} ${c.role}`).join('\n');
+/**
+ * The composition controls, in the order they matter to how a page reads.
+ *
+ * Labels rather than token names: "how a hero is composed" is a question a
+ * designer can answer without reading the renderer.
+ */
+const TOKEN_FIELDS = [
+  { key: 'hero', label: 'Hero treatment', hint: 'How the first screen is composed.' },
+  { key: 'density', label: 'Spacing', hint: 'How much air sections get.' },
+  { key: 'typeScale', label: 'Type scale', hint: 'How far headings are pushed against body text.' },
+  { key: 'rhythm', label: 'Section separation', hint: 'A hairline, an alternating tint, or space alone.' },
+  { key: 'radius', label: 'Corners', hint: 'Applies to cards and media frames.' },
+  { key: 'button', label: 'Buttons', hint: 'The shape of a call to action.' },
+  { key: 'imagery', label: 'Image framing', hint: 'How photographs are cut.' },
+  { key: 'accent', label: 'Labels', hint: 'Eyebrows: uppercase and tracked, or quiet.' },
+] as const;
+
 ---
 
 <AppLayout title={isNew ? 'New style direction' : kit!.name} subtitle="What every generated site is built from">
@@ -122,6 +139,29 @@ const paletteText = brief.palette.map((c) => `${c.name} ${c.value} ${c.role}`).j
           <input id="sectionOrder" name="sectionOrder" value={brief.sectionOrder.join(', ')} class="field font-mono text-xs" placeholder={DEFAULT_SECTION_ORDER.join(', ')} />
         </div>
       </div>
+    </Card>
+
+    <Card
+      title="Composition"
+      subtitle="How a page built from this kit is put together, not just what colour it is"
+    >
+      <div class="grid gap-3.5 sm:grid-cols-2">
+        {TOKEN_FIELDS.map(({ key, label, hint }) => (
+          <div>
+            <label for={`tokens.${key}`} class="mb-1.5 block text-sm font-medium">{label}</label>
+            <select id={`tokens.${key}`} name={`tokens.${key}`} class="field">
+              {TOKEN_OPTIONS[key].map((option) => (
+                <option value={option} selected={brief.tokens[key] === option}>{option}</option>
+              ))}
+            </select>
+            <p class="muted mt-1 text-xs">{hint}</p>
+          </div>
+        ))}
+      </div>
+      <p class="muted mt-3.5 text-xs leading-relaxed">
+        These are what stop every generated demo looking the same. The palette and typefaces
+        above decide what a page is painted in; these decide how it is built.
+      </p>
     </Card>
 
     <Card title="Screenshots and templates" subtitle="Images, PDFs, fonts or a zipped template, up to 8 MB each">

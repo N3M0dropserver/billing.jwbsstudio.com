@@ -208,8 +208,38 @@ egress range blocked.
 
 The model writes the *spec*; the generator writes the HTML. That split is
 deliberate: every string from the model is escaped before it reaches markup,
-and the layout, type scale and colour handling stay consistent across every
-demo because they are written once rather than re-improvised per prospect.
+and the layout, type scale and colour handling are written once rather than
+re-improvised per prospect.
+
+**Consistent is not the same as identical.** A brand kit carries composition
+tokens alongside its palette and typefaces — the hero treatment (split,
+stacked, editorial, full-bleed), spacing density, type scale, section rhythm,
+corner and button shape, and how photographs are framed. The stylesheet is a
+function of those tokens, so two kits produce pages that do not look like each
+other, and changing a kit changes every future demo built from it. They are a
+closed set of values rather than free CSS, because the renderer has to be able
+to guarantee the result still lays out properly at every width.
+
+#### Photography
+
+A concept with no pictures reads as a template with a name dropped in, and an
+empty demo was the normal case rather than the exception: the pipeline selects
+businesses whose current site is poor, and a poor site is usually poor at
+images too. So:
+
+- The crawler finds photography the way real sites actually publish it —
+  `srcset`, `<picture>` sources, lazy-loading `data-` attributes and CSS
+  background images, not just `<img src>`. Reading only `src` found nothing on
+  most Squarespace, Wix and WordPress themes.
+- Candidates are scored before anything is downloaded: how the image was
+  prepared, whether it has a written alt, its declared size, and what its path
+  suggests. Logos, badges, payment marks and icon-sized files are discarded.
+- **Their photography is always used first.** Generation only fills the frames
+  left over, is off by default, is capped per demo, and is billed per picture
+  against the campaign like any other model call.
+- Every generated picture is labelled *indicative* on the page, in its alt
+  text, in the ribbon at the top and in the exported project's README. A
+  concept sent to a stranger must never imply we photographed their premises.
 
 Each demo is produced twice:
 
@@ -278,14 +308,41 @@ openable. Which one goes in the outreach email is decided at build time and
 recorded on the demo, so a proposal can never contain a link that has never
 resolved.
 
-To move demos onto their own subdomains, add both of these once:
+`DEMO_HOST` is a **pattern**, and `*` is where the business's label goes:
 
 ```
-*.demo.jwbsstudio.com   CNAME   billing.jwbsstudio.com   (proxied)
-route: *.demo.jwbsstudio.com/*  →  this Worker
+DEMO_HOST=*-demo.jwbsstudio.com   →  wells-coffee-demo.jwbsstudio.com
+DEMO_HOST=demo.jwbsstudio.com     →  wells-coffee.demo.jwbsstudio.com
 ```
 
-`DEMO_HOST` in `wrangler.jsonc` must match. Then build a demo and press **Check
+A value with no `*` is read as `*.<value>`, so both spellings describe the same
+thing and an existing setting does not change meaning.
+
+The pattern exists because of the certificate, which is the part that catches
+people out. Cloudflare's free Universal SSL covers the zone apex and **one**
+label below it. `wells-coffee.demo.jwbsstudio.com` is two labels deep and is
+not covered, so the DNS record and the route can both be right and the browser
+still refuses the connection. A hyphenated label is one label deep — covered
+for nothing — while a route of `*-demo.jwbsstudio.com/*` still cannot match
+`www` or anything else on the zone.
+
+Then add both of these once, written exactly as the settings page shows them:
+
+```
+*.jwbsstudio.com        CNAME   billing.jwbsstudio.com   (proxied)
+route: *-demo.jwbsstudio.com/*  →  this Worker
+```
+
+> **The DNS record is broader than the route, and has to be.** A DNS wildcard
+> is a whole label: `*.jwbsstudio.com` is valid, `*-demo.jwbsstudio.com` is
+> not — it would be stored as a literal name matching nothing. The wildcard
+> above is the nearest record that covers the pattern. Explicit records win
+> over a wildcard, so `www`, `billing` and the rest of the zone are unaffected,
+> and the route still serves only the demos.
+>
+> If you would rather not have a zone-wide wildcard at all, set
+> `CLOUDFLARE_API_TOKEN` (Zone:DNS:Edit, nothing else) and `CLOUDFLARE_ZONE_ID`
+> and a proxied record is created per demo at build time instead. Then build a demo and press **Check
 hosting now** in Growth settings — it fetches a real demo and looks for the
 ribbon that only a generated page carries, so a route that is missing and a
 host that is empty are told apart rather than both reading as a 404. Once it

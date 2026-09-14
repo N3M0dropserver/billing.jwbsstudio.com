@@ -21,8 +21,17 @@ import { and, eq, lt, sql } from 'drizzle-orm';
 import type { Db } from '../db/index';
 import { aiCache, aiCalls } from '../db/schema';
 import { newId } from '../id';
-import { generate, generateJson, MODELS, type AiResult, type GenerateOptions } from './index';
-import { costMicrocents, estimateTokens } from './pricing';
+import {
+  generate,
+  generateImage,
+  generateJson,
+  MODELS,
+  type AiResult,
+  type GenerateOptions,
+  type GeneratedImage,
+  type ImageOptions,
+} from './index';
+import { costMicrocents, estimateTokens, imageCostMicrocents } from './pricing';
 
 export interface AiUsageContext {
   db: Db;
@@ -277,6 +286,65 @@ export async function trackedGenerateJson<T>(
   if (!text.ok) return text;
 
   return generateJson<T>(ai, withDefaults, text.data);
+}
+
+/**
+ * A tracked image call.
+ *
+ * Recorded like any other model call so image generation shows up in the
+ * spend chart next to the text that surrounds it — an unattended pipeline
+ * that quietly generates six pictures per prospect is exactly the kind of
+ * cost that should not be invisible.
+ *
+ * Not cached: the cache table holds text, and a run that wants the same
+ * picture twice is rare enough not to be worth storing megabytes for.
+ */
+export async function trackedGenerateImage(
+  ai: Ai,
+  options: ImageOptions,
+  ctx: AiUsageContext,
+): Promise<AiResult<GeneratedImage>> {
+  const model = options.model ?? MODELS.image;
+  const started = Date.now();
+  const result = await generateImage(ai, options);
+  const durationMs = Date.now() - started;
+
+  try {
+    const cost = imageCostMicrocents(model, result.ok ? 1 : 0);
+
+    await ctx.db.insert(aiCalls).values({
+      id: newId(),
+      userId: ctx.userId,
+      campaignId: ctx.campaignId ?? null,
+      prospectId: ctx.prospectId ?? null,
+      stage: ctx.stage ?? '',
+      operation: ctx.operation,
+      model,
+      // An image model bills per step and per tile, not per token. Leaving
+      // these at zero keeps the token columns honest; the cost column is
+      // where an image call actually shows up.
+      promptTokens: 0,
+      completionTokens: 0,
+      totalTokens: 0,
+      tokensMeasured: false,
+      costMicrocents: cost.microcents,
+      costConfident: cost.confident,
+      durationMs,
+      cached: false,
+      ok: result.ok,
+      error: result.ok ? '' : result.error.slice(0, 500),
+      requestHash: (await requestHash({
+        system: 'image',
+        prompt: options.prompt,
+        model,
+      })).slice(0, 16),
+      createdAt: new Date().toISOString(),
+    });
+  } catch {
+    // Observability must never be the thing that breaks the pipeline.
+  }
+
+  return result;
 }
 
 /**

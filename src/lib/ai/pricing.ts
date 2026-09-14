@@ -91,6 +91,46 @@ export function costMicrocents(
   };
 }
 
+/**
+ * Per-image rates for text-to-image models.
+ *
+ * Image models are billed per step per 512x512 tile rather than per token, so
+ * they cannot go through `MODEL_PRICING` — a token-based estimate for one
+ * would be wrong by orders of magnitude rather than by a rounding error.
+ *
+ * verify: every entry. These are derived from the neuron price above at the
+ * default step count this app uses, which is what makes them estimates.
+ */
+export const IMAGE_PRICING: Record<string, { centsPerImage: number; confident: boolean; note: string }> = {
+  '@cf/black-forest-labs/flux-1-schnell': {
+    centsPerImage: 0.14,
+    confident: false,
+    note: 'verify — derived from neuron pricing at four steps, 1024x1024',
+  },
+};
+
+export const UNKNOWN_IMAGE_PRICE = {
+  centsPerImage: 0.5,
+  confident: false,
+  note: 'verify — no rate recorded for this image model; a pessimistic placeholder',
+};
+
+export function imagePriceFor(model: string): { centsPerImage: number; confident: boolean; note: string } {
+  return IMAGE_PRICING[model] ?? UNKNOWN_IMAGE_PRICE;
+}
+
+/** Cost of generating `images` pictures, in microcents. */
+export function imageCostMicrocents(
+  model: string,
+  images: number,
+): { microcents: number; confident: boolean } {
+  const price = imagePriceFor(model);
+  return {
+    microcents: Math.round(price.centsPerImage * Math.max(0, images) * 1_000_000),
+    confident: price.confident,
+  };
+}
+
 /** Microcents as something a person reads. */
 export function formatCost(microcents: number): string {
   const cents = microcents / 1_000_000;

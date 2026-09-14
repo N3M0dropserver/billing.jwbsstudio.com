@@ -55,6 +55,7 @@ import {
 import { draftProposal, sendOutreach } from './proposal';
 import { renderDemoFiles, type DemoContext } from './render';
 import { renderAstroProject } from './project';
+import { assembleImagery, type SourceImage } from './imagery';
 import { allocateSubdomain, createDnsRecord, demoPublicUrl, publishDemo } from './publish';
 import { prospectPrefix, putObject } from './storage';
 
@@ -1094,7 +1095,11 @@ async function stageBuild(
 
   const brief = await resolveBrief(ctx, campaign);
   const settingsRow = await loadSettings(ctx, campaign.userId);
-  const demoHost = settingsRow.demoHost || 'demo.jwbsstudio.com';
+  // The saved setting wins; `DEMO_HOST` is the deployment's default for an
+  // account that has never opened the settings page. Falling back to a
+  // hardcoded host instead would publish demos somewhere the route does not
+  // cover, which looks exactly like a hosting failure.
+  const demoHost = settingsRow.demoHost || ctx.env.DEMO_HOST || 'demo.jwbsstudio.com';
 
   const { label, host } = await allocateSubdomain(prospect.businessName, demoHost, async (candidate) => {
     const rows = await ctx.db
@@ -1105,7 +1110,7 @@ async function stageBuild(
     return rows.length > 0;
   });
 
-  /* -- Their photography, copied into the demo -------------------- */
+  /* -- Photography: theirs first, generated to fill the gaps ------- */
 
   const imageRows = await ctx.db
     .select()
@@ -1113,17 +1118,67 @@ async function stageBuild(
     .where(and(eq(prospectArtifacts.prospectId, prospect.id), eq(prospectArtifacts.kind, 'image')))
     .limit(8);
 
-  const images: Array<{ path: string; body: ArrayBuffer; contentType: string }> = [];
-  for (const [index, row] of imageRows.entries()) {
+  const theirs: SourceImage[] = [];
+  for (const row of imageRows) {
     const object = await ctx.bucket.get(row.r2Key);
     if (!object) continue;
-    const extension = row.r2Key.split('.').pop() ?? 'jpg';
-    images.push({
-      path: `images/${String(index).padStart(2, '0')}.${extension}`,
+    theirs.push({
       body: await object.arrayBuffer(),
       contentType: row.contentType || 'image/jpeg',
+      sourceUrl: row.sourceUrl,
     });
   }
+
+  const draftForImagery: DesignPlanDraft = {
+    summary: plan.summary,
+    strategy: plan.strategy,
+    objective: plan.objective as DesignPlanDraft['objective'],
+    sections: parseJson<PlanSection[]>(plan.sections, []),
+    meta: parseJson<{ title: string; description: string }>(plan.meta, {
+      title: prospect.businessName,
+      description: '',
+    }),
+  };
+
+  /**
+   * Generating photography is the one stage that spends money per picture
+   * rather than per prospect, so it is off unless the campaign asked for it.
+   * A page with their own three photographs is always better than a page with
+   * three of ours.
+   */
+  const imagery = await assembleImagery(
+    ctx.env.AI,
+    {
+      plan: draftForImagery,
+      brief,
+      subject: {
+        businessName: prospect.businessName,
+        niche: campaign.niche,
+        region: campaign.region,
+      },
+      theirs,
+      generate: settingsRow.generateDemoImages,
+      maxGenerated: settingsRow.maxGeneratedImages,
+    },
+    {
+      db: ctx.db,
+      userId: campaign.userId,
+      operation: 'imagery',
+      stage: 'build',
+      campaignId: campaign.id,
+      prospectId: prospect.id,
+    },
+  );
+
+  for (const note of imagery.notes) {
+    await logEvent(ctx, campaign, 'build', 'info', note, {}, prospect.id);
+  }
+
+  const images = imagery.images.map((image) => ({
+    path: image.path,
+    body: image.body,
+    contentType: image.contentType,
+  }));
 
   const context: DemoContext = {
     businessName: prospect.businessName,
@@ -1131,7 +1186,13 @@ async function stageBuild(
     region: campaign.region,
     contact: { email: prospect.email, phone: prospect.phone, address: prospect.address },
     socials: parseJson<Array<{ platform: string; url: string }>>(prospect.socialLinks, []),
-    images: images.map((image) => image.path),
+    images: imagery.images.map((image) => ({
+      src: image.path,
+      alt: image.alt,
+      generated: image.generated,
+      sectionId: image.sectionId,
+      role: image.role,
+    })),
     openingHours: parseJson<string[]>(
       JSON.stringify(readFindings(prospect).openingHours ?? []),
       [],
@@ -1140,13 +1201,7 @@ async function stageBuild(
     designerUrl: settingsRow.website || ctx.appUrl,
   };
 
-  const draft: DesignPlanDraft = {
-    summary: plan.summary,
-    strategy: plan.strategy,
-    objective: plan.objective as DesignPlanDraft['objective'],
-    sections: parseJson<PlanSection[]>(plan.sections, []),
-    meta: parseJson<{ title: string; description: string }>(plan.meta, { title: prospect.businessName, description: '' }),
-  };
+  const draft = draftForImagery;
 
   const demoId = newId();
   await ctx.db.insert(demoSites).values({

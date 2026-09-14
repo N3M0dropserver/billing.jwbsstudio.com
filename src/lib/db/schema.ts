@@ -234,6 +234,17 @@ export const settings = sqliteTable('settings', {
   demoHostVerified: integer('demo_host_verified', { mode: 'boolean' }).notNull().default(false),
   demoHostCheckedAt: text('demo_host_checked_at'),
   demoHostCheckResult: text('demo_host_check_result').notNull().default(''),
+  /**
+   * Whether a demo may use generated photography where the business has none.
+   *
+   * Off by default, and deliberately so: it costs money per picture, and a
+   * concept illustrated with photographs that are not the business's own has
+   * to say so on the page. On, it is the difference between a demo that shows
+   * the work and a demo that is a page of type.
+   */
+  generateDemoImages: integer('generate_demo_images', { mode: 'boolean' }).notNull().default(false),
+  /** Hard ceiling on generated pictures per demo. */
+  maxGeneratedImages: integer('max_generated_images').notNull().default(3),
   /** Hours an identical AI request may be served from cache. 0 disables it. */
   aiCacheTtlHours: integer('ai_cache_ttl_hours').notNull().default(72),
   /**
@@ -934,6 +945,15 @@ export const brandKits = sqliteTable(
     palette: text('palette').notNull().default('[]'),
     /** JSON `string[]` — preferred section order for a generated page. */
     sectionOrder: text('section_order').notNull().default('[]'),
+    /**
+     * JSON `{ radius, density, typeScale, hero, rhythm, imagery, accent,
+     * button }` — the layout half of the kit.
+     *
+     * Palette and typography alone cannot make two kits produce pages that
+     * look meaningfully different; these are the knobs that change the
+     * composition rather than the paint. Empty means the defaults.
+     */
+    designTokens: text('design_tokens').notNull().default('{}'),
 
     /** The editable art-direction block handed to the model verbatim. */
     prompt: text('prompt').notNull().default(''),

@@ -8,6 +8,12 @@ import { brandKits } from '~/lib/db/schema';
 import { getSettings } from '~/lib/queries/settings';
 import { resolvePolicy } from '~/lib/growth/policy';
 import { PROVIDERS } from '~/lib/growth/discovery/index';
+import {
+  demoDnsRecord,
+  demoHostFor,
+  demoHostPattern,
+  demoRoute,
+} from '~/lib/growth/publish';
 
 const user = Astro.locals.user!;
 const database = db();
@@ -21,6 +27,21 @@ const policy = resolvePolicy(null, settings.growthPolicy);
 const saved = Astro.url.searchParams.get('saved');
 const error = Astro.url.searchParams.get('error');
 const env = bindings();
+/**
+ * What the demo host setting works out to, shown rather than described.
+ *
+ * `demoDepth` is how many labels below the registrable domain a demo lands.
+ * Two or more is the case Universal SSL does not cover, and is the whole
+ * reason the setting accepts a pattern.
+ */
+const demoPattern = demoHostPattern(settings.demoHost);
+const demoRecord = demoDnsRecord(settings.demoHost);
+const exampleHost = demoHostFor('wells-coffee', settings.demoHost);
+const appHost = new URL(env.APP_URL ?? 'https://billing.jwbsstudio.com').hostname;
+// Registrable domain is assumed to be the last two labels, which is true for
+// this zone and wrong for a .co.nz — so this only ever softens the wording.
+const demoDepth = Math.max(1, exampleHost.split('.').length - 2);
+
 ---
 
 <AppLayout title="Growth defaults" subtitle="What every new run starts from">
@@ -136,8 +157,32 @@ const env = bindings();
             never contains a dead link.
           </p>
           <p>To move them onto their own subdomain, add both of these once:</p>
-          <pre class="overflow-x-auto rounded-lg p-3 text-[11px]" style="background: var(--surface-sunken)">{`DNS:    *.${settings.demoHost}   CNAME   ${new URL(env.APP_URL ?? 'https://billing.jwbsstudio.com').hostname}   (proxied)
-Route:  *.${settings.demoHost}/*   ->   this Worker`}</pre>
+          <pre class="overflow-x-auto rounded-lg p-3 text-[11px]" style="background: var(--surface-sunken)">{`DNS:    ${demoRecord.name}   CNAME   ${appHost}   (proxied)
+Route:  ${demoRoute(settings.demoHost)}   ->   this Worker`}</pre>
+          {!demoRecord.exact && (
+            <p>
+              <strong style="color: var(--text)">The DNS record is broader than the route.</strong>
+              A DNS wildcard is a whole label, so <code>{demoPattern}</code> cannot itself be a
+              record — it would be stored as a literal name that matches nothing. The record above
+              is the nearest one that covers it. Existing records win over a wildcard, so
+              <code>www</code> and the rest of the zone are unaffected, and the route still serves
+              only the demos. If you would rather not have the wildcard at all, set
+              <code>CLOUDFLARE_API_TOKEN</code> and <code>CLOUDFLARE_ZONE_ID</code> and a record is
+              created per demo instead.
+            </p>
+          )}
+          <p>
+            <strong style="color: var(--text)">Check the certificate as well as the DNS.</strong>
+            Cloudflare's free Universal SSL covers the zone apex and one label below it. A demo at
+            <code>{exampleHost}</code> is {demoDepth} label{demoDepth === 1 ? '' : 's'} deep, so it
+            is {demoDepth > 1 ? 'not covered' : 'covered'}.
+            {demoDepth > 1 && (
+              <> Either add a <code>{demoRecord.name}</code> certificate (Advanced Certificate
+              Manager, or Total TLS), or use a suffix pattern such as
+              <code>{`*-demo.${settings.demoHost.split('.').slice(-2).join('.')}`}</code>, which
+              keeps every demo one label deep and cannot match <code>www</code>.</>
+            )}
+          </p>
           <p>Then build at least one demo and run the check — it needs a real page to fetch.</p>
         </div>
       )}
@@ -177,6 +222,44 @@ Route:  *.${settings.demoHost}/*   ->   this Worker`}</pre>
           <a href="/growth/ai" class="mt-2 inline-block text-sm" style="color: var(--color-brand-600)">See what it is costing →</a>
         </div>
       </div>
+    </Card>
+
+    <Card
+      title="Demo photography"
+      subtitle="What to do when a prospect has no usable pictures of their own"
+    >
+      <label class="flex items-start gap-3">
+        <input
+          type="checkbox"
+          name="generateDemoImages"
+          value="yes"
+          checked={settings.generateDemoImages}
+          class="mt-1"
+        />
+        <span class="text-sm leading-relaxed">
+          <span class="font-medium">Generate placeholder photography</span>
+          <span class="muted mt-1 block text-xs leading-relaxed">
+            Their own photographs are always used first. This only fills the frames left over —
+            which, on the kind of site this pipeline selects for, is usually most of them. A demo
+            with no pictures at all is the single thing that makes a concept read as a template.
+          </span>
+        </span>
+      </label>
+
+      <div class="mt-3.5 max-w-xs">
+        <label for="maxGeneratedImages" class="mb-1.5 block text-sm font-medium">At most</label>
+        <div class="flex items-center gap-2">
+          <input id="maxGeneratedImages" name="maxGeneratedImages" type="number" min="0" max="6" value={settings.maxGeneratedImages} class="field max-w-24" />
+          <span class="muted text-sm">per demo</span>
+        </div>
+      </div>
+
+      <p class="muted mt-3.5 text-xs leading-relaxed">
+        Generated pictures are billed per image, and every one is labelled
+        <strong style="color: var(--text)">“indicative”</strong> on the page, in its alt text, and
+        in the ribbon at the top. A concept sent to a stranger must never imply we photographed
+        their premises.
+      </p>
     </Card>
 
     <button class="rounded-lg px-4 py-2.5 text-sm font-medium text-white" style="background: var(--color-brand-600)">Save</button>
