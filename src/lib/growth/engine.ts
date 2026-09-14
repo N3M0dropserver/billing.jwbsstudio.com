@@ -699,6 +699,29 @@ async function assessProspect(
   const fitScore = qualification?.ok ? qualification.data.fitScore : 0;
   const skip = overCeiling || (qualification?.ok === true && qualification.data.skip);
 
+  /**
+   * A failed qualification is not a judgement of zero, and must not read like
+   * one.
+   *
+   * `fit 0` on every line of a run log looks like the model being harsh. It is
+   * indistinguishable, in the log, from the model call failing for every
+   * prospect — and when that happens the shortlist falls back to ranking on
+   * need alone, which selects exactly the businesses with no website and
+   * therefore nothing to build a page from. Say so, loudly, once per prospect.
+   */
+  if (qualification && !qualification.ok) {
+    await logEvent(
+      ctx,
+      campaign,
+      'shortlist',
+      'warn',
+      `Could not judge fit for ${prospect.businessName} (${qualification.error}). ` +
+        'Scored 0, which ranks it on need alone — check the AI page if this is happening to every prospect.',
+      {},
+      prospect.id,
+    );
+  }
+
   const reasoning = overCeiling
     ? scale.summary
     : qualification?.ok
@@ -911,6 +934,17 @@ async function stagePlan(
     angle: String(findings.angle ?? ''),
     siteContent: String(findings.siteContent ?? ''),
     contact: { email: prospect.email, phone: prospect.phone, address: prospect.address },
+    facts: {
+      category: String(findings.context ?? ''),
+      address: prospect.address,
+      openingHours: Array.isArray(findings.openingHours)
+        ? (findings.openingHours as unknown[]).map(String).slice(0, 7)
+        : [],
+      rating: prospect.rating ?? null,
+      reviewCount: prospect.reviewCount ?? 0,
+      reviewSummary: prospect.reviewSummary ?? '',
+      hasWebsite: Boolean(prospect.website),
+    },
     usage: usageFor(ctx, campaign, 'plan', 'plan', prospect.id),
   };
 
@@ -1173,6 +1207,28 @@ async function stageBuild(
 
   for (const note of imagery.notes) {
     await logEvent(ctx, campaign, 'build', 'info', note, {}, prospect.id);
+  }
+
+  /**
+   * A demo with no pictures at all is the one outcome worth interrupting for.
+   *
+   * It is also invisible otherwise: the build succeeds, the link works, and
+   * nothing in the log says the page is a wall of type until someone opens it.
+   */
+  if (imagery.images.length === 0) {
+    await logEvent(
+      ctx,
+      campaign,
+      'build',
+      'warn',
+      `${prospect.businessName} has no photography — they published none we could use` +
+        (settingsRow.generateDemoImages
+          ? ' and generation produced none either.'
+          : ', and generating placeholders is switched off in Growth settings. ' +
+            'The demo is text only.'),
+      {},
+      prospect.id,
+    );
   }
 
   const images = imagery.images.map((image) => ({
