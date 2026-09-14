@@ -1,0 +1,146 @@
+---
+import AppLayout from '~/layouts/AppLayout.astro';
+import Card from '~/components/ui/Card.astro';
+import EmptyState from '~/components/ui/EmptyState.astro';
+import { bindings, db } from '~/lib/env';
+import { recentResearch } from '~/lib/agent/research';
+import { browserAvailable, loadAgentSettings } from '~/lib/agent/context';
+
+const user = Astro.locals.user!;
+const database = db();
+const env = bindings();
+
+const [runs, agentSettings] = await Promise.all([
+  recentResearch(database, user.id, 25),
+  loadAgentSettings(database, user.id),
+]);
+
+const error = Astro.url.searchParams.get('error');
+const hasBrowser = browserAvailable(env);
+const hasSearch = Boolean(env.SEARCH_PROVIDER && env.SEARCH_PROVIDER !== 'none' && env.SEARCH_API_KEY);
+
+const STATUS_COLOURS: Record<string, string> = {
+  queued: 'var(--text-muted)',
+  running: 'var(--color-brand-600)',
+  complete: 'var(--color-paid)',
+  failed: 'var(--color-overdue)',
+  cancelled: 'var(--text-muted)',
+};
+---
+
+<AppLayout title="Research" subtitle="Send the agent to go and find something out">
+  <div slot="actions" class="flex gap-2">
+    <a href="/growth/memory" class="muted rounded-lg border px-3 py-2 text-sm" style="border-color: var(--border)">Memory</a>
+    <a href="/growth/skills" class="muted rounded-lg border px-3 py-2 text-sm" style="border-color: var(--border)">Skills</a>
+  </div>
+
+  <div class="grid gap-4 lg:grid-cols-3">
+    <div class="space-y-4 lg:col-span-2">
+      <Card title="Ask something">
+        {error && (
+          <p class="mb-3 rounded-lg px-3 py-2 text-sm" style="background: color-mix(in oklch, var(--color-overdue) 12%, transparent); color: var(--color-overdue)" role="alert">{error}</p>
+        )}
+
+        <form method="post" action="/api/agent/research" class="space-y-3.5">
+          <div>
+            <label for="question" class="mb-1.5 block text-sm font-medium">The question</label>
+            <textarea id="question" name="question" rows="3" class="field"
+              placeholder="What do the physiotherapy clinics in Lower Hutt have on their sites, and what do they all get wrong?"></textarea>
+            <p class="muted mt-1 text-xs leading-relaxed">
+              Open-ended is fine. The agent searches, opens pages and reads them, checks what it
+              already knows, and writes down anything that would be useful next time.
+            </p>
+          </div>
+
+          <div class="grid gap-3.5 sm:grid-cols-3">
+            <div class="sm:col-span-2">
+              <label for="subject" class="mb-1.5 block text-sm font-medium">Starting point</label>
+              <input id="subject" name="subject" class="field" placeholder="A business, a site, a trade and a town. Optional." />
+            </div>
+            <div>
+              <label for="stepBudget" class="mb-1.5 block text-sm font-medium">Tool calls</label>
+              <input id="stepBudget" name="stepBudget" type="number" min="1" max="24" value={agentSettings.stepBudget} class="field" />
+            </div>
+          </div>
+
+          <button class="rounded-lg px-4 py-2.5 text-sm font-medium text-white" style="background: var(--color-brand-600)">
+            Go and find out
+          </button>
+        </form>
+      </Card>
+
+      <Card title="Asked before" subtitle={`${runs.length} task${runs.length === 1 ? '' : 's'}`}>
+        {runs.length === 0 ? (
+          <EmptyState
+            title="Nothing asked yet"
+            description="Research runs on the same tools, memory and skills the campaign pipeline uses, so anything learned here turns up in the next run."
+          />
+        ) : (
+          <ul class="divide-y" style="border-color: var(--border)">
+            {runs.map((run) => (
+              <li class="py-3 first:pt-0 last:pb-0">
+                <a href={`/growth/research/${run.id}`} class="flex items-start justify-between gap-4 hover:opacity-80">
+                  <div class="min-w-0">
+                    <p class="truncate text-sm font-medium">{run.question}</p>
+                    <p class="muted mt-0.5 text-xs">
+                      {run.origin === 'user' ? 'You asked' : `Asked by the ${run.origin} stage`}
+                      {run.subject && ` · ${run.subject.slice(0, 60)}`}
+                      {run.stepsUsed > 0 && ` · ${run.stepsUsed} tool calls`}
+                    </p>
+                  </div>
+                  <span
+                    class="shrink-0 rounded-full px-2.5 py-0.5 text-xs font-medium"
+                    style={`color: ${STATUS_COLOURS[run.status]}; background: color-mix(in oklch, ${STATUS_COLOURS[run.status]} 12%, transparent)`}
+                  >{run.status}</span>
+                </a>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Card>
+    </div>
+
+    <div class="space-y-4">
+      <Card title="What it can reach">
+        <dl class="space-y-3 text-sm">
+          <div>
+            <dt class="font-medium">Reading pages</dt>
+            <dd class="muted text-xs leading-relaxed">
+              Always available over plain fetch.
+              {hasBrowser
+                ? ' A real browser is configured, so client-rendered sites read correctly and screenshots work.'
+                : ' No browser is configured, so sites that draw themselves with JavaScript will look empty. Set CLOUDFLARE_ACCOUNT_ID and a token with the Browser Rendering permission.'}
+            </dd>
+          </div>
+          <div>
+            <dt class="font-medium">Searching</dt>
+            <dd class="muted text-xs leading-relaxed">
+              {hasSearch
+                ? `Web search is on, via ${env.SEARCH_PROVIDER}.`
+                : 'No web search provider, so searches fall back to Wikipedia only. Set SEARCH_PROVIDER and SEARCH_API_KEY for the real thing.'}
+            </dd>
+          </div>
+          <div>
+            <dt class="font-medium">Memory</dt>
+            <dd class="muted text-xs leading-relaxed">
+              {agentSettings.memoryEnabled
+                ? 'On. It checks what it knows before looking, and writes down what it learns.'
+                : 'Off in settings, so every task starts from nothing.'}
+            </dd>
+          </div>
+          <div>
+            <dt class="font-medium">Writing its own skills</dt>
+            <dd class="muted text-xs leading-relaxed">
+              {agentSettings.selfImprove === 'off'
+                ? 'Off.'
+                : agentSettings.selfImprove === 'auto'
+                  ? 'On, and its edits take effect immediately.'
+                  : 'It may propose skills; nothing loads until you approve it.'}
+            </dd>
+          </div>
+        </dl>
+        <a href="/growth/settings" class="mt-3 inline-block text-sm" style="color: var(--color-brand-600)">Change any of this →</a>
+      </Card>
+    </div>
+  </div>
+</AppLayout>

@@ -29,10 +29,13 @@
 import { Agent, getAgentByName, routeAgentRequest } from 'agents';
 import { eq } from 'drizzle-orm';
 import { getDb } from '../../../src/lib/db/index';
-import { settings } from '../../../src/lib/db/schema';
+import { agentResearch, settings } from '../../../src/lib/db/schema';
 import { describeError } from '../../../src/lib/errors';
 import { loadPromptOverrides } from '../../../src/lib/queries/prompts';
 import type { PromptOverrides } from '../../../src/lib/growth/prompts';
+import { loadAgentSettings, type AgentSettingsView } from '../../../src/lib/agent/context';
+import { loadResearch, runResearch } from '../../../src/lib/agent/research';
+import type { LoopStep } from '../../../src/lib/agent/loop';
 import {
   decideGate,
   loadCampaign,
@@ -61,6 +64,7 @@ export interface CampaignState {
 interface RuntimeSettings {
   cacheTtlHours: number;
   prompts: PromptOverrides;
+  agent?: AgentSettingsView;
 }
 
 /** How long to wait before the next tick while a run is active. */
@@ -96,15 +100,17 @@ export class CampaignAgent extends Agent<Env, CampaignState> {
       appUrl: this.env.APP_URL || 'https://billing.jwbsstudio.com',
       aiCacheTtlHours: runtime?.cacheTtlHours,
       prompts: runtime?.prompts,
+      agent: runtime?.agent,
     };
   }
 
   /**
    * What the user has set, read once per tick rather than per call.
    *
-   * A tick makes several model calls and they all want the same cache window
-   * and the same edited prompts; reading each time would be two D1 round
-   * trips for values that cannot change mid-tick.
+   * A tick makes several model calls and touches several helpers, and they
+   * all want the same cache window, the same edited prompts and the same
+   * agent permissions. None of it can change mid-tick, so this is one round
+   * of reads instead of a dozen.
    */
   private async runtimeSettings(): Promise<RuntimeSettings> {
     if (!this.state.userId) return { cacheTtlHours: 0, prompts: {} };
@@ -123,7 +129,12 @@ export class CampaignAgent extends Agent<Env, CampaignState> {
       cacheTtlHours = 0;
     }
 
-    return { cacheTtlHours, prompts: await loadPromptOverrides(db, this.state.userId) };
+    const [prompts, agent] = await Promise.all([
+      loadPromptOverrides(db, this.state.userId),
+      loadAgentSettings(db, this.state.userId).catch(() => undefined),
+    ]);
+
+    return { cacheTtlHours, prompts, agent };
   }
 
   private note(message: string): Array<{ at: string; message: string }> {
@@ -293,6 +304,131 @@ export class CampaignAgent extends Agent<Env, CampaignState> {
     if (request.method === 'GET') {
       return Response.json(this.state);
     }
+    return new Response('Use the RPC methods or a WebSocket.', { status: 405 });
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* The research agent                                                  */
+/* ------------------------------------------------------------------ */
+
+export interface ResearchState {
+  researchId: string;
+  userId: string;
+  status: 'idle' | 'running' | 'complete' | 'failed';
+  /** The transcript as it arrives, for a page that is watching. */
+  recent: Array<{ at: string; kind: string; tool: string; message: string }>;
+  steps: number;
+  error: string;
+}
+
+/**
+ * One Durable Object per research task.
+ *
+ * A separate class from `CampaignAgent` rather than another method on it,
+ * because the two have genuinely different shapes: a campaign is a long state
+ * machine that ticks for hours and must survive anything, while a research
+ * task is one bounded loop that either answers or does not. Sharing an object
+ * would mean a research question queueing behind a campaign's tick for no
+ * reason at all.
+ *
+ * What they do share is everything that matters: the same tools, the same
+ * memory, the same skills. This class is only the durability around them.
+ */
+export class ResearchAgent extends Agent<Env, ResearchState> {
+  initialState: ResearchState = {
+    researchId: '',
+    userId: '',
+    status: 'idle',
+    recent: [],
+    steps: 0,
+    error: '',
+  };
+
+  /** Start a queued task. Idempotent, so a double-click starts one run. */
+  async begin(researchId: string, userId: string): Promise<ResearchState> {
+    if (this.state.researchId === researchId && this.state.status === 'running') {
+      return this.state;
+    }
+
+    this.setState({
+      ...this.initialState,
+      researchId,
+      userId,
+      status: 'running',
+      recent: [{ at: new Date().toISOString(), kind: 'info', tool: '', message: 'Starting.' }],
+    });
+
+    await this.schedule(0, 'work', { researchId });
+    return this.state;
+  }
+
+  async work(payload: { researchId: string }): Promise<void> {
+    const researchId = payload?.researchId || this.state.researchId;
+    if (!researchId) return;
+
+    const db = getDb(this.env.DB);
+
+    try {
+      const finished = await runResearch({
+        environment: {
+          db,
+          ai: this.env.AI,
+          bucket: this.env.FILES,
+          env: this.env,
+          appUrl: this.env.APP_URL || 'https://billing.jwbsstudio.com',
+        },
+        researchId,
+        onProgress: (step) => {
+          this.setState({
+            ...this.state,
+            steps: this.state.steps + 1,
+            recent: this.note(step),
+          });
+        },
+      });
+
+      this.setState({
+        ...this.state,
+        status: finished?.status === 'complete' ? 'complete' : 'failed',
+        error: finished?.error ?? '',
+      });
+    } catch (error) {
+      const message = String(error);
+      this.setState({ ...this.state, status: 'failed', error: message.slice(0, 1000) });
+
+      // The row is what the page reads; leaving it on `running` would show a
+      // task that never finishes rather than one that failed.
+      const research = await loadResearch(db, researchId).catch(() => null);
+      if (research && research.status === 'running') {
+        await db
+          .update(agentResearch)
+          .set({
+            status: 'failed',
+            error: message.slice(0, 1000),
+            completedAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          })
+          .where(eq(agentResearch.id, researchId))
+          .catch(() => {});
+      }
+    }
+  }
+
+  private note(step: LoopStep): ResearchState['recent'] {
+    return [
+      ...this.state.recent.slice(-30),
+      {
+        at: new Date().toISOString(),
+        kind: step.kind,
+        tool: step.tool,
+        message: step.output.slice(0, 300),
+      },
+    ];
+  }
+
+  async onRequest(request: Request): Promise<Response> {
+    if (request.method === 'GET') return Response.json(this.state);
     return new Response('Use the RPC methods or a WebSocket.', { status: 405 });
   }
 }

@@ -2,34 +2,41 @@
 /**
  * The section's own navigation.
  *
- * Everything that steers a run — the instructions, the style directions, the
- * defaults, what it is costing — lived only in the action row on the Growth
- * index, which wraps off the side of a phone and reads as four buttons about
- * the page you are already on. A run producing pages you do not like is a run
- * you should be able to turn something on, and that means the things you turn
- * have to be visible from wherever you noticed.
+ * Everything that steers a run — what the agent knows, what it remembers, what
+ * it has looked up, the defaults, what it is costing — used to live in the
+ * action row on the Growth index: seven buttons that wrap off the side of a
+ * phone and read as being about the page you are already on. A run producing
+ * pages you do not like is a run you should be able to turn something on, and
+ * that means the things you turn have to be visible from wherever you noticed.
+ *
+ * `proposedSkills` is the one number that belongs in navigation rather than on
+ * a page. A skill the agent wrote for itself does nothing until it is
+ * approved, so an unread one is work waiting, not a notification.
  */
-const { current } = Astro.props as { current: string };
+const { current, proposedSkills = 0 } = Astro.props as {
+  current: string;
+  proposedSkills?: number;
+};
 
 const LINKS = [
   { href: '/growth', label: 'Runs', key: 'runs' },
   { href: '/growth/prompts', label: 'Instructions', key: 'prompts' },
+  { href: '/growth/skills', label: 'Skills', key: 'skills', badge: proposedSkills },
+  { href: '/growth/memory', label: 'Memory', key: 'memory' },
+  { href: '/growth/research', label: 'Research', key: 'research' },
   { href: '/growth/brand', label: 'Style directions', key: 'brand' },
   { href: '/growth/settings', label: 'Defaults', key: 'settings' },
   { href: '/growth/ai', label: 'AI usage', key: 'ai' },
 ];
 ---
 
-<nav
-  class="-mx-1 mb-4 flex gap-1 overflow-x-auto pb-1"
-  aria-label="Growth"
->
+<nav class="-mx-1 mb-4 flex gap-1 overflow-x-auto pb-1" aria-label="Growth">
   {
     LINKS.map((link) => (
       <a
         href={link.href}
         aria-current={link.key === current ? 'page' : undefined}
-        class="shrink-0 rounded-lg border px-3 py-1.5 text-sm whitespace-nowrap"
+        class="flex shrink-0 items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm whitespace-nowrap"
         style={
           link.key === current
             ? 'border-color: transparent; background: var(--color-brand-600); color: #fff'
@@ -37,6 +44,18 @@ const LINKS = [
         }
       >
         {link.label}
+        {!!link.badge && link.badge > 0 && (
+          <span
+            class="rounded-full px-1.5 text-xs"
+            style={
+              link.key === current
+                ? 'background: rgba(255,255,255,0.25); color: #fff'
+                : 'background: color-mix(in oklch, var(--color-owing) 18%, transparent); color: var(--color-owing)'
+            }
+          >
+            {link.badge}
+          </span>
+        )}
       </a>
     ))
   }

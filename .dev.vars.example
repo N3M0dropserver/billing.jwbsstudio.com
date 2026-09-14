@@ -34,3 +34,14 @@ CLOUDFLARE_ZONE_ID=""
 # coverage on top. "brave" or "serper".
 SEARCH_PROVIDER="none"
 SEARCH_API_KEY=""
+
+# Browser Rendering, so the agent can read pages that draw themselves with
+# JavaScript, take screenshots and pull elements out by selector. The account
+# id is on any zone's overview page. The token needs the Browser Rendering
+# permission; CLOUDFLARE_API_TOKEN above is used when it carries that too, and
+# BROWSER_RENDERING_TOKEN overrides it when you would rather keep them apart.
+#
+# Without these the agent still browses — it just uses plain fetch, which
+# misses the content on client-rendered sites and cannot screenshot anything.
+CLOUDFLARE_ACCOUNT_ID=""
+BROWSER_RENDERING_TOKEN=""

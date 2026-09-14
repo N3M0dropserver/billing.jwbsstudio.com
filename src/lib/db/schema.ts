@@ -104,6 +104,34 @@ export const loginTokens = sqliteTable(
 /* Settings                                                            */
 /* ------------------------------------------------------------------ */
 
+/**
+ * What the agent is allowed to change about itself.
+ *
+ *   off     — skills and memories only change when you change them.
+ *   propose — the agent may draft a skill or an edit; it sits as a proposal
+ *             until you approve it, and nothing uses it in the meantime.
+ *   auto    — the agent's own edits go live immediately.
+ *
+ * `propose` is the default because a pipeline that rewrites its own
+ * instructions unattended is a pipeline whose behaviour last week cannot be
+ * explained this week. Every version is kept either way, so `auto` is
+ * reversible rather than reckless.
+ */
+export const SELF_IMPROVE_MODES = ['off', 'propose', 'auto'] as const;
+export type SelfImproveMode = (typeof SELF_IMPROVE_MODES)[number];
+
+/**
+ * When a real browser is used instead of a plain fetch.
+ *
+ *   off      — never; every page is read with `fetch` and parsed as HTML.
+ *   fallback — only when a fetch came back empty or thin, which is what a
+ *              client-rendered site looks like from a Worker.
+ *   always   — every page, which is slower and costs more but sees what a
+ *              visitor sees.
+ */
+export const BROWSER_MODES = ['off', 'fallback', 'always'] as const;
+export type BrowserMode = (typeof BROWSER_MODES)[number];
+
 export const settings = sqliteTable('settings', {
   id: id(),
   userId: text('user_id')
@@ -259,6 +287,35 @@ export const settings = sqliteTable('settings', {
   outreachSignature: text('outreach_signature').notNull().default(''),
   /** Reply-to for outreach, when it differs from the invoicing address. */
   outreachReplyTo: text('outreach_reply_to').notNull().default(''),
+
+  /* -- The agent's brain ------------------------------------------ */
+
+  /**
+   * When the agent renders a page in a real browser rather than fetching it.
+   *
+   * `fallback` is the default: a plain fetch is faster, cheaper and enough
+   * for most small-business sites, and the browser is kept for the ones that
+   * come back empty because everything is drawn by JavaScript.
+   */
+  agentBrowserMode: text('agent_browser_mode', { enum: BROWSER_MODES })
+    .notNull()
+    .default('fallback'),
+  /** How many tool calls one research task may make before it must answer. */
+  agentStepBudget: integer('agent_step_budget').notNull().default(8),
+  /** Whether the agent recalls and records what it has learned. */
+  agentMemoryEnabled: integer('agent_memory_enabled', { mode: 'boolean' })
+    .notNull()
+    .default(true),
+  /** Whether skills are loaded into the pipeline's prompts at all. */
+  agentSkillsEnabled: integer('agent_skills_enabled', { mode: 'boolean' })
+    .notNull()
+    .default(true),
+  /** How much rope the agent has to rewrite its own instructions. */
+  agentSelfImprove: text('agent_self_improve', { enum: SELF_IMPROVE_MODES })
+    .notNull()
+    .default('propose'),
+  /** Research tasks started without you in any rolling 24 hours. */
+  agentResearchDailyCap: integer('agent_research_daily_cap').notNull().default(20),
 
   createdAt: createdAt(),
   updatedAt: updatedAt(),
@@ -1618,6 +1675,260 @@ export const growthDismissals = sqliteTable(
 );
 
 /* ------------------------------------------------------------------ */
+/* The agent's brain: skills, memory, research                         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A skill: a named piece of instruction the agent loads when it is relevant.
+ *
+ * The shape is deliberately close to how a person would write a note to
+ * themselves — what this is for, when to use it, and the actual guidance —
+ * because both a person and a model have to read it. `whenToUse` is the part
+ * that gets matched against the task at hand; `instructions` is what gets
+ * pasted into the prompt once it wins. Keeping them apart is what makes
+ * having fifty skills affordable: fifty one-line descriptions are cheap to
+ * consider, fifty full bodies are not.
+ *
+ * Skills are versioned rather than overwritten. When the agent rewrites one
+ * the previous body goes to `agent_skill_revisions`, so "why did it start
+ * doing that?" has an answer.
+ */
+export const agentSkills = sqliteTable(
+  'agent_skills',
+  {
+    id: id(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+
+    /** Stable handle, used in prompts and logs. */
+    slug: text('slug').notNull(),
+    name: text('name').notNull(),
+    /** One line: what this skill is. Always in the prompt. */
+    description: text('description').notNull().default(''),
+    /** One line: when it applies. This is what selection matches on. */
+    whenToUse: text('when_to_use').notNull().default(''),
+    /** The body, in markdown. Only loaded when the skill is selected. */
+    instructions: text('instructions').notNull().default(''),
+
+    /**
+     * Which pipeline stages this skill is offered to. JSON `string[]`; empty
+     * means every stage.
+     */
+    stages: text('stages').notNull().default('[]'),
+    /** JSON `string[]` — extra matching terms beyond the description. */
+    tags: text('tags').notNull().default('[]'),
+
+    /** `user` wrote it, or the agent proposed it for itself. */
+    origin: text('origin', { enum: ['user', 'agent'] })
+      .notNull()
+      .default('user'),
+    status: text('status', { enum: ['active', 'proposed', 'archived'] })
+      .notNull()
+      .default('active'),
+    /** Bumped on every saved edit; `agent_skill_revisions` holds the history. */
+    version: integer('version').notNull().default(1),
+
+    /**
+     * A skill the agent may not touch. For the rules that exist because you
+     * decided them, not because they tested well.
+     */
+    locked: integer('locked', { mode: 'boolean' }).notNull().default(false),
+
+    /* Usage, so a skill that never fires can be found and deleted. */
+    useCount: integer('use_count').notNull().default(0),
+    lastUsedAt: text('last_used_at'),
+    /** Runs where this skill was loaded and the run reached its end. */
+    successCount: integer('success_count').notNull().default(0),
+
+    /** Why the agent wrote or changed it, in its own words. */
+    rationale: text('rationale').notNull().default(''),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex('agent_skills_slug_idx').on(t.userId, t.slug),
+    index('agent_skills_status_idx').on(t.userId, t.status),
+  ],
+);
+
+/** Every previous body of a skill, so a change can be read and undone. */
+export const agentSkillRevisions = sqliteTable(
+  'agent_skill_revisions',
+  {
+    id: id(),
+    skillId: text('skill_id')
+      .notNull()
+      .references(() => agentSkills.id, { onDelete: 'cascade' }),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    version: integer('version').notNull().default(1),
+    name: text('name').notNull().default(''),
+    description: text('description').notNull().default(''),
+    whenToUse: text('when_to_use').notNull().default(''),
+    instructions: text('instructions').notNull().default(''),
+    /** Who made this version. */
+    author: text('author', { enum: ['user', 'agent'] })
+      .notNull()
+      .default('user'),
+    note: text('note').notNull().default(''),
+    createdAt: createdAt(),
+  },
+  (t) => [index('agent_skill_revisions_idx').on(t.skillId, t.version)],
+);
+
+/**
+ * What the agent has learned and should not have to learn again.
+ *
+ * Scoped, because "physiotherapists never list their prices" is worth
+ * remembering for every run in that trade, while "the owner of Wells Coffee
+ * is called Sam" is worth remembering for exactly one prospect. A memory with
+ * no scope key is global.
+ *
+ * `embedding` is a JSON array of floats when the embedding model was
+ * available and empty when it was not — recall falls back to keyword
+ * matching, which is worse but never absent. Storing it here rather than in
+ * Vectorize keeps this to one binding the app already has.
+ */
+export const MEMORY_SCOPES = ['global', 'niche', 'region', 'campaign', 'prospect'] as const;
+export type MemoryScope = (typeof MEMORY_SCOPES)[number];
+
+export const MEMORY_KINDS = ['fact', 'lesson', 'preference', 'outcome'] as const;
+export type MemoryKind = (typeof MEMORY_KINDS)[number];
+
+export const agentMemories = sqliteTable(
+  'agent_memories',
+  {
+    id: id(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+
+    scope: text('scope', { enum: MEMORY_SCOPES }).notNull().default('global'),
+    /** The niche, region, campaign id or prospect id this is scoped to. */
+    scopeKey: text('scope_key').notNull().default(''),
+    kind: text('kind', { enum: MEMORY_KINDS }).notNull().default('fact'),
+
+    /** The memory itself, one or two sentences. */
+    content: text('content').notNull(),
+    /** JSON `string[]` — matching terms. */
+    tags: text('tags').notNull().default('[]'),
+    /** Where it came from: a stage name, "reflection", "you". */
+    source: text('source').notNull().default(''),
+    campaignId: text('campaign_id').references(() => campaigns.id, { onDelete: 'set null' }),
+    prospectId: text('prospect_id').references(() => prospects.id, { onDelete: 'set null' }),
+
+    /** 0..100. Lowered when a memory turns out to be wrong. */
+    confidence: integer('confidence').notNull().default(60),
+    /** A pinned memory is always offered and never expires. */
+    pinned: integer('pinned', { mode: 'boolean' }).notNull().default(false),
+    useCount: integer('use_count').notNull().default(0),
+    lastUsedAt: text('last_used_at'),
+
+    /** JSON array of floats, or empty when no embedding was available. */
+    embedding: text('embedding').notNull().default(''),
+    embeddingModel: text('embedding_model').notNull().default(''),
+
+    /** Set rather than deleted, so a bad memory can be reviewed. */
+    retiredAt: text('retired_at'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    index('agent_memories_scope_idx').on(t.userId, t.scope, t.scopeKey),
+    index('agent_memories_recent_idx').on(t.userId, t.createdAt),
+  ],
+);
+
+/**
+ * One research task: a question, the work done to answer it, and the answer.
+ *
+ * Separate from campaigns because research is useful on its own — "what do
+ * good physio sites in Wellington actually look like?" is a question worth
+ * asking before a run rather than during one — and because a campaign stage
+ * that wants research can point at a row here and stay a state machine.
+ */
+export const agentResearch = sqliteTable(
+  'agent_research',
+  {
+    id: id(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    campaignId: text('campaign_id').references(() => campaigns.id, { onDelete: 'cascade' }),
+    prospectId: text('prospect_id').references(() => prospects.id, { onDelete: 'cascade' }),
+
+    /** What was asked. */
+    question: text('question').notNull(),
+    /** Optional starting point: a site to look at, a region, a trade. */
+    subject: text('subject').notNull().default(''),
+    /** Why it ran: `you`, or the stage that asked. */
+    origin: text('origin').notNull().default('user'),
+
+    status: text('status', { enum: ['queued', 'running', 'complete', 'failed', 'cancelled'] })
+      .notNull()
+      .default('queued'),
+    /** The answer, in markdown. */
+    answer: text('answer').notNull().default(''),
+    /** JSON `[{ title, url, note }]` — what the answer rests on. */
+    sources: text('sources').notNull().default('[]'),
+    /** JSON `string[]` — the lines kept as memories. */
+    learned: text('learned').notNull().default('[]'),
+
+    stepsUsed: integer('steps_used').notNull().default(0),
+    stepBudget: integer('step_budget').notNull().default(8),
+    /** Skill slugs loaded for this run. */
+    skillsUsed: text('skills_used').notNull().default('[]'),
+    error: text('error').notNull().default(''),
+
+    startedAt: text('started_at'),
+    completedAt: text('completed_at'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    index('agent_research_user_idx').on(t.userId, t.createdAt),
+    index('agent_research_campaign_idx').on(t.campaignId),
+  ],
+);
+
+/**
+ * The transcript. One row per thought, tool call or observation.
+ *
+ * An agent loop nobody can read is an agent loop nobody can fix: this is the
+ * table that answers "why did it decide that" and "what did it actually
+ * look at". Observations are truncated — the full page bodies are in R2.
+ */
+export const agentResearchSteps = sqliteTable(
+  'agent_research_steps',
+  {
+    id: id(),
+    researchId: text('research_id')
+      .notNull()
+      .references(() => agentResearch.id, { onDelete: 'cascade' }),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+
+    step: integer('step').notNull().default(0),
+    kind: text('kind', { enum: ['thought', 'tool', 'observation', 'answer', 'error'] })
+      .notNull()
+      .default('thought'),
+    /** The tool name, when this is a call or its observation. */
+    tool: text('tool').notNull().default(''),
+    /** JSON — what the tool was asked for. */
+    input: text('input').notNull().default('{}'),
+    /** Text, truncated. The bytes, if any, are in R2. */
+    output: text('output').notNull().default(''),
+    ok: integer('ok', { mode: 'boolean' }).notNull().default(true),
+    durationMs: integer('duration_ms').notNull().default(0),
+    createdAt: createdAt(),
+  },
+  (t) => [index('agent_research_steps_idx').on(t.researchId, t.step)],
+);
+
+/* ------------------------------------------------------------------ */
 /* Audit                                                               */
 /* ------------------------------------------------------------------ */
 
@@ -1780,3 +2091,8 @@ export type DemoSite = typeof demoSites.$inferSelect;
 export type ActivityLogEntry = typeof activityLog.$inferSelect;
 export type AiCall = typeof aiCalls.$inferSelect;
 export type AiCacheEntry = typeof aiCache.$inferSelect;
+export type AgentSkill = typeof agentSkills.$inferSelect;
+export type AgentSkillRevision = typeof agentSkillRevisions.$inferSelect;
+export type AgentMemory = typeof agentMemories.$inferSelect;
+export type AgentResearch = typeof agentResearch.$inferSelect;
+export type AgentResearchStep = typeof agentResearchSteps.$inferSelect;

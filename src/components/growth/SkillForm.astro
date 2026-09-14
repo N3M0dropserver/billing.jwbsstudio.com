@@ -1,0 +1,81 @@
+---
+/**
+ * The skill editor.
+ *
+ * Shared by the new and edit pages because they are the same form: a skill
+ * has no creation-only fields, and an edit that offered a different set of
+ * boxes than the one that wrote it would be a good way to lose half a skill.
+ *
+ * `whenToUse` carries a longer explanation than the others because it is the
+ * field people leave blank and the field selection actually matches on — a
+ * skill with no trigger line is a skill that never loads.
+ */
+import { CAMPAIGN_STAGES } from '~/lib/db/schema';
+import { STAGE_LABELS } from '~/lib/growth/policy';
+import { parseList } from '~/lib/agent/skills';
+import type { AgentSkill } from '~/lib/db/schema';
+
+interface Props {
+  skill?: AgentSkill | null;
+}
+
+const { skill = null } = Astro.props;
+const stages = parseList(skill?.stages);
+const tags = parseList(skill?.tags);
+---
+
+<div class="space-y-3.5">
+  {skill && <input type="hidden" name="id" value={skill.id} />}
+
+  <div class="grid gap-3.5 sm:grid-cols-2">
+    <div>
+      <label for="name" class="mb-1.5 block text-sm font-medium">Name</label>
+      <input id="name" name="name" value={skill?.name ?? ''} class="field" placeholder="Opening lines for trade businesses" />
+    </div>
+    <div>
+      <label for="description" class="mb-1.5 block text-sm font-medium">What it is</label>
+      <input id="description" name="description" value={skill?.description ?? ''} class="field" placeholder="One line." />
+    </div>
+  </div>
+
+  <div>
+    <label for="whenToUse" class="mb-1.5 block text-sm font-medium">When it applies</label>
+    <input id="whenToUse" name="whenToUse" value={skill?.whenToUse ?? ''} class="field"
+      placeholder="writing outreach to builders, plumbers, electricians and other trades" />
+    <p class="muted mt-1 text-xs leading-relaxed">
+      Finish the sentence “use this when…”. This line is what the agent matches against the job in
+      hand, so write it with the words that would actually appear in that job — the trade, the
+      stage, the kind of business.
+    </p>
+  </div>
+
+  <div>
+    <label for="instructions" class="mb-1.5 block text-sm font-medium">The instructions</label>
+    <textarea id="instructions" name="instructions" rows="14" class="field font-mono text-xs"
+      placeholder="Markdown. Write it as you would for somebody doing the job for the first time.">{skill?.instructions ?? ''}</textarea>
+    <p class="muted mt-1 text-xs leading-relaxed">
+      Only loaded when this skill is selected, so length costs nothing most of the time. Be
+      specific: “name the thing you noticed in the first line” beats “write good openings”.
+    </p>
+  </div>
+
+  <div class="grid gap-3.5 sm:grid-cols-2">
+    <div>
+      <p class="mb-1.5 block text-sm font-medium">Stages it applies to</p>
+      <div class="flex flex-wrap gap-2">
+        {CAMPAIGN_STAGES.map((stage) => (
+          <label class="flex cursor-pointer items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs" style="border-color: var(--border)">
+            <input type="checkbox" name="stages" value={stage} checked={stages.includes(stage)} />
+            {STAGE_LABELS[stage]}
+          </label>
+        ))}
+      </div>
+      <p class="muted mt-1 text-xs">None ticked means every stage, and research too.</p>
+    </div>
+    <div>
+      <label for="tags" class="mb-1.5 block text-sm font-medium">Matching terms</label>
+      <input id="tags" name="tags" value={tags.join(', ')} class="field" placeholder="hospitality, cafés, outreach" />
+      <p class="muted mt-1 text-xs">Comma separated. Extra words that should make this skill surface.</p>
+    </div>
+  </div>
+</div>

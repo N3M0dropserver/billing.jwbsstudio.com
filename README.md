@@ -133,7 +133,7 @@ brief → discover → shortlist → enrich → plan → build → propose
 | **brief** | Resolves the style direction this run builds against | Adds two sentences of guidance for the trade, without replacing your rules | Uses the saved direction as-is |
 | **discover** | Finds businesses in the niche and region | — | Runs the chosen provider |
 | **shortlist** | Audits each one's site, measures their size, and ranks them | The model picks, and records why | Takes the top of the ranking |
-| **enrich** | Crawls the site, finds contacts, socials, reviews, photography | — | Researches everyone selected |
+| **enrich** | Crawls the site, finds contacts, socials, reviews, photography | Also goes and researches each one beyond their own site | Crawls everyone selected |
 | **plan** | Writes the design and page spec | The model writes the plan | Lays out a scaffold, no model call |
 | **build** | Generates the demo and publishes it | Skips anyone with no honest angle | Builds for everyone planned |
 | **propose** | Drafts the outreach email and sends it | Holds back anyone with nothing verifiable to say | Sends to everyone, up to the cap |
@@ -269,6 +269,13 @@ under a restrictive CSP, and the outreach email repeats the offer to remove it.
   and the prospect, so an unattended run is auditable afterwards.
 - **Everything crawled is treated as data**, never as instruction. Copy from
   somebody's homepage reaches a prompt inside a fenced block that says so.
+- **A daily cap on unattended research**, for the same reason as the outreach
+  cap: a loop that can start work is a loop that can start it a thousand times.
+- **The agent may not rewrite its own guardrails.** A skill that tries to talk
+  the pipeline past the outreach cap, robots.txt or the honest-observation rule
+  is rejected in code, whoever wrote it and whatever the settings say.
+- **Anything the agent chooses to fetch is checked first** — robots.txt, and a
+  guard that refuses anything but a public http(s) address.
 
 ### The agent
 
@@ -293,6 +300,95 @@ The browser connects to the agent through an authenticated route on this app,
 not to the agent Worker directly — the agent has no authentication of its own
 and is deliberately not publicly routed. If that socket cannot be established
 the page falls back to polling, so the run view is correct either way.
+
+### What the agent can do for itself
+
+The pipeline used to be a sequence of prompts. It is now an agent with tools, a
+memory and a set of instructions you can edit — managed entirely from **Growth
+→ Research / Skills / Memory**.
+
+**Tools.** The agent has a small, deliberately unglamorous toolbox
+(`src/lib/agent/tools.ts`): search the web, open and read a page, list a page's
+links, pull elements out by CSS selector, photograph a page, recall what it
+knows, write something down, and write a skill for itself. Each tool answers in
+the smallest form that still carries the answer — a page comes back as text
+with its headings and links, a screenshot as a note saying where the image was
+filed — because a tool that returns 200kB of HTML has not given the model
+information, it has given it a context window problem.
+
+**A real browser.** A plain `fetch` sees the HTML the server sent, which on a
+site that draws itself with JavaScript is nothing at all. Everything downstream
+was then wrong about a business with a perfectly good site: the audit said
+"thin content", the angle was written about a problem they do not have, and the
+email that landed was wrong in a way they would notice immediately. With
+Browser Rendering configured the agent renders the page properly — by default
+only when a fetch comes back suspiciously thin, which is the case that matters
+and a fraction of the cost of rendering everything. It also keeps a screenshot
+of each prospect's site as it is today, which is the one artefact that cannot
+be recovered later, since we are about to ask them to change it.
+
+Set `CLOUDFLARE_ACCOUNT_ID` and a token with the Browser Rendering permission
+(`BROWSER_RENDERING_TOKEN`, or `CLOUDFLARE_API_TOKEN` when it carries that
+permission too). Without them everything still runs over `fetch`.
+
+**The same robots.txt applies.** The agent picks its own URLs, so it checks
+robots.txt before every read — including the ones that go through the rendering
+service, because a page fetched on our behalf is still a page we fetched.
+Results are cached for fifteen minutes so being polite does not double the
+number of requests we make to somebody's server. URLs are also checked against
+a public-address guard: no other schemes, no localhost, no private ranges, no
+cloud metadata endpoint.
+
+**Memory.** Every run used to start from nothing and work out the same things
+again. A memory is one sentence with a scope — global, a trade, a region, a
+campaign or one business — recalled by meaning where an embedding model is
+available and by words where it is not. Writes are deduplicated, so the same
+lesson learned twice raises the confidence of one row rather than adding a
+second; recall is capped and scored, so a thousand memories cost the same
+prompt space as ten. Memories reach a prompt labelled as *recollections, not
+rules*: if what is in front of the model contradicts one, it is told to believe
+what is in front of it and say so. Everything it knows is readable, pinnable
+and deletable on the memory page, and marking one **wrong** retires it rather
+than deleting it so the bad inference stays reviewable.
+
+**Skills.** A skill is a named piece of instruction — "how to open an email to
+a trade business", "what to check before calling a site dated" — with a
+one-line trigger describing when it applies. Before a stage asks the model
+anything, every skill's trigger line is considered (cheap: one line each) and
+the best few have their full body loaded (not cheap, which is why it is only a
+few). Writing twenty skills therefore costs about what three used to.
+
+**Self-improvement, and its limits.** At the end of a completed run the agent
+looks back over what actually happened and writes down what would change the
+next one. Most of that becomes memories. Occasionally it proposes a *skill* —
+and under the default setting a proposal is all it is: it loads nothing until
+you approve it on the skills page. Set self-improvement to "just do it" and its
+edits take effect immediately; every version is kept and revertable either way,
+so that is reversible rather than reckless.
+
+Three things it cannot do to itself, in code rather than in a prompt: edit a
+skill you have locked, write a skill that tries to talk the pipeline past the
+outreach cap, robots.txt or the rule that outreach only cites observations we
+actually made (`FORBIDDEN_PATTERNS` in `src/lib/agent/skills.ts`), or start
+unlimited research — unattended research has its own daily cap, like sending.
+
+**Research on its own.** "Go and find out X" is the shape of work the pipeline
+could never do, because every stage answers a question decided in advance. Ask
+one from **Growth → Research** and the agent searches, opens pages, reads them,
+checks what it already knows, and answers with its sources — showing each step
+as it happens, because an agent that shows a spinner and then a paragraph is
+impossible to trust and impossible to debug. It runs on the same tools, memory
+and skills as the pipeline, so a lesson learned answering a question by hand
+turns up in the next campaign, and a skill written during a campaign is loaded
+the next time you ask something it applies to. Each task has a hard ceiling on
+tool calls; when it is spent the agent answers from what it has and says what
+it could not establish.
+
+Under `AI decides` on the **enrich** stage, the pipeline uses the same
+machinery per prospect: what a crawl cannot tell you — whether they have just
+changed hands, whether the reviews say something the site does not — with a
+smaller budget, because it is running unattended against every business on the
+shortlist.
 
 ### Where demos are served
 
@@ -429,6 +525,17 @@ npx wrangler secret put SESSION_SECRET
 npx wrangler secret put RESEND_API_KEY        # if sending email via Resend
 npx wrangler secret put STRIPE_SECRET_KEY     # optional
 npx wrangler secret put STRIPE_WEBHOOK_SECRET # optional
+npx wrangler secret put SEARCH_API_KEY        # optional — real web search
+npx wrangler secret put BROWSER_RENDERING_TOKEN # optional — a real browser
+```
+
+The agent's two optional capabilities are worth setting up in this order:
+`SEARCH_PROVIDER` (`brave` or `serper`) with `SEARCH_API_KEY` gives it real web
+search instead of a Wikipedia fallback, and `CLOUDFLARE_ACCOUNT_ID` with a
+token carrying the Browser Rendering permission lets it read client-rendered
+sites and take screenshots. Both are secrets on the app Worker **and** the
+agent Worker (`npx wrangler secret put … -c workers/agent/wrangler.jsonc`),
+since the pipeline runs in the agent.
 npx wrangler secret put CRON_SECRET           # for automatic reminders
 ```
 
@@ -910,12 +1017,32 @@ Add `&today=2026-12-24` to ask the same question about a future date.
    the same design plan, so they match, but only the first is live
    automatically.
 
-6. **The live run socket may fall back to polling.** The agent is reached
+6. **The agent's memory is scanned, not indexed.** Recall reads up to 400
+   candidate rows and scores them in JavaScript. That is the right trade at
+   this size — no binding to provision, no second store to keep in step with
+   the rows it describes — and the wrong one at a hundred thousand memories,
+   where it should move to Vectorize. Recall stays bounded either way; what
+   degrades first is which memories are considered, oldest dropped.
+
+7. **Without Browser Rendering, client-rendered sites read as empty.** The
+   pipeline still runs and says what it saw, but a business whose site is a
+   JavaScript bundle will be assessed as having no content. That is a wrong
+   answer rather than a missing one, which is why the settings page says
+   plainly whether a browser is configured.
+
+8. **A skill is an instruction, and the model follows instructions.** Skills
+   are ranked below the built-in rules in the prompt and checked against the
+   forbidden patterns before they are saved, but a badly written skill will
+   still make the output worse in ways that are hard to attribute. If results
+   drift, the skills page is the first place to look, and every version is
+   revertable.
+
+9. **The live run socket may fall back to polling.** The agent is reached
    through an authenticated route on this app rather than being publicly
    exposed. If the upgrade does not survive, the run view polls every four
    seconds instead. Nothing is lost — D1 is authoritative for everything shown.
 
-7. **Some rate figures need confirming.** Anything marked `verify` in
+10. **Some rate figures need confirming.** Anything marked `verify` in
    `src/lib/tax/rates.ts` came from secondary sources. The app lists them on the
    Tax page and in Settings with links to the official source. The ones most
    worth checking: the ACC work levy rate for your classification unit (the
@@ -923,25 +1050,21 @@ Add `&today=2026-12-24` to ask the same question about a future date.
    levy low-income threshold, and whether the AU$20,000 instant asset write-off
    was legislated for 2026-27.
 
-8. **It does not decide your tax residence.** It asks you to state it. If both
+11. **It does not decide your tax residence.** It asks you to state it. If both
    countries could claim you, the DTA tie-breaker decides, and that is a
    facts-and-circumstances question for an accountant.
 
-9. **Exchange rates are entered by hand.** Every invoice, expense, payment and
-   pay period carries the rate that applied on its own date, and every total is
-   converted through it — but you type the rate, there is no automatic lookup,
-   and FX gain or loss between invoicing and payment is not tracked. Records
-   left without a rate are counted at face value and reported as such on the
-   dashboard.
+12. **Multi-currency is simplistic.** Invoices carry a currency and an FX rate
+   field, but there is no automatic rate lookup and no FX gain/loss tracking.
 
-10. **Estimates, not returns.** The tax figures are for setting money aside.
+13. **Estimates, not returns.** The tax figures are for setting money aside.
    Filing is a job for your accountant.
 
-11. **Single user in practice.** The schema is user-scoped throughout and roles
+14. **Single user in practice.** The schema is user-scoped throughout and roles
    exist, but nothing has been built around the `accountant` or `viewer` roles
    yet.
 
-12. Four dev-only `npm audit` warnings come from drizzle-kit's bundled esbuild.
+15. Four dev-only `npm audit` warnings come from drizzle-kit's bundled esbuild.
    They do not ship to the Worker.
 
 ---
@@ -957,6 +1080,18 @@ src/
     mail/         providers, built-in templates, variables, open tracking
     stripe/       checkout sessions and webhook verification
     ai/           Workers AI helpers, usage tracking, the prompt cache and pricing
+      chat.ts       multi-turn calls with tools, normalised across model shapes
+      embed.ts      embeddings and cosine similarity, for recalling by meaning
+    agent/        the part that can go and find things out
+      browser.ts    Browser Rendering: render, screenshot, scrape; fetch fallback
+      websearch.ts  Brave, Serper, and a keyless Wikipedia fallback
+      memory.ts     what it has learned, scoped, deduplicated and recallable
+      skills.ts     instructions it loads when they apply, versioned and revertable
+      tools.ts      the toolbox, and the guards on what it may reach
+      loop.ts       the bounded tool-calling loop and its three ways of stopping
+      research.ts   one research task, start to finish, with its transcript
+      reflect.ts    what a finished run taught, as memories and skill proposals
+      context.ts    assembling all of the above from settings and bindings
     growth/       the lead-generation pipeline
       policy.ts     per-stage autonomy: ask me / AI decides / just do it
       brief.ts      style direction, saved defaults merged with per-run overrides
@@ -979,9 +1114,8 @@ src/
   pages/          Astro routes and API endpoints
   components/     Astro components and React islands
 workers/
-  agent/          the campaign agent — one Durable Object per run, deployed separately
+  agent/          the campaign and research agents — a Durable Object each, deployed separately
 migrations/       D1 migrations
-tests/            679 tests: the tax engine, the growth pipeline's pure parts, the
-                  activity log, templates, quotes and bank matching
+tests/            459 tests: the tax engine, and the pure parts of the pipeline and the agent
 docs/             the tax research
 ```

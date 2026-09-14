@@ -31,6 +31,8 @@ import {
   type GeneratedImage,
   type ImageOptions,
 } from './index';
+import { chat, type ChatOptions, type ChatTurn } from './chat';
+import { embed } from './embed';
 import { costMicrocents, estimateTokens, imageCostMicrocents } from './pricing';
 
 export interface AiUsageContext {
@@ -344,6 +346,92 @@ export async function trackedGenerateImage(
     // Observability must never be the thing that breaks the pipeline.
   }
 
+  return result;
+}
+
+/**
+ * A tracked turn of a tool-calling conversation.
+ *
+ * Deliberately not cached. The cache stores a response as text, and a turn
+ * whose whole content is a tool call has no useful text — replaying one from
+ * cache would hand the loop an empty answer and look like a model that had
+ * given up. Every turn is still costed and recorded, which is what makes a
+ * ten-step research task legible on the AI usage page rather than an
+ * unexplained bump in the bill.
+ */
+export async function trackedChat(
+  ai: Ai,
+  options: ChatOptions,
+  ctx: AiUsageContext,
+): Promise<AiResult<ChatTurn>> {
+  const model = options.model ?? MODELS.tools;
+  const started = Date.now();
+  const sent = options.messages.map((message) => message.content).join('\n');
+
+  const result = await chat(ai, options);
+  const durationMs = Date.now() - started;
+
+  if (!result.ok) {
+    await record(ctx, {
+      model,
+      promptTokens: estimateTokens(sent),
+      completionTokens: 0,
+      tokensMeasured: false,
+      durationMs,
+      cached: false,
+      ok: false,
+      error: result.error,
+      hash: '',
+    });
+    return result;
+  }
+
+  // A turn that called tools is charged for the call it described, so the
+  // completion side is measured against both the prose and the arguments.
+  const produced = result.data.text + JSON.stringify(result.data.toolCalls);
+  const usage = readUsage(result.data.raw, sent, produced);
+
+  await record(ctx, {
+    model,
+    promptTokens: usage.promptTokens,
+    completionTokens: usage.completionTokens,
+    tokensMeasured: usage.measured,
+    durationMs,
+    cached: false,
+    ok: true,
+    error: '',
+    hash: '',
+  });
+
+  return result;
+}
+
+/**
+ * Tracked embeddings.
+ *
+ * Embeddings are individually trivial and collectively not — a reflection
+ * pass embeds every new memory — so they are recorded like any other call.
+ * Charged on the input only; there is no completion.
+ */
+export async function trackedEmbed(
+  ai: Ai,
+  texts: string[],
+  ctx: AiUsageContext,
+): Promise<AiResult<number[][]>> {
+  const started = Date.now();
+  const result = await embed(ai, texts);
+
+  await record(ctx, {
+    model: MODELS.embedding,
+    promptTokens: estimateTokens(texts.join(' ')),
+    completionTokens: 0,
+    tokensMeasured: false,
+    durationMs: Date.now() - started,
+    cached: false,
+    ok: result.ok,
+    error: result.ok ? '' : result.error,
+    hash: '',
+  });
   return result;
 }
 

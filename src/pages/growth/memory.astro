@@ -1,0 +1,202 @@
+---
+import AppLayout from '~/layouts/AppLayout.astro';
+import Card from '~/components/ui/Card.astro';
+import EmptyState from '~/components/ui/EmptyState.astro';
+import { and, desc, eq, isNotNull, isNull, like, or, sql } from 'drizzle-orm';
+import { db } from '~/lib/env';
+import { agentMemories, MEMORY_KINDS, MEMORY_SCOPES } from '~/lib/db/schema';
+import { loadAgentSettings } from '~/lib/agent/context';
+
+const user = Astro.locals.user!;
+const database = db();
+
+const query = (Astro.url.searchParams.get('q') ?? '').trim();
+const showRetired = Astro.url.searchParams.get('retired') === '1';
+const error = Astro.url.searchParams.get('error');
+
+/**
+ * A LIKE rather than the embedding search the agent itself uses.
+ *
+ * This page is somebody looking for a specific memory they half-remember,
+ * which is a different job from "what bears on this task" — and a substring
+ * match is the one that behaves predictably when you are hunting.
+ */
+const filters = [
+  eq(agentMemories.userId, user.id),
+  showRetired ? isNotNull(agentMemories.retiredAt) : isNull(agentMemories.retiredAt),
+];
+
+if (query) {
+  filters.push(
+    or(
+      like(agentMemories.content, `%${query}%`),
+      like(agentMemories.scopeKey, `%${query}%`),
+      like(agentMemories.tags, `%${query}%`),
+    )!,
+  );
+}
+
+const [memories, counts, agentSettings] = await Promise.all([
+  database
+    .select()
+    .from(agentMemories)
+    .where(and(...filters))
+    .orderBy(desc(agentMemories.pinned), desc(agentMemories.createdAt))
+    .limit(200),
+  database
+    .select({ scope: agentMemories.scope, n: sql<number>`count(*)` })
+    .from(agentMemories)
+    .where(and(eq(agentMemories.userId, user.id), isNull(agentMemories.retiredAt)))
+    .groupBy(agentMemories.scope),
+  loadAgentSettings(database, user.id),
+]);
+
+const back = `/growth/memory${Astro.url.search}`;
+
+const KIND_LABELS: Record<string, string> = {
+  fact: 'fact',
+  lesson: 'lesson',
+  preference: 'how you like it',
+  outcome: 'what happened',
+};
+---
+
+<AppLayout title="Memory" subtitle="What the agent has learned, and what you have told it" width="wide">
+  <div slot="actions" class="flex gap-2">
+    <a href="/growth/skills" class="muted rounded-lg border px-3 py-2 text-sm" style="border-color: var(--border)">Skills</a>
+    <a href="/growth/research" class="muted rounded-lg border px-3 py-2 text-sm" style="border-color: var(--border)">Research</a>
+  </div>
+
+  <div class="grid gap-4 lg:grid-cols-3">
+    <div class="space-y-4 lg:col-span-2">
+      {error && (
+        <p class="rounded-lg px-4 py-3 text-sm" style="background: color-mix(in oklch, var(--color-overdue) 12%, transparent); color: var(--color-overdue)" role="alert">{error}</p>
+      )}
+
+      <Card
+        title={showRetired ? 'Retired memories' : 'What it knows'}
+        subtitle={`${memories.length} shown${query ? ` matching “${query}”` : ''}`}
+      >
+        <form method="get" class="mb-4 flex gap-2">
+          <input name="q" value={query} class="field" placeholder="Search what it knows" />
+          {showRetired && <input type="hidden" name="retired" value="1" />}
+          <button class="muted shrink-0 rounded-lg border px-3 py-2 text-sm" style="border-color: var(--border)">Search</button>
+        </form>
+
+        {memories.length === 0 ? (
+          <EmptyState
+            title={query ? 'Nothing matches' : 'Nothing remembered yet'}
+            description={
+              agentSettings.memoryEnabled
+                ? 'Memories are written when a run finishes and when the agent works something out mid-task. You can also write one yourself — anything you tell it here is pinned above what it infers.'
+                : 'Memory is switched off in your growth settings, so nothing is being written down.'
+            }
+          />
+        ) : (
+          <ul class="divide-y" style="border-color: var(--border)">
+            {memories.map((memory) => (
+              <li class="flex items-start justify-between gap-3 py-3 first:pt-0 last:pb-0">
+                <div class="min-w-0">
+                  <p class="text-sm leading-relaxed">{memory.content}</p>
+                  <p class="muted mt-1 text-xs">
+                    {KIND_LABELS[memory.kind] ?? memory.kind}
+                    {memory.scope !== 'global' && ` · ${memory.scope}: ${memory.scopeKey}`}
+                    {` · from ${memory.source || 'a run'}`}
+                    {` · confidence ${memory.confidence}`}
+                    {memory.useCount > 0 && ` · recalled ${memory.useCount}×`}
+                    {memory.pinned && ' · pinned'}
+                    {!memory.embedding && ' · matched on words only'}
+                  </p>
+                </div>
+                <form method="post" action="/api/agent/memory" class="flex shrink-0 gap-1.5">
+                  <input type="hidden" name="id" value={memory.id} />
+                  <input type="hidden" name="back" value={back} />
+                  {showRetired ? (
+                    <button name="action" value="restore" class="muted rounded-lg border px-2.5 py-1.5 text-xs" style="border-color: var(--border)">Restore</button>
+                  ) : (
+                    <>
+                      <button name="action" value={memory.pinned ? 'unpin' : 'pin'} class="muted rounded-lg border px-2.5 py-1.5 text-xs" style="border-color: var(--border)">
+                        {memory.pinned ? 'Unpin' : 'Pin'}
+                      </button>
+                      <button name="action" value="retire" class="muted rounded-lg border px-2.5 py-1.5 text-xs" style="border-color: var(--border)">Wrong</button>
+                    </>
+                  )}
+                  <button name="action" value="delete" class="muted rounded-lg border px-2.5 py-1.5 text-xs" style="border-color: var(--color-overdue); color: var(--color-overdue)">Delete</button>
+                </form>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Card>
+    </div>
+
+    <div class="space-y-4">
+      <Card title="Tell it something">
+        <form method="post" action="/api/agent/memory" class="space-y-3">
+          <input type="hidden" name="action" value="add" />
+          <input type="hidden" name="back" value={back} />
+
+          <div>
+            <label for="content" class="mb-1.5 block text-sm font-medium">The thing</label>
+            <textarea id="content" name="content" rows="3" class="field"
+              placeholder="Never open an email with a question. I hate it and so does everyone."></textarea>
+          </div>
+
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label for="kind" class="mb-1.5 block text-sm font-medium">Kind</label>
+              <select id="kind" name="kind" class="field">
+                {MEMORY_KINDS.map((kind) => (
+                  <option value={kind} selected={kind === 'preference'}>{KIND_LABELS[kind] ?? kind}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label for="scope" class="mb-1.5 block text-sm font-medium">Applies to</label>
+              <select id="scope" name="scope" class="field">
+                {MEMORY_SCOPES.map((scope) => <option value={scope}>{scope}</option>)}
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label for="scopeKey" class="mb-1.5 block text-sm font-medium">Which one</label>
+            <input id="scopeKey" name="scopeKey" class="field" placeholder="physiotherapists, Wellington…" />
+            <p class="muted mt-1 text-xs">Leave blank when it applies everywhere.</p>
+          </div>
+
+          <label class="flex items-center gap-2 text-sm">
+            <input type="checkbox" name="pinned" checked />
+            Always offer this one
+          </label>
+
+          <button class="w-full rounded-lg px-4 py-2.5 text-sm font-medium text-white" style="background: var(--color-brand-600)">Remember it</button>
+        </form>
+      </Card>
+
+      <Card title="By scope">
+        <dl class="space-y-2 text-sm">
+          {counts.map((row) => (
+            <div class="flex justify-between">
+              <dt class="muted">{row.scope}</dt>
+              <dd class="tabular font-medium">{row.n}</dd>
+            </div>
+          ))}
+          {counts.length === 0 && <p class="muted text-sm">Nothing yet.</p>}
+        </dl>
+        <a href={showRetired ? '/growth/memory' : '/growth/memory?retired=1'} class="mt-3 inline-block text-sm" style="color: var(--color-brand-600)">
+          {showRetired ? '← Back to what it knows' : 'See what has been retired →'}
+        </a>
+      </Card>
+
+      <Card title="Why this is here">
+        <p class="muted text-sm leading-relaxed">
+          Before this existed, every run started from nothing and worked out the same things again.
+          A memory is one sentence with a scope, recalled by meaning when the embedding model is
+          available and by words when it is not. Marking one <strong style="color: var(--text)">wrong</strong>
+          retires it rather than deleting it, so a bad inference stays readable.
+        </p>
+      </Card>
+    </div>
+  </div>
+</AppLayout>

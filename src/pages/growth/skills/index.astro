@@ -1,0 +1,124 @@
+---
+import AppLayout from '~/layouts/AppLayout.astro';
+import Card from '~/components/ui/Card.astro';
+import EmptyState from '~/components/ui/EmptyState.astro';
+import { db } from '~/lib/env';
+import { listSkills, parseList } from '~/lib/agent/skills';
+import { loadAgentSettings } from '~/lib/agent/context';
+import { STAGE_LABELS } from '~/lib/growth/policy';
+import type { CampaignStage } from '~/lib/db/schema';
+
+const user = Astro.locals.user!;
+const database = db();
+
+const [skills, agentSettings] = await Promise.all([
+  listSkills(database, user.id),
+  loadAgentSettings(database, user.id),
+]);
+
+const active = skills.filter((skill) => skill.status === 'active');
+const proposed = skills.filter((skill) => skill.status === 'proposed');
+const archived = skills.filter((skill) => skill.status === 'archived');
+const error = Astro.url.searchParams.get('error');
+
+function stageLabels(raw: string): string {
+  const stages = parseList(raw);
+  if (stages.length === 0) return 'every stage';
+  return stages.map((stage) => STAGE_LABELS[stage as CampaignStage] ?? stage).join(', ');
+}
+---
+
+<AppLayout title="Skills" subtitle="What the agent knows how to do, in words you can edit">
+  <div slot="actions" class="flex gap-2">
+    <a href="/growth/memory" class="muted rounded-lg border px-3 py-2 text-sm" style="border-color: var(--border)">Memory</a>
+    <a href="/growth/skills/new" class="rounded-lg px-4 py-2 text-sm font-medium text-white" style="background: var(--color-brand-600)">New skill</a>
+  </div>
+
+  <div class="space-y-4">
+    {error && (
+      <p class="rounded-lg px-4 py-3 text-sm" style="background: color-mix(in oklch, var(--color-overdue) 12%, transparent); color: var(--color-overdue)" role="alert">{error}</p>
+    )}
+
+    {proposed.length > 0 && (
+      <Card title="Waiting on you" subtitle="The agent wrote these for itself; none of them load until you approve one">
+        <ul class="space-y-3">
+          {proposed.map((skill) => (
+            <li class="rounded-lg border p-3.5" style="border-color: var(--border)">
+              <div class="flex items-start justify-between gap-3">
+                <div class="min-w-0">
+                  <a href={`/growth/skills/${skill.id}`} class="text-sm font-medium hover:opacity-80">{skill.name}</a>
+                  <p class="muted mt-0.5 text-xs">Use when {skill.whenToUse}</p>
+                  {skill.rationale && <p class="muted mt-1 text-xs italic">“{skill.rationale}”</p>}
+                </div>
+                <form method="post" action="/api/agent/skills" class="flex shrink-0 gap-1.5">
+                  <input type="hidden" name="id" value={skill.id} />
+                  <button name="action" value="approve" class="rounded-lg px-2.5 py-1.5 text-xs font-medium text-white" style="background: var(--color-brand-600)">Approve</button>
+                  <button name="action" value="archive" class="muted rounded-lg border px-2.5 py-1.5 text-xs" style="border-color: var(--border)">Archive</button>
+                </form>
+              </div>
+            </li>
+          ))}
+        </ul>
+      </Card>
+    )}
+
+    <Card title="In use" subtitle={`${active.length} skill${active.length === 1 ? '' : 's'}`}>
+      {active.length === 0 ? (
+        <EmptyState
+          title="No skills yet"
+          actionHref="/growth/skills/new"
+          actionLabel="Write one"
+          description="A skill is a note to the agent about how to do one part of the job. It loads when it matches the work in hand and stays out of the way when it does not — so writing ten of them costs nothing per run."
+        />
+      ) : (
+        <ul class="divide-y" style="border-color: var(--border)">
+          {active.map((skill) => (
+            <li class="py-3 first:pt-0 last:pb-0">
+              <a href={`/growth/skills/${skill.id}`} class="flex items-start justify-between gap-4 hover:opacity-80">
+                <div class="min-w-0">
+                  <p class="truncate text-sm font-medium">
+                    {skill.name}
+                    {skill.locked && <span class="muted ml-2 text-xs font-normal">locked</span>}
+                    {skill.origin === 'agent' && <span class="muted ml-2 text-xs font-normal">written by the agent</span>}
+                  </p>
+                  <p class="muted mt-0.5 text-xs">Use when {skill.whenToUse}</p>
+                  <p class="muted mt-0.5 text-xs">
+                    {stageLabels(skill.stages)} · v{skill.version}
+                    {skill.useCount > 0 && ` · loaded ${skill.useCount} time${skill.useCount === 1 ? '' : 's'}`}
+                  </p>
+                </div>
+              </a>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Card>
+
+    {archived.length > 0 && (
+      <Card title="Archived">
+        <ul class="space-y-1.5 text-sm">
+          {archived.map((skill) => (
+            <li>
+              <a href={`/growth/skills/${skill.id}`} class="muted hover:opacity-80">{skill.name}</a>
+            </li>
+          ))}
+        </ul>
+      </Card>
+    )}
+
+    <Card title="How skills are chosen">
+      <p class="muted text-sm leading-relaxed">
+        Before a stage asks the model anything, the agent reads every skill's name and “when it
+        applies” line — cheap, because those are one line each — and loads the full instructions of
+        at most three that match the work in hand. Skills you write are active immediately. Skills
+        the agent writes for itself are
+        {agentSettings.selfImprove === 'auto'
+          ? ' active immediately as well, because self-improvement is set to “just do it”.'
+          : agentSettings.selfImprove === 'off'
+            ? ' switched off entirely in your settings.'
+            : ' proposals until you approve them.'}
+        Every version is kept, so an edit can always be read and undone.
+      </p>
+    </Card>
+  </div>
+</AppLayout>

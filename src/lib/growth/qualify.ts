@@ -42,6 +42,14 @@ export interface QualifyInput {
   siteSummary: string;
   /** What discovery knew: category, rating, review count. */
   context: string;
+  /**
+   * Skills and remembered notes, rendered by the engine.
+   *
+   * Appended to the system prompt rather than the user one: it is standing
+   * guidance about how to judge, not a fact about this business, and mixing
+   * the two is how a remembered lesson ends up being cited as evidence.
+   */
+  guidance?: string;
   /** Where to book the cost of this call. */
   usage: AiUsageContext;
   /** Edited system prompts, where the user has any. */
@@ -107,7 +115,7 @@ export async function qualifyProspect(
   }>(
     ai,
     {
-      system: withContract('qualify', input.prompts?.qualify),
+      system: withContract('qualify', input.prompts?.qualify, guidanceSection(input.guidance)),
       prompt,
       model: MODELS.text,
       maxTokens: 700,
@@ -200,6 +208,7 @@ export async function shortlistProspects(
   idealClient: string,
   usage: AiUsageContext,
   prompts?: PromptOverrides,
+  guidance?: string,
 ): Promise<AiResult<ShortlistDecision>> {
   if (candidates.length === 0) return { ok: true, data: { selectedIds: [], reasoning: 'Nothing to choose from.' } };
 
@@ -213,7 +222,7 @@ export async function shortlistProspects(
   const result = await trackedGenerateJson<{ selected?: unknown; reasoning?: unknown }>(
     ai,
     {
-      system: withContract('shortlist', prompts?.shortlist),
+      system: withContract('shortlist', prompts?.shortlist, guidanceSection(guidance)),
       prompt: [
         idealClient ? `The client I am after: ${idealClient}` : '',
         `Pick at most ${limit}.`,
@@ -328,6 +337,12 @@ export interface PlanInput {
    * a page about any cafe.
    */
   directoryContent: string;
+  /**
+   * What the agent found out about them beyond their own site, when the
+   * enrich stage was allowed to go and look. Our own writing, so it is
+   * presented as briefing rather than fenced as third-party copy.
+   */
+  research?: string;
   contact: { email: string; phone: string; address: string };
   /**
    * What we know that did not come from a website.
@@ -337,6 +352,8 @@ export interface PlanInput {
    * pages came back as a name and a sentence saying nothing.
    */
   facts: PlanFacts;
+  /** Skills and remembered notes, rendered by the engine. */
+  guidance?: string;
   /** Where to book the cost of this call. */
   usage: AiUsageContext;
   /** Edited system prompts, where the user has any. */
@@ -396,6 +413,7 @@ export async function draftDesignPlan(
     'What is wrong with their current site:',
     renderAudit(input.audit),
     '',
+    input.research ? `What we found out about them:\n${input.research.slice(0, 2000)}\n` : '',
     'Contact details we hold:',
     `  email: ${input.contact.email || 'unknown'}`,
     `  phone: ${input.contact.phone || 'unknown'}`,
@@ -428,7 +446,7 @@ export async function draftDesignPlan(
   const result = await trackedGenerateJson<Record<string, unknown>>(
     ai,
     {
-      system: withContract('plan', input.prompts?.plan),
+      system: withContract('plan', input.prompts?.plan, guidanceSection(input.guidance)),
       prompt,
       model: MODELS.text,
       maxTokens: 3000,
@@ -607,4 +625,36 @@ function fallbackSections(input: PlanInput): PlanSection[] {
   });
 
   return sections;
+}
+
+/**
+ * Standing guidance, appended to a system prompt.
+ *
+ * Skills and memories are instructions about *how to judge*, so they belong
+ * with the other instructions rather than in the same block as the evidence.
+ * They are also explicitly ranked below the rules above them: a remembered
+ * note must never talk the model past a rule that exists to keep the outreach
+ * honest.
+ */
+export function withGuidance(system: string, guidance?: string): string {
+  const section = guidanceSection(guidance);
+  return section ? `${system}\n\n${section}` : system;
+}
+
+/**
+ * Learned guidance as a block, without a system prompt around it.
+ *
+ * `withContract` places this between the instructions and the JSON contract,
+ * so guidance still ranks below the rules — which is the whole point of the
+ * wording — while the shape of the answer stays the last thing said. Appending
+ * guidance after the contract, as this used to, put a paragraph of the agent's
+ * own prose between the model and the format it had to produce.
+ */
+export function guidanceSection(guidance?: string): string {
+  if (!guidance?.trim()) return '';
+  return (
+    '--- Learned guidance ---\nThe following comes from your own earlier runs. Follow it where ' +
+    'it applies, but never above the rules above, and never over evidence in front of you.\n\n' +
+    guidance.trim()
+  );
 }

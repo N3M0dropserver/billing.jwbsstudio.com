@@ -23,7 +23,7 @@ import { trackedGenerateJson, type AiUsageContext } from '../ai/usage';
 import { sendMail, type SendResult } from '../mail/index';
 import type { SiteAudit } from './assess';
 import { withContract, type PromptOverrides } from './prompts';
-import type { DesignPlanDraft } from './qualify';
+import { guidanceSection, type DesignPlanDraft } from './qualify';
 
 export interface ProposalDraft {
   subject: string;
@@ -45,6 +45,8 @@ export interface ProposalInput {
   signature: string;
   /** What the designer can actually deliver, from the brief. */
   capabilities: string;
+  /** Skills and remembered notes, rendered by the engine. */
+  guidance?: string;
   /** Where to book the cost of this call. */
   usage: AiUsageContext;
   /** Edited system prompts, where the user has any. */
@@ -86,7 +88,7 @@ export async function draftProposal(
   const result = await trackedGenerateJson<{ subject?: unknown; body?: unknown; page_body?: unknown }>(
     ai,
     {
-      system: withContract('outreach', input.prompts?.outreach),
+      system: withContract('outreach', input.prompts?.outreach, guidanceSection(input.guidance)),
       prompt,
       model: MODELS.text,
       maxTokens: 1200,
