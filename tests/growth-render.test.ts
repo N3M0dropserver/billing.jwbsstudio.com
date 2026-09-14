@@ -502,3 +502,131 @@ describe('what the planner is told when there is no website', () => {
     expect(renderFacts({ ...facts, rating: null })).toContain('312 reviews');
   });
 });
+
+/* ------------------------------------------------------------------ */
+/* Location and contact                                                */
+/* ------------------------------------------------------------------ */
+
+describe('a location section', () => {
+  const brief = FALLBACK_BRIEF;
+
+  const locationPlan = (extra: Partial<DesignPlanDraft> = {}): DesignPlanDraft => ({
+    summary: '',
+    strategy: '',
+    objective: 'conversion',
+    meta: { title: 'Meryenda', description: '' },
+    sections: [
+      {
+        id: 'location',
+        type: 'location',
+        heading: 'Where and when',
+        subheading: '2 Burton St, Darlinghurst',
+        body: '',
+        items: [
+          { title: 'Monday: 7am – 3pm', body: '' },
+          { title: 'Sunday: Closed', body: '' },
+        ],
+        cta: null,
+        imageHint: '',
+        notes: '',
+      },
+      {
+        id: 'contact',
+        type: 'contact',
+        heading: 'Get in touch',
+        subheading: '',
+        body: '',
+        items: [],
+        cta: null,
+        imageHint: '',
+        notes: '',
+      },
+    ],
+    ...extra,
+  });
+
+  const context = (images: DemoContext['images'] = []): DemoContext => ({
+    businessName: 'Meryenda',
+    niche: 'Cafe',
+    region: 'Darlinghurst',
+    contact: { email: '', phone: '+61 2 9331 0000', address: '2 Burton St, Darlinghurst' },
+    socials: [],
+    images,
+    openingHours: [],
+    designerName: 'JWBS Studio',
+    designerUrl: 'https://jwbsstudio.com',
+  });
+
+  /**
+   * The planner writes a day per item. Nothing looked at `items`, so a
+   * section headed "Where and when" answered neither.
+   */
+  it('prints the opening hours the plan wrote', () => {
+    const html = renderDemoPage(locationPlan(), brief, context());
+    expect(html).toContain('Monday');
+    expect(html).toContain('7am – 3pm');
+    expect(html).toContain('Sunday');
+    expect(html).toContain('Closed');
+  });
+
+  it('falls back to the hours research found when the plan wrote none', () => {
+    const plan = locationPlan();
+    plan.sections[0]!.items = [];
+    const withHours = { ...context(), openingHours: ['Weekdays 7–3'] };
+
+    expect(renderDemoPage(plan, brief, withHours)).toContain('Weekdays 7–3');
+  });
+
+  it('does not print the same hours twice when both are present', () => {
+    const withHours = { ...context(), openingHours: ['Monday: 7am – 3pm'] };
+    const html = renderDemoPage(locationPlan(), brief, withHours);
+
+    expect(html.split('7am – 3pm')).toHaveLength(2);
+  });
+
+  /**
+   * `location` and `contact` used to render through the same function, so a
+   * plan carrying both — and the prompt encourages both — put an identical
+   * address panel on the page twice.
+   */
+  it('leaves the address to the location section rather than repeating it', () => {
+    const html = renderDemoPage(locationPlan(), brief, context());
+    expect(html.split('2 Burton St, Darlinghurst').length - 1).toBe(1);
+  });
+
+  it('still gives the address when there is no location section', () => {
+    const plan = locationPlan();
+    plan.sections = [plan.sections[1]!];
+
+    expect(renderDemoPage(plan, brief, context())).toContain('2 Burton St, Darlinghurst');
+  });
+
+  /** A photograph paid for, stored, and then dropped on the floor. */
+  it('places the photograph the imagery stage allocated to it', () => {
+    const html = renderDemoPage(
+      locationPlan(),
+      brief,
+      context([
+        {
+          src: 'images/00.jpg',
+          alt: 'The shopfront on Burton St',
+          generated: false,
+          sectionId: 'location',
+          role: 'feature',
+        },
+      ]),
+    );
+
+    expect(html).toContain('images/00.jpg');
+    expect(html).toContain('The shopfront on Burton St');
+  });
+
+  it('escapes an hours line rather than letting it become markup', () => {
+    const plan = locationPlan();
+    plan.sections[0]!.items = [{ title: 'Monday: <script>alert(1)</script>', body: '' }];
+
+    const html = renderDemoPage(plan, brief, context());
+    expect(html).not.toContain('<script>alert(1)</script>');
+    expect(html).toContain('&lt;script&gt;');
+  });
+});

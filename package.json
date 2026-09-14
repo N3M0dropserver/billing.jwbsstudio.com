@@ -45,6 +45,7 @@
         "@types/react-dom": "^19.2.0",
         "drizzle-kit": "^0.31.10",
         "happy-dom": "20.14.5",
+        "playwright": "^1.63.0",
         "typescript": "^5.9.3",
         "vitest": "^5.0.0",
         "wrangler": "^4.131.1"
