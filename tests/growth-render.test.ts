@@ -222,7 +222,8 @@ describe('plan normalisation', () => {
   const input: PlanInput = {
     businessName: 'Wells Coffee', niche: 'coffee roasters', region: 'Wellington',
     brief: FALLBACK_BRIEF, audit: AUDIT, objective: 'awareness', angle: '',
-    siteContent: '', contact: { email: 'hello@wells.test', phone: '', address: '' },
+    siteContent: '',
+    directoryContent: '', contact: { email: 'hello@wells.test', phone: '', address: '' },
     facts: {
       category: '',
       address: '',
@@ -373,6 +374,7 @@ describe('a hero headline is never just the business name', () => {
     brief: FALLBACK_BRIEF,
     audit: AUDIT,
     siteContent: '',
+    directoryContent: '',
     contact: { email: '', phone: '', address: '' },
     facts: {
       category: '',

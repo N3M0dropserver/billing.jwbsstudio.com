@@ -53,6 +53,38 @@ export interface DiscoveredBusiness {
   operator?: string;
   /** How many branches the search found in this region. */
   branchCount?: number;
+
+  /**
+   * Photographs the source holds of this business, as references to fetch
+   * later rather than bytes.
+   *
+   * Discovery runs over dozens of businesses and most of them are discarded
+   * before anything is built, so downloading their photography here would be
+   * paying for pictures nobody will ever see. The reference is cheap to
+   * carry; research redeems the handful that make the shortlist.
+   *
+   * For a business with no website at all — which is most of what this
+   * pipeline selects — these are the only real photographs of them that
+   * exist anywhere we can reach, and a demo built without them is a demo
+   * built out of type alone.
+   */
+  photoRefs?: string[];
+
+  /** What their customers said. Untrusted: it is public third-party text. */
+  reviews?: ReviewQuote[];
+
+  /** As the source states them, one entry per day. */
+  openingHours?: string[];
+
+  /** The source's own one-line description of the business. Untrusted. */
+  summary?: string;
+}
+
+/** One review, kept whole so a testimonial can be attributed honestly. */
+export interface ReviewQuote {
+  quote: string;
+  rating: number | null;
+  author: string;
 }
 
 export interface DiscoveryOutcome {

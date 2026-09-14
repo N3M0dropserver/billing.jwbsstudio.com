@@ -39,7 +39,12 @@ import { trackedGenerate, type AiUsageContext } from '../ai/usage';
 import { applyOverrides, briefFromKit, type Brief } from './brief';
 import { auditSite, combineScores, type SiteAudit } from './assess';
 import { crawlSite } from './crawl';
-import { discover, discoveryUserAgent, type DiscoveredBusiness } from './discovery/index';
+import {
+  discover,
+  discoveryUserAgent,
+  type DiscoveredBusiness,
+  type ReviewQuote,
+} from './discovery/index';
 import { enrichProspect } from './enrich';
 import { normaliseDomain } from './html';
 import { assessScale, type ScaleAssessment } from './scale';
@@ -437,6 +442,14 @@ async function stageDiscover(
         context: business.context ?? '',
         brandWikidata: business.brandWikidata ?? '',
         operator: business.operator ?? '',
+        // Carried, not fetched. Research redeems these for the handful of
+        // prospects that make the shortlist; downloading photography for
+        // forty businesses to discard thirty of them is paying for pictures
+        // nobody will see.
+        photoRefs: business.photoRefs ?? [],
+        reviews: business.reviews ?? [],
+        openingHours: business.openingHours ?? [],
+        directorySummary: business.summary ?? '',
       }),
       stage: 'discover',
       status: 'new',
@@ -792,6 +805,7 @@ async function stageEnrich(
   }
 
   const prefix = prospectPrefix(campaign.userId, campaign.id, prospect.id);
+  const carried = readFindings(prospect);
   const enrichment = await enrichProspect(
     ctx.bucket,
     prefix,
@@ -802,8 +816,15 @@ async function stageEnrich(
       phone: prospect.phone || undefined,
       rating: prospect.rating ?? undefined,
       reviewCount: prospect.reviewCount || undefined,
+      reviews: readReviewQuotes(carried.reviews),
+      openingHours: readStringList(carried.openingHours, 7),
+      summary: String(carried.directorySummary ?? ''),
     },
-    { userAgent: discoveryUserAgent(ctx.appUrl) },
+    {
+      userAgent: discoveryUserAgent(ctx.appUrl),
+      photoRefs: readStringList(carried.photoRefs, 8),
+      placesApiKey: ctx.env.GOOGLE_PLACES_API_KEY,
+    },
   );
 
   const now = new Date().toISOString();
@@ -881,7 +902,12 @@ async function stageEnrich(
         ...findings,
         openingHours: enrichment.openingHours,
         siteContent: enrichment.siteContent.slice(0, 12_000),
+        directoryContent: enrichment.directoryContent.slice(0, 6000),
         researchNotes: enrichment.notes,
+        // The references have been redeemed; the bytes are in R2 and the rows
+        // are in `prospect_artifacts`. Keeping them would be carrying an
+        // expired handle around in a column.
+        photoRefs: [],
       }).slice(0, 40_000),
       updatedAt: now,
     })
@@ -893,7 +919,8 @@ async function stageEnrich(
     'enrich',
     'info',
     `Researched ${prospect.businessName}: ${enrichment.crawl.pages.length} page(s), ` +
-      `${enrichment.imageObjects.length} image(s), ${enrichment.contact.email ? 'email found' : 'no email'}.`,
+      `${enrichment.imageObjects.length} image(s), ${enrichment.contact.email ? 'email found' : 'no email'}` +
+      `${enrichment.reviewSummary ? ', reviews to quote' : ''}.`,
     { notes: enrichment.notes, socials: enrichment.socials.map((s) => s.platform) },
     prospect.id,
   );
@@ -933,6 +960,7 @@ async function stagePlan(
     objective: (findings.objective as 'conversion') ?? 'conversion',
     angle: String(findings.angle ?? ''),
     siteContent: String(findings.siteContent ?? ''),
+    directoryContent: String(findings.directoryContent ?? ''),
     contact: { email: prospect.email, phone: prospect.phone, address: prospect.address },
     facts: {
       category: String(findings.context ?? ''),
@@ -1017,41 +1045,78 @@ function scaffoldPlan(
   brief: Brief,
   prospect: Prospect,
 ): DesignPlanDraft {
+  const findings = readFindings(prospect);
+  const hours = readStringList(findings.openingHours, 7);
+  const reviews = readReviewQuotes(findings.reviews);
+  const where = prospect.address || region;
+
   const sections: PlanSection[] = [
     {
       id: 'hero',
       type: 'hero',
-      heading: businessName,
-      subheading: `${niche} · ${region}`,
-      body: '',
+      /**
+       * Not the business name. The name is in the header and the footer
+       * already, and a first screen that only repeats it is the failure the
+       * plan prompt names first — so the scaffold must not commit it either.
+       */
+      heading: `${sentenceCase(niche)} in ${region}`,
+      subheading: businessName,
+      body: describeBusiness(businessName, niche, where, prospect),
       items: [],
       cta: { label: 'Get in touch', href: '#contact' },
-      imageHint: 'Their best existing photograph, full bleed.',
-      notes: 'Scaffolded without a model — the copy needs writing.',
-    },
-    {
-      id: 'about',
-      type: 'intro',
-      heading: `About ${businessName}`,
-      subheading: '',
-      body: '',
-      items: [],
-      cta: null,
-      imageHint: '',
-      notes: 'Carry the existing about copy across and cut it in half.',
-    },
-    {
-      id: 'contact',
-      type: 'contact',
-      heading: 'Get in touch',
-      subheading: '',
-      body: '',
-      items: [],
-      cta: prospect.email ? { label: 'Email us', href: `mailto:${prospect.email}` } : null,
-      imageHint: '',
-      notes: '',
+      imageHint: `A wide photograph of ${businessName} — the room, the counter, or the work itself.`,
+      notes: 'Scaffolded without a model, from what is already known.',
     },
   ];
+
+  if (reviews.length) {
+    sections.push({
+      id: 'testimonials',
+      type: 'testimonials',
+      heading: 'What people say',
+      subheading: prospect.rating
+        ? `Rated ${prospect.rating}${prospect.reviewCount ? ` across ${prospect.reviewCount} reviews` : ''}`
+        : '',
+      body: '',
+      items: reviews.slice(0, 3).map((review) => ({
+        title: review.author || 'A customer',
+        body: review.quote,
+      })),
+      cta: null,
+      imageHint: '',
+      notes: 'Their own reviews, quoted as written.',
+    });
+  }
+
+  if (hours.length || where) {
+    sections.push({
+      id: 'location',
+      type: 'location',
+      heading: hours.length ? 'Where and when' : 'Where to find us',
+      subheading: where,
+      body: '',
+      items: hours.map((entry) => ({ title: entry, body: '' })),
+      cta: null,
+      imageHint: where ? `The shopfront at ${where}, seen from the street.` : '',
+      notes: '',
+    });
+  }
+
+  sections.push({
+    id: 'contact',
+    type: 'contact',
+    heading: 'Get in touch',
+    subheading: '',
+    body: [prospect.phone, prospect.email, where].filter(Boolean).join(' · '),
+    items: [],
+    cta: prospect.email
+      ? { label: 'Email us', href: `mailto:${prospect.email}` }
+      : prospect.phone
+        ? { label: 'Call us', href: `tel:${prospect.phone.replace(/[^+\d]/g, '')}` }
+        : null,
+    imageHint: '',
+    notes: '',
+  });
 
   const ordered = brief.sectionOrder.length
     ? sections.sort(
@@ -1061,14 +1126,51 @@ function scaffoldPlan(
     : sections;
 
   return {
-    summary: `A one-page site for ${businessName}.`,
+    summary: `A one-page site for ${businessName}, laid out from what is already known about them.`,
     strategy:
-      'Laid out from what is already known about the business. Written without a model, so the ' +
-      'structure is sound and the copy is a placeholder.',
+      'Written without a model, so every line on it is a fact already held rather than copy. ' +
+      'The structure is sound; the voice is not there yet.',
     objective: 'conversion',
     sections: ordered,
-    meta: { title: `${businessName} — ${niche} in ${region}`, description: '' },
+    meta: {
+      title: `${businessName} — ${niche} in ${region}`,
+      description: describeBusiness(businessName, niche, where, prospect).slice(0, 200),
+    },
   };
+}
+
+/**
+ * One true sentence about the business.
+ *
+ * The scaffold used to emit a hero with the name on it, an "About" heading
+ * with nothing under it and an empty contact block — three headings and no
+ * page. When the model fails, this is what a stranger sees, so it has to be
+ * made of the facts we actually hold rather than left blank for someone to
+ * fill in later.
+ */
+function describeBusiness(
+  businessName: string,
+  niche: string,
+  where: string,
+  prospect: Pick<Prospect, 'rating' | 'reviewCount'>,
+): string {
+  const standing =
+    prospect.rating && prospect.reviewCount
+      ? `Rated ${prospect.rating} across ${prospect.reviewCount} reviews.`
+      : '';
+
+  return [
+    where ? `${businessName} is a ${niche.toLowerCase()} in ${where}.` : `${businessName} is a ${niche.toLowerCase()}.`,
+    standing,
+  ]
+    .filter(Boolean)
+    .join(' ');
+}
+
+/** "coffee roasters" → "Coffee roasters". Leaves an already-capped word alone. */
+function sentenceCase(value: string): string {
+  const trimmed = value.trim();
+  return trimmed ? trimmed[0]!.toUpperCase() + trimmed.slice(1) : trimmed;
 }
 
 function indexOrLast(order: string[], type: string): number {
@@ -1653,6 +1755,28 @@ export function parseJson<T>(raw: string | null | undefined, fallback: T): T {
 
 export function readFindings(prospect: Pick<Prospect, 'findings'>): Record<string, unknown> {
   return parseJson<Record<string, unknown>>(prospect.findings, {});
+}
+
+/** A list of strings out of `findings`, which is whatever was written there. */
+export function readStringList(value: unknown, max: number): string[] {
+  return Array.isArray(value)
+    ? value.map((entry) => String(entry)).filter(Boolean).slice(0, max)
+    : [];
+}
+
+/** Review quotes out of `findings`, coerced field by field. */
+export function readReviewQuotes(value: unknown): ReviewQuote[] {
+  if (!Array.isArray(value)) return [];
+
+  return value
+    .filter((entry): entry is Record<string, unknown> => !!entry && typeof entry === 'object')
+    .map((entry) => ({
+      quote: String(entry.quote ?? '').slice(0, 600),
+      rating: Number.isFinite(Number(entry.rating)) ? Number(entry.rating) : null,
+      author: String(entry.author ?? '').slice(0, 120),
+    }))
+    .filter((review) => review.quote)
+    .slice(0, 5);
 }
 
 export function readAudit(prospect: Pick<Prospect, 'audit' | 'businessName'>): SiteAudit {
