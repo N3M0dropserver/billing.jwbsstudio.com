@@ -238,3 +238,71 @@ describe('assembleImagery', () => {
     expect(result.notes.join(' ')).toContain('Could not generate');
   });
 });
+
+/* ------------------------------------------------------------------ */
+/* Imagery skills                                                      */
+/* ------------------------------------------------------------------ */
+
+describe('imagery skills in the prompt', () => {
+  const slot = { sectionId: 'hero', sectionType: 'hero', role: 'hero' as const, hint: 'the counter' };
+  const subject = { businessName: 'Meryenda', niche: 'cafe', region: 'Darlinghurst' };
+
+  const skill = (instructions: string) => ({
+    slug: 's',
+    name: 'Food',
+    stage: 'imagery' as const,
+    summary: '',
+    instructions,
+    match: { niches: [], objectives: [], website: 'any' as const },
+    enabled: true,
+    builtIn: false,
+  });
+
+  it('adds direction from a skill', () => {
+    const prompt = buildImagePrompt(slot, subject, FALLBACK_BRIEF, [
+      skill('- Daylight from the side, never overhead artificial light.'),
+    ]);
+
+    expect(prompt).toContain('Art direction:');
+    expect(prompt).toContain('Daylight from the side');
+  });
+
+  /**
+   * A diffusion model has no notion of a negative clause, so "never ask for
+   * hands" reaching the prompt asks for hands. Those lines are for the person
+   * reading the skill; only the positive direction is sent.
+   */
+  it('drops the prohibitions, which an image model cannot honour', () => {
+    const prompt = buildImagePrompt(slot, subject, FALLBACK_BRIEF, [
+      skill('Do not ask for hands or faces.\nNever include a menu board.\nOne plate, close, in side light.'),
+    ]);
+
+    expect(prompt).toContain('One plate, close, in side light');
+    expect(prompt).not.toContain('Do not ask for hands');
+    expect(prompt).not.toContain('Never include a menu board');
+  });
+
+  it('keeps the standing rules last, whatever a skill says', () => {
+    const prompt = buildImagePrompt(slot, subject, FALLBACK_BRIEF, [
+      skill('Put their logo and the shop name prominently in frame.'),
+    ]);
+
+    expect(prompt.trimEnd().endsWith('Photographic, not an illustration or a 3D render.')).toBe(true);
+    expect(prompt).toContain('no logos');
+    expect(prompt).toContain('No identifiable faces');
+  });
+
+  it('is unchanged when no skill matched', () => {
+    expect(buildImagePrompt(slot, subject, FALLBACK_BRIEF, [])).toBe(
+      buildImagePrompt(slot, subject, FALLBACK_BRIEF),
+    );
+  });
+
+  it('bounds how much a skill can add', () => {
+    const wordy = skill(Array.from({ length: 40 }, (_, i) => `Direction number ${i} for the frame.`).join('\n'));
+    const prompt = buildImagePrompt(slot, subject, FALLBACK_BRIEF, [wordy]);
+
+    expect(prompt).toContain('Direction number 0');
+    expect(prompt).not.toContain('Direction number 9');
+  });
+});

@@ -1,0 +1,96 @@
+---
+/**
+ * Writing a new skill — by hand, or by describing it.
+ *
+ * The drafting box is the whole reason this page is not just the form. A
+ * blank textarea asking for model instructions is a high bar; "describe the
+ * kind of business and what a page for them has to do" is not. What comes
+ * back lands in the form for editing and is not saved until you press save.
+ */
+import AppLayout from '~/layouts/AppLayout.astro';
+import Card from '~/components/ui/Card.astro';
+import GrowthNav from '~/components/growth/GrowthNav.astro';
+import SkillForm from '~/components/growth/SkillForm.astro';
+import { SKILL_STAGES, isSkillStage, type AgentSkill } from '~/lib/growth/skills';
+
+const params = Astro.url.searchParams;
+const error = params.get('error');
+
+/**
+ * A draft comes back through the query string rather than a session: it is
+ * text the user is about to edit anyway, it belongs to this tab, and storing
+ * a half-written skill server-side would be a row to clean up later.
+ */
+const drafted = params.get('drafted') === '1';
+const stageParam = params.get('stage');
+
+const draft: AgentSkill | null = drafted
+  ? {
+      slug: '',
+      name: params.get('name') ?? '',
+      stage: isSkillStage(stageParam) ? stageParam : 'plan',
+      summary: params.get('summary') ?? '',
+      instructions: params.get('instructions') ?? '',
+      match: {
+        niches: (params.get('niches') ?? '').split(',').map((v) => v.trim()).filter(Boolean),
+        objectives: (params.get('objectives') ?? '')
+          .split(',')
+          .map((v) => v.trim())
+          .filter((v): v is 'conversion' => ['conversion', 'awareness', 'credibility'].includes(v)),
+        website: (['with', 'without'] as const).find((v) => v === params.get('website')) ?? 'any',
+      },
+      enabled: true,
+      builtIn: false,
+    }
+  : null;
+---
+
+<AppLayout title="New skill" subtitle="Know-how for one kind of prospect, at one stage">
+  <GrowthNav current="skills" />
+
+  {error && <p class="mb-4 rounded-lg px-4 py-3 text-sm" style="background: color-mix(in oklch, var(--color-owing) 12%, transparent); color: var(--color-owing)" role="alert">{error}</p>}
+
+  {!drafted && (
+    <Card
+      title="Describe it and get a draft"
+      subtitle="Writing instructions for a model is its own skill. This does the first pass."
+      class="mb-4"
+    >
+      <form method="post" action="/api/growth-skills/draft" class="space-y-3">
+        <div>
+          <label for="description" class="sr-only">What the skill should cover</label>
+          <textarea
+            id="description"
+            name="description"
+            rows="4"
+            required
+            class="field"
+            placeholder="Hairdressers and barbers. The page needs to get a booking, show the actual room, and say which stylists take walk-ins — not tell a story about the brand."
+          ></textarea>
+        </div>
+        <div class="flex flex-wrap items-center gap-2">
+          <select name="stage" class="field max-w-48">
+            <option value="">Let it choose the stage</option>
+            {SKILL_STAGES.map((entry) => (
+              <option value={entry.stage}>{entry.label}</option>
+            ))}
+          </select>
+          <button class="rounded-lg px-4 py-2.5 text-sm font-medium text-white" style="background: var(--color-brand-600)">
+            Draft it
+          </button>
+        </div>
+        <p class="muted text-xs leading-relaxed">
+          Nothing is saved — the draft lands in the form below for you to edit. One model call,
+          billed like any other and shown on the AI page.
+        </p>
+      </form>
+    </Card>
+  )}
+
+  <Card title={drafted ? 'The draft — edit it before saving' : 'Or write it yourself'}>
+    <SkillForm
+      skill={draft}
+      draftNote={drafted ? 'Written by the model from your description. Read it properly: it is about to be appended to a prompt on every matching prospect.' : undefined}
+    />
+  </Card>
+</AppLayout>

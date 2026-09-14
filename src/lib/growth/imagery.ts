@@ -26,6 +26,7 @@ import { MODELS } from '../ai/index';
 import { trackedGenerateImage, type AiUsageContext } from '../ai/usage';
 import type { Brief } from './brief';
 import type { DesignPlanDraft, PlanSection } from './qualify';
+import type { AgentSkill } from './skills';
 
 export type ImageRole = 'hero' | 'feature' | 'gallery';
 
@@ -168,19 +169,55 @@ export function buildImagePrompt(
   slot: ImageSlot,
   subject: ImagerySubject,
   brief: Brief,
+  /**
+   * The imagery skills that matched this prospect, already selected.
+   *
+   * An image model is given one string and no conversation, so a skill lands
+   * here as a clause rather than a section — flattened and clamped like every
+   * other piece of prose that reaches this prompt, because a skill is text the
+   * user wrote and this prompt has hard rules after it that must survive.
+   */
+  skills: AgentSkill[] = [],
 ): string {
   const hint = sanitiseHint(slot.hint);
   const fallbackSubject = `the work and surroundings of a ${subject.niche} business in ${subject.region}`;
+  const direction = skillDirection(skills);
 
   return [
     `Editorial photograph for a ${subject.niche} business.`,
     `Subject: ${hint || fallbackSubject}.`,
     ROLE_FRAMING[slot.role] + '.',
     styleFromBrief(brief) + '.',
+    direction,
+    // These stay last and are not the user's to change. A generated "logo" on
+    // a concept for a real business, or a face that reads as their staff, is
+    // the one thing a skill must not be able to talk the model into.
     'No text, no lettering, no signage, no logos, no watermarks.',
     'No identifiable faces.',
     'Photographic, not an illustration or a 3D render.',
-  ].join(' ');
+  ]
+    .filter(Boolean)
+    .join(' ');
+}
+
+/**
+ * Imagery skills, as one clause.
+ *
+ * Only the lines that read as direction survive: a skill is written for a
+ * person as much as a model, and its headings and its "do not" bullets are
+ * prose that would confuse a diffusion prompt rather than steer it.
+ */
+function skillDirection(skills: AgentSkill[]): string {
+  const clauses = skills
+    .flatMap((skill) => skill.instructions.split('\n'))
+    .map((line) => line.replace(/^[-*\s]+/, '').trim())
+    .filter((line) => line.length > 12 && !line.endsWith(':'))
+    .filter((line) => !/^(do not|never|no )/i.test(line))
+    .map(sanitiseHint)
+    .filter(Boolean)
+    .slice(0, 4);
+
+  return clauses.length ? `Art direction: ${clauses.join(' ')}` : '';
 }
 
 /* ------------------------------------------------------------------ */
@@ -209,6 +246,8 @@ export interface AssembleOptions {
   generate: boolean;
   /** Hard ceiling on generations, which cost money per picture. */
   maxGenerated?: number;
+  /** Imagery skills that matched this prospect. */
+  skills?: AgentSkill[];
 }
 
 export interface AssembledImagery {
@@ -257,7 +296,7 @@ export async function assembleImagery(
 
     if (!options.generate || generatedCount >= maxGenerated) continue;
 
-    const prompt = buildImagePrompt(slot, options.subject, options.brief);
+    const prompt = buildImagePrompt(slot, options.subject, options.brief, options.skills ?? []);
     const result = await trackedGenerateImage(ai, { prompt, model: MODELS.image }, usage);
 
     if (!result.ok) {

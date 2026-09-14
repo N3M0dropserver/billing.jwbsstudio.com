@@ -32,7 +32,9 @@ import { getDb } from '../../../src/lib/db/index';
 import { settings } from '../../../src/lib/db/schema';
 import { describeError } from '../../../src/lib/errors';
 import { loadPromptOverrides } from '../../../src/lib/queries/prompts';
+import { loadSkills } from '../../../src/lib/queries/skills';
 import type { PromptOverrides } from '../../../src/lib/growth/prompts';
+import type { AgentSkill } from '../../../src/lib/growth/skills';
 import {
   decideGate,
   loadCampaign,
@@ -55,6 +57,13 @@ export interface CampaignState {
   ticks: number;
   lastTickAt: string | null;
   error: string;
+}
+
+/** What a tick reads once and every model call in it then shares. */
+interface RuntimeSettings {
+  cacheTtlHours: number;
+  prompts: PromptOverrides;
+  skills: AgentSkill[];
 }
 
 /** How long to wait before the next tick while a run is active. */
@@ -81,7 +90,7 @@ export class CampaignAgent extends Agent<Env, CampaignState> {
     error: '',
   };
 
-  private context(runtime?: { cacheTtlHours: number; prompts: PromptOverrides }): EngineContext {
+  private context(runtime?: RuntimeSettings): EngineContext {
     return {
       db: getDb(this.env.DB),
       bucket: this.env.FILES,
@@ -90,18 +99,19 @@ export class CampaignAgent extends Agent<Env, CampaignState> {
       appUrl: this.env.APP_URL || 'https://billing.jwbsstudio.com',
       aiCacheTtlHours: runtime?.cacheTtlHours,
       prompts: runtime?.prompts,
+      skills: runtime?.skills,
     };
   }
 
   /**
    * What the user has set, read once per tick rather than per call.
    *
-   * A tick makes several model calls and they all want the same cache window
-   * and the same edited prompts; reading each time would be two D1 round
-   * trips for values that cannot change mid-tick.
+   * A tick makes several model calls and they all want the same cache window,
+   * the same edited prompts and the same skills; reading each time would be
+   * three D1 round trips for values that cannot change mid-tick.
    */
-  private async runtimeSettings(): Promise<{ cacheTtlHours: number; prompts: PromptOverrides }> {
-    if (!this.state.userId) return { cacheTtlHours: 0, prompts: {} };
+  private async runtimeSettings(): Promise<RuntimeSettings> {
+    if (!this.state.userId) return { cacheTtlHours: 0, prompts: {}, skills: [] };
 
     const db = getDb(this.env.DB);
     let cacheTtlHours = 0;
@@ -117,7 +127,12 @@ export class CampaignAgent extends Agent<Env, CampaignState> {
       cacheTtlHours = 0;
     }
 
-    return { cacheTtlHours, prompts: await loadPromptOverrides(db, this.state.userId) };
+    const [prompts, skills] = await Promise.all([
+      loadPromptOverrides(db, this.state.userId),
+      loadSkills(db, this.state.userId),
+    ]);
+
+    return { cacheTtlHours, prompts, skills };
   }
 
   private note(message: string): Array<{ at: string; message: string }> {

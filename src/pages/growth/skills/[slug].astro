@@ -1,0 +1,57 @@
+---
+/**
+ * Editing one skill.
+ *
+ * A built-in shows what it is and how to put it back, because "remove" on a
+ * shipped skill means something different from "remove" on one you wrote, and
+ * pressing it expecting the other is the kind of mistake that costs an evening.
+ */
+import AppLayout from '~/layouts/AppLayout.astro';
+import Card from '~/components/ui/Card.astro';
+import GrowthNav from '~/components/growth/GrowthNav.astro';
+import SkillForm from '~/components/growth/SkillForm.astro';
+import { db } from '~/lib/env';
+import { BUILT_IN_SKILLS } from '~/lib/growth/skills';
+import { loadSkill } from '~/lib/queries/skills';
+
+const user = Astro.locals.user!;
+const { slug } = Astro.params;
+const skill = slug ? await loadSkill(db(), user.id, slug) : null;
+
+if (!skill) return Astro.redirect('/growth/skills', 302);
+
+const shipped = BUILT_IN_SKILLS.find((candidate) => candidate.slug === skill.slug) ?? null;
+const edited = shipped !== null && shipped.instructions !== skill.instructions;
+---
+
+<AppLayout title={skill.name} subtitle="One piece of know-how, and the prospects it reaches">
+  <GrowthNav current="skills" />
+
+  {shipped && (
+    <p class="muted mb-4 rounded-lg border px-4 py-3 text-sm leading-relaxed" style="border-color: var(--border)">
+      This one ships with the app{edited ? ', and you have changed it' : ''}.
+      {edited
+        ? ' Removing your version puts the shipped one back — it does not delete the skill.'
+        : ' Editing it makes a copy that is yours; the original is always one click away.'}
+    </p>
+  )}
+
+  <Card>
+    <SkillForm skill={skill} />
+  </Card>
+
+  <Card title="Remove" class="mt-4">
+    <form method="post" action="/api/growth-skills" class="flex flex-wrap items-center gap-3">
+      <input type="hidden" name="action" value="delete" />
+      <input type="hidden" name="slug" value={skill.slug} />
+      <button class="rounded-lg border px-3 py-2 text-sm" style="border-color: var(--color-overdue); color: var(--color-overdue)">
+        {shipped ? 'Put the shipped version back' : 'Delete this skill'}
+      </button>
+      <span class="muted text-xs">
+        {shipped
+          ? 'Your changes go; the built-in stays available.'
+          : 'Gone for good. Runs after this will not see it.'}
+      </span>
+    </form>
+  </Card>
+</AppLayout>

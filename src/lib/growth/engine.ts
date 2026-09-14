@@ -51,6 +51,7 @@ import { assessScale, type ScaleAssessment } from './scale';
 import { checkProminence, EMPTY_PROMINENCE, type SearchProviderName } from './search';
 import { nextStage, resolvePolicy, type StageMode, type StagePolicy } from './policy';
 import type { PromptOverrides } from './prompts';
+import { selectSkills, type AgentSkill, type SkillContext } from './skills';
 import {
   draftDesignPlan,
   normalisePlan,
@@ -88,6 +89,11 @@ export interface EngineContext {
    * Absent means every prompt runs on its default.
    */
   prompts?: PromptOverrides;
+  /**
+   * Every skill in force, read once per tick. Which of them apply is decided
+   * per prospect, at each stage, from the prospect itself.
+   */
+  skills?: AgentSkill[];
 }
 
 export interface StepResult {
@@ -716,6 +722,9 @@ async function assessProspect(
         context: String(findings.context ?? ''),
         usage: usageFor(ctx, campaign, 'qualify', 'shortlist', prospect.id),
         prompts: ctx.prompts,
+        skills: ctx.skills,
+        category: String(findings.context ?? ''),
+        hasWebsite: Boolean(prospect.website),
       });
 
   const fitScore = qualification?.ok ? qualification.data.fitScore : 0;
@@ -984,6 +993,7 @@ async function stagePlan(
     },
     usage: usageFor(ctx, campaign, 'plan', 'plan', prospect.id),
     prompts: ctx.prompts,
+    skills: ctx.skills,
   };
 
   let draft: DesignPlanDraft;
@@ -1306,6 +1316,7 @@ async function stageBuild(
       theirs,
       generate: settingsRow.generateDemoImages,
       maxGenerated: settingsRow.maxGeneratedImages,
+      skills: selectSkills(ctx.skills ?? [], 'imagery', skillContextFor(prospect, campaign, plan.objective)),
     },
     {
       db: ctx.db,
@@ -1547,6 +1558,8 @@ async function stagePropose(
     capabilities: brief.capabilities,
     usage: usageFor(ctx, campaign, 'proposal', 'propose', prospect.id),
     prompts: ctx.prompts,
+    skills: ctx.skills,
+    skillContext: skillContextFor(prospect, campaign, plan.objective),
   });
 
   if (!draft.ok) {
@@ -1762,6 +1775,30 @@ export function parseJson<T>(raw: string | null | undefined, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+/**
+ * How a prospect is described to the skill matcher.
+ *
+ * Built from the prospect rather than the plan, because the same description
+ * has to work at the qualify stage — before any plan exists — and at the
+ * build stage, long after.
+ */
+export function skillContextFor(
+  prospect: Pick<Prospect, 'website' | 'findings'>,
+  campaign: Pick<Campaign, 'niche'>,
+  objective: string,
+): SkillContext {
+  return {
+    niche: campaign.niche,
+    category: String(readFindings(prospect).context ?? ''),
+    objective: (['conversion', 'awareness', 'credibility'] as const).includes(
+      objective as 'conversion',
+    )
+      ? (objective as SkillContext['objective'])
+      : 'conversion',
+    hasWebsite: Boolean(prospect.website),
+  };
 }
 
 export function readFindings(prospect: Pick<Prospect, 'findings'>): Record<string, unknown> {

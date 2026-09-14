@@ -210,11 +210,26 @@ export function defaultInstructions(key: PromptKey): string {
  * someone who edited a copy of the whole prompt does not end up sending it
  * twice.
  */
-export function withContract(key: PromptKey, override?: string | null): string {
+export function withContract(
+  key: PromptKey,
+  override?: string | null,
+  /**
+   * Case-specific know-how, already selected and rendered.
+   *
+   * It goes between the instructions and the contract: after the general
+   * rules, because it is meant to refine them, and before the shape, because
+   * the last thing a system prompt says should be what the answer has to look
+   * like.
+   */
+  skills?: string,
+): string {
   const spec = promptSpec(key);
   const instructions = (override ?? '').trim() || spec.instructions;
 
-  return `${stripContract(instructions, spec.contract)}\n\n${spec.contract}`.trim();
+  return [stripContract(instructions, spec.contract), (skills ?? '').trim(), spec.contract]
+    .filter(Boolean)
+    .join('\n\n')
+    .trim();
 }
 
 /**
