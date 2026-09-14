@@ -36,6 +36,14 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { DatabaseSync } from 'node:sqlite';
 
+// `node:sqlite` prints an experimental notice on import. This uses only
+// `exec`/`prepare`, which are not the parts in flux, and the notice sits in
+// the middle of the report where it reads like part of the diagnosis.
+process.removeAllListeners('warning');
+process.on('warning', (warning) => {
+  if (!/SQLite is an experimental feature/.test(warning.message)) console.warn(warning);
+});
+
 const run = promisify(execFile);
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const MIGRATIONS = join(ROOT, 'migrations');
@@ -196,6 +204,28 @@ export function recordMigrationSql(name) {
 /* Talking to D1                                                       */
 /* ------------------------------------------------------------------ */
 
+/**
+ * What wrangler was actually complaining about.
+ *
+ * With `--json` it reports failures as `{"error":{"text":…}}` on STDOUT and
+ * exits non-zero; stderr carries only the banner. Reading stderr first — the
+ * obvious thing — reports the proxy warning and swallows "you need to set
+ * CLOUDFLARE_API_TOKEN".
+ */
+function wranglerMessage(error) {
+  const stdout = String(error.stdout || '');
+  const start = stdout.indexOf('{');
+  if (start >= 0) {
+    try {
+      const parsed = JSON.parse(stdout.slice(start));
+      if (parsed?.error?.text) return parsed.error.text;
+    } catch {
+      // Not JSON after all; fall through to the raw output.
+    }
+  }
+  return String(error.stderr || stdout || error.message).trim();
+}
+
 async function d1(command, { remote }) {
   const args = [
     'wrangler',
@@ -208,38 +238,87 @@ async function d1(command, { remote }) {
     command,
   ];
 
-  const { stdout } = await run('bunx', args, { cwd: ROOT, maxBuffer: 32 * 1024 * 1024 });
+  let stdout;
+  try {
+    ({ stdout } = await run('bunx', args, { cwd: ROOT, maxBuffer: 32 * 1024 * 1024 }));
+  } catch (error) {
+    // execFile's own message is just "Command failed", which says nothing
+    // about what was refused.
+    throw new Error(`wrangler could not run:\n  ${command}\n\n${wranglerMessage(error)}`);
+  }
+
   // wrangler prints a banner on some versions even with --json.
   const start = stdout.indexOf('[');
   const parsed = JSON.parse(start > 0 ? stdout.slice(start) : stdout);
   return parsed.flatMap((batch) => batch.results ?? []);
 }
 
-/** The live schema, via wrangler. Same shape as `readSchema`. */
-async function readLiveSchema(options) {
-  const objects = await d1(
-    `SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'`,
-    options,
-  );
+/**
+ * Tables that are D1's business rather than ours.
+ *
+ * `_cf_METADATA` and friends are Cloudflare's bookkeeping and are not always
+ * even readable — a `PRAGMA table_info` on one fails outright. `d1_migrations`
+ * is wrangler's, and is read separately below.
+ */
+const INTERNAL_TABLES = /^(sqlite_|_cf_|_litestream)/;
 
-  const tables = new Map();
+/**
+ * The live schema, via wrangler. Same shape as `readSchema`.
+ *
+ * One query for the columns of every table: `pragma_table_info` as a
+ * table-valued function joins against `sqlite_master`, and a wrangler
+ * invocation per table is thirty-odd process launches for the same answer.
+ * Not every SQLite build exposes it that way, so there is a slower path.
+ *
+ * `exec` is the way out to the database, and is injected so the shape of this
+ * — which internal tables are skipped, which query is tried first — can be
+ * tested without a D1 to point at.
+ */
+export async function readLiveSchema(options, exec = d1) {
+  const objects = await exec(`SELECT type, name, sql FROM sqlite_master`, options);
+
   const indexes = new Map();
   for (const object of objects) {
     if (object.type === 'index' && object.sql) indexes.set(object.name, object.sql);
   }
 
-  for (const object of objects.filter((o) => o.type === 'table')) {
-    const columns = new Map();
-    for (const column of await d1(`PRAGMA table_info(\`${object.name}\`)`, options)) {
-      columns.set(column.name, {
-        name: column.name,
-        type: column.type,
-        notNull: Boolean(column.notnull),
-        default: column.dflt_value,
-        pk: Boolean(column.pk),
-      });
+  const names = objects
+    .filter((object) => object.type === 'table' && !INTERNAL_TABLES.test(object.name))
+    .map((object) => object.name);
+
+  const tables = new Map(names.map((name) => [name, new Map()]));
+  const add = (table, column) => {
+    tables.get(table)?.set(column.name, {
+      name: column.name,
+      type: column.type,
+      notNull: Boolean(column.notnull),
+      default: column.dflt_value,
+      pk: Boolean(column.pk),
+    });
+  };
+
+  try {
+    const rows = await exec(
+      `SELECT m.name AS "table", p.name AS "name", p.type AS "type", ` +
+        `p."notnull" AS "notnull", p.dflt_value AS "dflt_value", p.pk AS "pk" ` +
+        `FROM sqlite_master m JOIN pragma_table_info(m.name) p WHERE m.type = 'table'`,
+      options,
+    );
+    for (const row of rows) add(row.table, row);
+    if ([...tables.values()].every((columns) => columns.size === 0)) throw new Error('no columns');
+    return { tables, indexes };
+  } catch {
+    // Fall through to asking one table at a time.
+  }
+
+  for (const name of names) {
+    try {
+      for (const column of await exec(`PRAGMA table_info(\`${name}\`)`, options)) {
+        add(name, column);
+      }
+    } catch (error) {
+      console.log(`  ${name}: could not be read (${error.message.split('\n')[0]})`);
     }
-    tables.set(object.name, columns);
   }
 
   return { tables, indexes };

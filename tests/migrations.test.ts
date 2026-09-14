@@ -6,7 +6,13 @@ import { DatabaseSync } from 'node:sqlite';
 import { makeIdempotent, sweepMigrations } from '../scripts/idempotent-migrations.mjs';
 // And the repair tool, for the same reason: one model of what a migration
 // does to a database, used by the test and by `bun run db:drift` alike.
-import { applyMigration, readSchema } from '../scripts/d1-drift.mjs';
+import {
+  addColumnSql,
+  applyMigration,
+  diffSchemas,
+  readLiveSchema,
+  readSchema,
+} from '../scripts/d1-drift.mjs';
 
 const MIGRATIONS = join(process.cwd(), 'migrations');
 
@@ -119,6 +125,84 @@ describe('re-applying a migration cannot narrow the schema', () => {
       expect(`${table}: ${[...after.tables.get(table)?.keys() ?? []].join(',')}`).toBe(
         `${table}: ${[...columns.keys()].join(',')}`,
       );
+    }
+  });
+});
+
+/**
+ * `bun run db:drift` is read in a moment of confusion, so it has to survive
+ * what a real D1 contains: Cloudflare's own tables, which are in
+ * `sqlite_master` and which `PRAGMA table_info` is not allowed to look at.
+ */
+describe('reading a live database', () => {
+  /** A database damaged exactly the way production was. */
+  const damaged = () => {
+    const db = new DatabaseSync(':memory:');
+    for (const [, text] of sql) applyMigration(db, text);
+    // Re-run the growth migration in the order it had when this happened:
+    // the ALTERs last, so the rebuild is reached and goes through.
+    const fixed = sql.find(([file]) => file === '0010_growth_engine.sql')?.[1] ?? '';
+    const alters = fixed.indexOf('-- Everything that cannot be re-run safely');
+    const rebuild = fixed.indexOf('DROP TABLE IF EXISTS `prospect_searches`');
+    expect([alters, rebuild].every((at) => at > 0 && alters < rebuild)).toBe(true);
+    const asItWas =
+      fixed.slice(0, alters) +
+      fixed.slice(rebuild) +
+      '\n--> statement-breakpoint\n' +
+      fixed.slice(alters, rebuild);
+    applyMigration(db, asItWas);
+    db.exec('CREATE TABLE IF NOT EXISTS _cf_METADATA (key INTEGER PRIMARY KEY, value BLOB)');
+    return db;
+  };
+
+  /** Stands in for wrangler, refusing the internal table the way D1 does. */
+  const execFor = (db: DatabaseSync, { batched = true } = {}) => {
+    const asked: string[] = [];
+    const exec = async (query: string) => {
+      asked.push(query);
+      if (query.includes('_cf_METADATA')) throw new Error('no such table: _cf_METADATA');
+      if (!batched && query.includes('pragma_table_info')) throw new Error('not supported');
+      return db.prepare(query).all();
+    };
+    return { exec, asked };
+  };
+
+  it('never asks about a table D1 will not answer for', async () => {
+    const db = damaged();
+    const { exec, asked } = execFor(db);
+
+    const live = await readLiveSchema({ remote: false }, exec);
+
+    expect(asked.some((query) => query.includes('_cf_METADATA'))).toBe(false);
+    expect(live.tables.has('_cf_METADATA')).toBe(false);
+    expect(live.tables.get('prospects')?.has('scale_score')).toBe(false);
+  });
+
+  it('finds the columns the rebuild took, either way round', async () => {
+    const expected = readSchema(
+      (() => {
+        const clean = new DatabaseSync(':memory:');
+        for (const [, text] of sql) applyMigration(clean, text);
+        return clean;
+      })(),
+    );
+
+    for (const batched of [true, false]) {
+      const { exec } = execFor(damaged(), { batched });
+      const diff = diffSchemas(expected, await readLiveSchema({ remote: false }, exec));
+
+      expect(diff.missingColumns.map((missing) => `${missing.table}.${missing.column.name}`)).toEqual(
+        ['prospects.scale_score', 'prospects.scale', 'prospects.brand', 'prospects.branch_count'],
+      );
+      // And the repair is SQL that runs.
+      const db = damaged();
+      for (const missing of diff.missingColumns) {
+        const statement = addColumnSql(missing);
+        // Every one of these columns has a default, so ADD COLUMN can carry it.
+        expect(statement).toBeTruthy();
+        db.exec(statement as string);
+      }
+      expect(diffSchemas(expected, readSchema(db)).missingColumns).toEqual([]);
     }
   });
 });
