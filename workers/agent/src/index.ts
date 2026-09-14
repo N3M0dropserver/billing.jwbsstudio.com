@@ -30,6 +30,7 @@ import { Agent, getAgentByName, routeAgentRequest } from 'agents';
 import { eq } from 'drizzle-orm';
 import { getDb } from '../../../src/lib/db/index';
 import { settings } from '../../../src/lib/db/schema';
+import { describeError } from '../../../src/lib/errors';
 import {
   decideGate,
   loadCampaign,
@@ -159,7 +160,7 @@ export class CampaignAgent extends Agent<Env, CampaignState> {
     try {
       result = await tick(ctx, campaignId);
     } catch (error) {
-      const message = String(error);
+      const message = describeError(error);
       this.setState({
         ...this.state,
         status: 'failed',

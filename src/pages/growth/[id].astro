@@ -75,6 +75,15 @@ const SIGNAL_LABELS: Record<string, string> = {
         <button name="action" value="resume" class="rounded-lg px-4 py-2 text-sm font-medium text-white" style="background: var(--color-brand-600)">Resume</button>
       </form>
     )}
+    {campaign.status === 'failed' && (
+      <form method="post" action={`/api/campaigns/${id}/control`}>
+        {/* A stage that failed on something outside us — an Overpass mirror
+            timing out, a model that was briefly unavailable — leaves a run
+            with no way back. `start` picks the campaign up at the stage it
+            stopped on, so this is a retry rather than a restart. */}
+        <button name="action" value="start" class="rounded-lg px-4 py-2 text-sm font-medium text-white" style="background: var(--color-brand-600)">Try again</button>
+      </form>
+    )}
   </div>
 
   <div class="grid gap-4 lg:grid-cols-3">

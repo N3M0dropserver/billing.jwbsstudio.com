@@ -9,6 +9,7 @@
 import { overpassProvider } from './overpass';
 import { placesProvider } from './places';
 import { manualProvider } from './manual';
+import { describeError } from '../../errors';
 import type {
   DiscoveryProvider,
   DiscoveryProviderName,
@@ -56,6 +57,6 @@ export async function discover(
   try {
     return await provider.run(request);
   } catch (error) {
-    return { ok: false, error: `${provider.label} discovery failed: ${String(error)}` };
+    return { ok: false, error: `${provider.label} discovery failed: ${describeError(error)}` };
   }
 }

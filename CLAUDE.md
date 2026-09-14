@@ -25,6 +25,20 @@ most migrations after the first are `ADD COLUMN`, the guards make a re-applied
 migration fail *later* rather than not at all. Do not try to invent syntax for
 this; the rule below is what actually prevents it.
 
+### Put every ADD COLUMN before any table rebuild
+
+Within one migration, order matters. A migration that rebuilds a table
+(`CREATE __new_x` / copy / `DROP x` / `RENAME`) is *destructive* when re-run:
+the guards above let it sail through, and it replaces the table with the shape
+it had when that migration was written — taking every column a later migration
+added, and the data in them, with it.
+
+`ALTER TABLE ... ADD COLUMN` is the only statement that reliably refuses to run
+twice. Putting all of them first turns a re-run into a harmless
+`duplicate column name` abort with the rebuild still ahead of it.
+`tests/migrations.test.ts` re-applies each migration to an already-migrated
+database and fails if a column disappears.
+
 ### Never rename or renumber an applied migration
 
 Once a migration has been applied anywhere — a teammate's local D1, preview,
@@ -45,6 +59,12 @@ WHERE NOT EXISTS (SELECT 1 FROM d1_migrations WHERE name = '0010_growth_engine.s
 For a local database that holds nothing worth keeping, deleting it and
 re-migrating from scratch is simpler and safer.
 
+If this has already happened, `bun run db:drift [--remote]` says exactly which
+columns a database is missing and prints the SQL to add them and to record the
+renamed migrations; `--apply` runs it. `docs/D1-DRIFT.md` is the write-up of
+the time it did happen — it cost a growth run four columns on `prospects` and
+blanked `campaign_id` on every existing row.
+
 ### Adding a migration
 
 `bun run db:generate` after editing `src/lib/db/schema.ts`. It writes the SQL,
@@ -56,6 +76,8 @@ check that it is back in step.
 ## Verifying a change
 
 - `bun run test` — vitest, no database required.
+- `bun run db:drift` — the local database against `migrations/`. `--remote` for
+  production.
 - `bun run typecheck` and `bun run typecheck:agent`.
 - `bun run build` — includes `scripts/wrap-worker.mjs`, which adds the
   `scheduled()` handler the cron triggers need.

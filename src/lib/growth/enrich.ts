@@ -15,6 +15,7 @@
 import { crawlSite, type CrawlResult, DEFAULT_CRAWL } from './crawl';
 import type { SocialLink } from './html';
 import { normaliseDomain } from './html';
+import { describeError } from '../errors';
 import {
   crawlImageKey,
   crawlPageKey,
@@ -220,7 +221,7 @@ export async function enrichProspect(
         }),
       );
     } catch (error) {
-      notes.push(`Could not store ${page.finalUrl}: ${String(error)}`);
+      notes.push(`Could not store ${page.finalUrl}: ${describeError(error)}`);
     }
   }
 

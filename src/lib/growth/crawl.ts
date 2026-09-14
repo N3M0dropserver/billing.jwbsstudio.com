@@ -20,6 +20,7 @@ import {
   type ExtractedPage,
   type SocialLink,
 } from './html';
+import { describeError } from '../errors';
 
 export interface CrawlOptions {
   userAgent: string;
@@ -257,7 +258,9 @@ export async function fetchPage(url: string, options: CrawlOptions): Promise<Fet
       elapsedMs: Date.now() - started,
       html: '',
       truncated: false,
-      error: controller.signal.aborted ? `Timed out after ${options.timeoutMs}ms` : String(error),
+      error: controller.signal.aborted
+        ? `Timed out after ${options.timeoutMs}ms`
+        : describeError(error),
     };
   } finally {
     clearTimeout(timer);

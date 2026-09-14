@@ -11,13 +11,16 @@
  *
  * Both services are donated infrastructure with published usage policies:
  * one request at a time, a real User-Agent, and no hammering. Both are
- * honoured here. Do not raise the limits without reading their policies.
+ * honoured here — the retry below is sequential, bounded to two passes over
+ * the mirror list, and waits between them. Do not raise the limits without
+ * reading their policies.
  *
  * Coverage is the honest trade-off. OSM is excellent for anything with a
  * shopfront and thinner for businesses that work from home or from a van;
  * for those, Google Places is the better provider.
  */
 
+import { describeError } from '../../errors';
 import type {
   DiscoveredBusiness,
   DiscoveryProvider,
@@ -26,11 +29,42 @@ import type {
 } from './types';
 
 const NOMINATIM = 'https://nominatim.openstreetmap.org/search';
-/** Mirrors, tried in order. The main instance is the busiest. */
+/**
+ * Mirrors, tried in order. The main instance is the busiest, and the list is
+ * worth more than its order: when one of these is overloaded it does not fail
+ * quickly, it holds the connection until something in front of it gives up
+ * and returns a gateway error. Having somewhere else to go is the whole
+ * defence.
+ */
 const OVERPASS_ENDPOINTS = [
   'https://overpass-api.de/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
+  'https://overpass.private.coffee/api/interpreter',
 ];
+
+/**
+ * One attempt's patience. The query itself asks Overpass for `timeout:60`, so
+ * a healthy server either answers or gives up inside that; waiting much
+ * longer only holds the run open while nothing happens.
+ */
+const ATTEMPT_TIMEOUT_MS = 70_000;
+/** Passes over the whole mirror list. Two: enough for a blip, not enough to labour an outage. */
+const OVERPASS_ROUNDS = 2;
+/** Ceiling on the lot, so a stage cannot sit here indefinitely. */
+const OVERPASS_BUDGET_MS = 180_000;
+/** Between rounds. These are donated servers; going straight back at one is rude and futile. */
+const OVERPASS_BACKOFF_MS = 3_000;
+
+/**
+ * Statuses worth trying somewhere else.
+ *
+ * 429 is the published rate limit. 502/503/504 are the server saying it is
+ * out of capacity, and 520-524 are Cloudflare in front of a mirror saying the
+ * same thing less clearly — 524 in particular means the mirror accepted the
+ * query and then took longer than the proxy would wait. None of them says
+ * anything about the query, so the same query is worth sending elsewhere.
+ */
+const RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524]);
 
 const ATTRIBUTION = 'Business data © OpenStreetMap contributors, ODbL.';
 
@@ -255,40 +289,154 @@ interface OverpassElement {
   tags?: Record<string, string>;
 }
 
-async function runOverpass(query: string, userAgent: string): Promise<
-  { elements: OverpassElement[] } | { error: string }
-> {
-  let lastError = 'No Overpass endpoint responded.';
+interface OverpassAttempt {
+  host: string;
+  reason: string;
+  /** Whether another mirror is worth trying, or the query itself is at fault. */
+  retryable: boolean;
+}
 
-  for (const endpoint of OVERPASS_ENDPOINTS) {
-    try {
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/x-www-form-urlencoded',
-          'user-agent': userAgent,
-          accept: 'application/json',
-        },
-        body: new URLSearchParams({ data: query }),
-      });
+function hostOf(endpoint: string): string {
+  try {
+    return new URL(endpoint).host;
+  } catch {
+    return endpoint;
+  }
+}
 
-      if (response.status === 429 || response.status === 504) {
-        lastError = `${endpoint} is rate limiting (${response.status}).`;
-        continue;
-      }
-      if (!response.ok) {
-        lastError = `${endpoint} returned ${response.status}.`;
-        continue;
-      }
+/** One mirror, once. */
+async function askOverpass(
+  endpoint: string,
+  query: string,
+  userAgent: string,
+): Promise<{ elements: OverpassElement[] } | { failure: OverpassAttempt }> {
+  const host = hostOf(endpoint);
+  let response: Response;
 
-      const body = (await response.json()) as { elements?: OverpassElement[] };
-      return { elements: body.elements ?? [] };
-    } catch (error) {
-      lastError = `${endpoint} failed: ${String(error)}`;
-    }
+  try {
+    response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded',
+        'user-agent': userAgent,
+        accept: 'application/json',
+      },
+      body: new URLSearchParams({ data: query }),
+      signal: AbortSignal.timeout(ATTEMPT_TIMEOUT_MS),
+    });
+  } catch (error) {
+    const timedOut = error instanceof Error && error.name === 'TimeoutError';
+    return {
+      failure: {
+        host,
+        reason: timedOut
+          ? `did not answer within ${Math.round(ATTEMPT_TIMEOUT_MS / 1000)}s`
+          : `could not be reached (${describeError(error)})`,
+        retryable: true,
+      },
+    };
   }
 
-  return { error: lastError };
+  if (!response.ok) {
+    return {
+      failure: {
+        host,
+        reason: `returned ${response.status}`,
+        // A 400 is Overpass rejecting the query itself. Every mirror runs the
+        // same engine, so asking the next one is just three more failures.
+        retryable: RETRYABLE_STATUS.has(response.status),
+      },
+    };
+  }
+
+  let body: { elements?: OverpassElement[]; remark?: string };
+  try {
+    body = (await response.json()) as typeof body;
+  } catch (error) {
+    return {
+      failure: {
+        host,
+        reason: `answered with something that was not JSON (${describeError(error)})`,
+        retryable: true,
+      },
+    };
+  }
+
+  /**
+   * Overpass reports its own timeouts and memory limits in a `remark` on an
+   * otherwise successful 200, usually alongside a partial `elements`. Taking
+   * that at face value silently discards most of a region.
+   */
+  if (body.remark && /error|timed out|out of memory/i.test(body.remark)) {
+    return {
+      failure: { host, reason: `gave up on the query (${body.remark.trim()})`, retryable: true },
+    };
+  }
+
+  return { elements: body.elements ?? [] };
+}
+
+function summarise(attempts: OverpassAttempt[]): string {
+  if (!attempts.length) return 'No OpenStreetMap mirror was asked.';
+
+  // One line per mirror, showing how it failed last, rather than a list with
+  // the same host in it three times.
+  const latest = new Map<string, string>();
+  for (const attempt of attempts) latest.set(attempt.host, attempt.reason);
+
+  const detail = [...latest].map(([host, reason]) => `${host} ${reason}`).join('; ');
+  return `No OpenStreetMap mirror could run the search: ${detail}.`;
+}
+
+/**
+ * Ask Overpass, working through the mirrors and then round again.
+ *
+ * The retry matters more here than in most places. Overpass is donated
+ * infrastructure with no capacity guarantee, and a busy mirror fails by
+ * timing out rather than by refusing — so a run that gives up on the first
+ * gateway error throws away an entire campaign over a few seconds of load
+ * somewhere else.
+ */
+export async function runOverpass(
+  query: string,
+  userAgent: string,
+  options: { sleep?: (ms: number) => Promise<void>; now?: () => number } = {},
+): Promise<{ elements: OverpassElement[] } | { error: string }> {
+  const sleep =
+    options.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const now = options.now ?? Date.now;
+
+  const started = now();
+  const attempts: OverpassAttempt[] = [];
+
+  for (let round = 0; round < OVERPASS_ROUNDS; round++) {
+    for (const endpoint of OVERPASS_ENDPOINTS) {
+      if (now() - started >= OVERPASS_BUDGET_MS) {
+        const spent = Math.round((now() - started) / 1000);
+        return { error: `${summarise(attempts)} Gave up after ${spent}s.` };
+      }
+
+      const result = await askOverpass(endpoint, query, userAgent);
+      if ('elements' in result) return result;
+
+      attempts.push(result.failure);
+      if (!result.failure.retryable) {
+        return {
+          error:
+            `${result.failure.host} ${result.failure.reason}. The search itself was refused, ` +
+            'so the other mirrors were not tried.',
+        };
+      }
+    }
+
+    if (round + 1 < OVERPASS_ROUNDS) await sleep(OVERPASS_BACKOFF_MS * (round + 1));
+  }
+
+  return {
+    error:
+      `${summarise(attempts)} They are donated servers and this is usually temporary — ` +
+      'start the run again in a few minutes, or switch the campaign to another discovery provider.',
+  };
 }
 
 function addressFrom(tags: Record<string, string>): string {
