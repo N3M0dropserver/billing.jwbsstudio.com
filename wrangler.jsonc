@@ -48,15 +48,31 @@
     "ai": {
         "binding": "AI"
     },
-    // The campaign agent lives in its own Worker (workers/agent) because the
-    // Astro Cloudflare adapter generates this Worker's entry and there is no
-    // supported way to add a Durable Object export to it. Deploy that Worker
-    // first — `bun run deploy:agent`, or `bun run deploy` which does both.
+    // The agents live in their own Worker (workers/agent) because the Astro
+    // Cloudflare adapter generates this Worker's entry and there is no
+    // supported way to add a Durable Object export to it.
+    //
+    // THAT WORKER MUST BE DEPLOYED FIRST. Cloudflare resolves `class_name`
+    // against the *deployed* `jwbs-growth-agent`, so deploying this one
+    // against a stale copy fails outright:
+    //
+    //   Cannot create binding for class 'ResearchAgent'
+    //   that is not exported by script 'jwbs-growth-agent'  [code: 10061]
+    //
+    // `bun run deploy` does both in order. A CI deploy command that runs
+    // `wrangler deploy` on its own skips the agent and hits the above the
+    // first time a class is added — so point CI at `bun run deploy`, not at
+    // wrangler directly.
     "durable_objects": {
         "bindings": [
             {
                 "name": "CAMPAIGN_AGENT",
                 "class_name": "CampaignAgent",
+                "script_name": "jwbs-growth-agent"
+            },
+            {
+                "name": "RESEARCH_AGENT",
+                "class_name": "ResearchAgent",
                 "script_name": "jwbs-growth-agent"
             }
         ]

@@ -180,7 +180,9 @@ export function buildImagePrompt(
     'No text, no lettering, no signage, no logos, no watermarks.',
     'No identifiable faces.',
     'Photographic, not an illustration or a 3D render.',
-  ].join(' ');
+  ]
+    .filter(Boolean)
+    .join(' ');
 }
 
 /* ------------------------------------------------------------------ */

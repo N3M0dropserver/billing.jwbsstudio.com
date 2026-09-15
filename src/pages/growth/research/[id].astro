@@ -1,0 +1,71 @@
+---
+import AppLayout from '~/layouts/AppLayout.astro';
+import Card from '~/components/ui/Card.astro';
+import ResearchMonitor from '~/components/growth/ResearchMonitor.tsx';
+import { and, eq } from 'drizzle-orm';
+import { db } from '~/lib/env';
+import { agentResearch, campaigns, prospects } from '~/lib/db/schema';
+
+const user = Astro.locals.user!;
+const database = db();
+const id = Astro.params.id!;
+
+const rows = await database
+  .select()
+  .from(agentResearch)
+  .where(and(eq(agentResearch.id, id), eq(agentResearch.userId, user.id)))
+  .limit(1);
+
+const research = rows[0];
+if (!research) return Astro.redirect('/growth/research', 302);
+
+const [campaign, prospect] = await Promise.all([
+  research.campaignId
+    ? database.select().from(campaigns).where(eq(campaigns.id, research.campaignId)).limit(1)
+    : Promise.resolve([]),
+  research.prospectId
+    ? database.select().from(prospects).where(eq(prospects.id, research.prospectId)).limit(1)
+    : Promise.resolve([]),
+]);
+
+const error = Astro.url.searchParams.get('error');
+---
+
+<AppLayout title="Research" subtitle={research.question}>
+  <div slot="actions">
+    <a href="/growth/research" class="muted rounded-lg border px-3 py-2 text-sm" style="border-color: var(--border)">All research</a>
+  </div>
+
+  <div class="space-y-4">
+    {error && (
+      <p class="rounded-lg px-4 py-3 text-sm" style="background: color-mix(in oklch, var(--color-overdue) 12%, transparent); color: var(--color-overdue)" role="alert">{error}</p>
+    )}
+
+    {(research.subject || campaign[0] || prospect[0]) && (
+      <Card title="Context">
+        <dl class="space-y-1.5 text-sm">
+          {research.subject && (
+            <div class="flex gap-2"><dt class="muted w-24 shrink-0">Subject</dt><dd>{research.subject}</dd></div>
+          )}
+          {campaign[0] && (
+            <div class="flex gap-2">
+              <dt class="muted w-24 shrink-0">Run</dt>
+              <dd><a href={`/growth/${campaign[0].id}`} style="color: var(--color-brand-600)">{campaign[0].name || campaign[0].niche}</a></dd>
+            </div>
+          )}
+          {prospect[0] && (
+            <div class="flex gap-2">
+              <dt class="muted w-24 shrink-0">Business</dt>
+              <dd><a href={`/growth/prospects/${prospect[0].id}`} style="color: var(--color-brand-600)">{prospect[0].businessName}</a></dd>
+            </div>
+          )}
+          <div class="flex gap-2"><dt class="muted w-24 shrink-0">Asked by</dt><dd>{research.origin === 'user' ? 'you' : `the ${research.origin} stage`}</dd></div>
+        </dl>
+      </Card>
+    )}
+
+    <Card title="The task">
+      <ResearchMonitor client:load researchId={research.id} />
+    </Card>
+  </div>
+</AppLayout>

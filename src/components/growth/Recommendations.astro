@@ -1,0 +1,68 @@
+---
+/**
+ * What the last runs suggest changing.
+ *
+ * Shown at the top of the Growth index rather than on a page of its own,
+ * because a suggestion you have to go and look for is a suggestion nobody
+ * reads. Each carries the number it came from — a recommendation without
+ * evidence is an opinion, and there is no shortage of those.
+ */
+import type { Recommendation } from '~/lib/growth/recommend';
+
+const { recommendations } = Astro.props as { recommendations: Recommendation[] };
+
+const TONE: Record<Recommendation['severity'], { colour: string; label: string }> = {
+  blocking: { colour: 'var(--color-overdue)', label: 'Broken' },
+  quality: { colour: 'var(--color-owing)', label: 'Hurting the output' },
+  opportunity: { colour: 'var(--text-muted)', label: 'Worth a look' },
+};
+---
+
+{
+  recommendations.length > 0 && (
+    <section class="card mb-4">
+      <header class="border-b px-4 py-3 sm:px-5" style="border-color: var(--border)">
+        <h2 class="label">What the last runs suggest</h2>
+        <p class="muted mt-1 text-xs leading-snug">
+          Measured from what actually happened, not from an opinion of the work.
+        </p>
+      </header>
+
+      <ul class="divide-y" style="border-color: var(--border)">
+        {recommendations.map((rec) => (
+          <li class="p-4 sm:p-5">
+            <div class="flex flex-wrap items-center gap-2">
+              <span
+                class="rounded-full px-2 py-0.5 text-xs font-medium"
+                style={`color: ${TONE[rec.severity].colour}; background: color-mix(in oklch, ${TONE[rec.severity].colour} 12%, transparent)`}
+              >
+                {TONE[rec.severity].label}
+              </span>
+              <p class="font-medium">{rec.title}</p>
+            </div>
+
+            <p class="muted mt-1.5 text-sm leading-relaxed">{rec.detail}</p>
+            <p class="mt-1.5 text-sm leading-relaxed">{rec.action}</p>
+
+            <div class="mt-3 flex flex-wrap items-center gap-2">
+              <a
+                href={rec.href}
+                class="rounded-lg px-3 py-1.5 text-sm font-medium text-white"
+                style="background: var(--color-brand-600)"
+              >
+                {rec.linkLabel}
+              </a>
+              <form method="post" action="/api/growth-recommendations">
+                <input type="hidden" name="id" value={rec.id} />
+                <input type="hidden" name="signature" value={rec.signature} />
+                <button class="muted rounded-lg border px-3 py-1.5 text-sm" style="border-color: var(--border)">
+                  Dismiss
+                </button>
+              </form>
+            </div>
+          </li>
+        ))}
+      </ul>
+    </section>
+  )
+}

@@ -1,0 +1,24 @@
+---
+import AppLayout from '~/layouts/AppLayout.astro';
+import Card from '~/components/ui/Card.astro';
+import SkillForm from '~/components/growth/SkillForm.astro';
+
+const error = Astro.url.searchParams.get('error');
+---
+
+<AppLayout title="New skill" subtitle="A note to the agent about how to do one part of the job">
+  <form method="post" action="/api/agent/skills" class="space-y-4">
+    {error && (
+      <p class="rounded-lg px-4 py-3 text-sm" style="background: color-mix(in oklch, var(--color-overdue) 12%, transparent); color: var(--color-overdue)" role="alert">{error}</p>
+    )}
+
+    <Card title="The skill">
+      <SkillForm />
+    </Card>
+
+    <div class="flex gap-2">
+      <button name="action" value="save" class="rounded-lg px-4 py-2.5 text-sm font-medium text-white" style="background: var(--color-brand-600)">Save</button>
+      <a href="/growth/skills" class="muted rounded-lg border px-4 py-2.5 text-sm" style="border-color: var(--border)">Cancel</a>
+    </div>
+  </form>
+</AppLayout>

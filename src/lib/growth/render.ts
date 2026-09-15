@@ -772,7 +772,96 @@ ${quotes}
     </section>`;
 }
 
-function renderContact(section: PlanSection, context: DemoContext, tint: boolean): string {
+/**
+ * When they are open and where, as a thing to read rather than a form row.
+ *
+ * `location` used to render through `renderContact`, which meant a plan
+ * carrying both — and the plan prompt encourages both — put the same phone
+ * number and address on the page twice, in two identical panels. It also
+ * dropped the opening hours: the planner writes a day per item, and nothing
+ * looked at `items`. A section headed "Where and when" that answers neither
+ * is worse than not having one.
+ */
+function renderLocation(section: PlanSection, context: DemoContext, tint: boolean): string {
+  const hours = openingHours(section, context);
+  const address = section.subheading || context.contact.address;
+  /**
+   * The imagery stage allocates a picture to a location section — a shopfront
+   * from the street is one of the few frames a business always has — and the
+   * renderer used to drop it on the floor. That is a photograph paid for,
+   * stored, and never shown.
+   */
+  const image = imagesFor(context, section.id)[0];
+
+  const rows = hours.map((entry) => {
+    // "Monday: 7am – 3pm" reads as two columns; anything else is one line.
+    const [day, ...rest] = entry.split(/:\s(.+)/);
+    const when = rest.join('').trim();
+    return when
+      ? `          <li><span class="label">${escape(day!.trim())}</span> <span>${escape(when)}</span></li>`
+      : `          <li><span>${escape(entry)}</span></li>`;
+  });
+
+  const details = `<ul class="details">
+${rows.join('\n') || `          <li><span>${escape(address || 'Address to come.')}</span></li>`}
+          </ul>`;
+
+  const heading = `          ${address ? `<p class="eyebrow">${escape(address)}</p>` : ''}
+          <h2>${escape(section.heading || 'Where to find us')}</h2>
+          ${section.body ? `<p class="lede" style="margin-top:1.25rem">${escape(section.body)}</p>` : ''}`;
+
+  const cta = section.cta ? `<p style="margin-top:2rem">${ctaHtml(section)}</p>` : '';
+
+  /**
+   * With a picture the hours belong under the heading and the photograph
+   * takes the second column. Without one they stay in the second column —
+   * putting them under the heading instead would leave half the row empty,
+   * which is how an intentional layout starts looking like a broken one.
+   */
+  const body = image
+    ? `        <div>
+${heading}
+          <div style="margin-top:1.75rem">${details}</div>
+          ${cta}
+        </div>
+        ${frameHtml(image)}`
+    : `        <div>
+${heading}
+          ${cta}
+        </div>
+        <div>
+          ${details}
+        </div>`;
+
+  return `    <section class="section${tint ? ' section--tint' : ''}" id="${escape(section.id)}">
+      <div class="wrap split${image ? ' split--media' : ''}">
+${body}
+      </div>
+    </section>`;
+}
+
+/**
+ * The opening hours for a section: what the plan wrote, or what research
+ * found, never both.
+ *
+ * The planner puts a day per item; the research stage puts the same list on
+ * the context. Concatenating them would print every day twice.
+ */
+function openingHours(section: PlanSection, context: DemoContext): string[] {
+  const fromPlan = section.items
+    .map((item) => [item.title, item.body].filter(Boolean).join(' ').trim())
+    .filter(Boolean);
+
+  return (fromPlan.length ? fromPlan : context.openingHours).slice(0, 7);
+}
+
+function renderContact(
+  section: PlanSection,
+  context: DemoContext,
+  tint: boolean,
+  /** True when a location section above has already given the address and hours. */
+  locatedAlready = false,
+): string {
   const rows: string[] = [];
 
   if (context.contact.email) {
@@ -785,11 +874,16 @@ function renderContact(section: PlanSection, context: DemoContext, tint: boolean
       `          <li><span class="label">Phone</span> <a href="tel:${escape(context.contact.phone.replace(/\s/g, ''))}">${escape(context.contact.phone)}</a></li>`,
     );
   }
-  if (context.contact.address) {
+  // Not repeated when the page already has a location section: the same
+  // address and the same seven lines of hours in two panels is how a page
+  // that has little to say looks like it is padding.
+  if (context.contact.address && !locatedAlready) {
     rows.push(`          <li><span class="label">Find us</span> <span>${escape(context.contact.address)}</span></li>`);
   }
-  for (const hours of context.openingHours.slice(0, 7)) {
-    rows.push(`          <li><span class="label">Hours</span> <span>${escape(hours)}</span></li>`);
+  if (!locatedAlready) {
+    for (const hours of openingHours(section, context)) {
+      rows.push(`          <li><span class="label">Hours</span> <span>${escape(hours)}</span></li>`);
+    }
   }
 
   return `    <section class="section${tint ? ' section--tint' : ''}" id="${escape(section.id)}">
@@ -814,6 +908,7 @@ function renderSection(
   context: DemoContext,
   index: number,
   tokens: DesignTokens,
+  page: { hasLocation: boolean } = { hasLocation: false },
 ): string {
   // Tinting is only a separation device under the `tint` rhythm; under the
   // others the stylesheet does not define the class and it would do nothing.
@@ -830,9 +925,10 @@ function renderSection(
       return renderGallery(section, context, tint);
     case 'testimonials':
       return section.items.length ? renderQuotes(section, tint) : renderIntro(section, context, tint);
-    case 'contact':
     case 'location':
-      return renderContact(section, context, tint);
+      return renderLocation(section, context, tint);
+    case 'contact':
+      return renderContact(section, context, tint, page.hasLocation);
     case 'cta':
       return renderIntro(section, context, true);
     default:
@@ -888,8 +984,9 @@ export function renderDemoPage(
     .map((href) => `    <link rel="stylesheet" href="${escape(href)}" />`)
     .join('\n');
 
+  const page = { hasLocation: sections.some((section) => section.type === 'location') };
   const body = sections
-    .map((section, index) => renderSection(section, context, index, brief.tokens))
+    .map((section, index) => renderSection(section, context, index, brief.tokens, page))
     .join('\n\n');
 
   const year = new Date().getUTCFullYear();

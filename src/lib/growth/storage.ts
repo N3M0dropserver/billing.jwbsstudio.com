@@ -28,6 +28,17 @@ export function crawlImageKey(prefix: string, index: number, extension: string):
   return `${prefix}/images/image-${String(index).padStart(2, '0')}.${safeSegment(extension)}`;
 }
 
+/**
+ * A photograph from a directory rather than from their own site.
+ *
+ * Kept under a separate prefix so the two are distinguishable after the fact
+ * — what a business publishes about itself and what Google holds about it
+ * carry different terms, and a prefix sweep is how either one gets removed.
+ */
+export function directoryImageKey(prefix: string, index: number, extension: string): string {
+  return `${prefix}/images/directory-${String(index).padStart(2, '0')}.${safeSegment(extension)}`;
+}
+
 export function demoPrefixFor(host: string): string {
   return `${DEMO_PREFIX}/${host.toLowerCase()}`;
 }

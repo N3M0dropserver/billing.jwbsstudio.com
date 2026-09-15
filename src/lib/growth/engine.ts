@@ -36,15 +36,38 @@ import {
 import { newId, newToken } from '../id';
 import { describeError } from '../errors';
 import { trackedGenerate, type AiUsageContext } from '../ai/usage';
+import { browserConfig, readPage, robotsPermits, screenshot } from '../agent/browser';
+import {
+  buildToolContext,
+  loadAgentSettings,
+  type AgentEnvironment,
+  type AgentSettingsView,
+} from '../agent/context';
+import { recall, reinforce, renderMemories, type MemoryContext } from '../agent/memory';
+import { noteSkillSuccess, noteSkillUse, renderSkills, selectSkills } from '../agent/skills';
+import { reflectOnRun } from '../agent/reflect';
+import { countResearchToday, createResearch, firstSentences, runResearch } from '../agent/research';
 import { applyOverrides, briefFromKit, type Brief } from './brief';
 import { auditSite, combineScores, type SiteAudit } from './assess';
 import { crawlSite } from './crawl';
-import { discover, discoveryUserAgent, type DiscoveredBusiness } from './discovery/index';
+import {
+  discover,
+  discoveryUserAgent,
+  type DiscoveredBusiness,
+  type ReviewQuote,
+} from './discovery/index';
 import { enrichProspect } from './enrich';
 import { normaliseDomain } from './html';
 import { assessScale, type ScaleAssessment } from './scale';
 import { checkProminence, EMPTY_PROMINENCE, type SearchProviderName } from './search';
-import { nextStage, resolvePolicy, type StageMode, type StagePolicy } from './policy';
+import {
+  nextStage,
+  resolvePolicy,
+  STAGE_DESCRIPTIONS,
+  type StageMode,
+  type StagePolicy,
+} from './policy';
+import type { PromptOverrides } from './prompts';
 import {
   draftDesignPlan,
   normalisePlan,
@@ -76,6 +99,27 @@ export interface EngineContext {
    * caller so a stage does not have to fetch it on every call.
    */
   aiCacheTtlHours?: number;
+  /**
+   * The user's edited system prompts, where they have any. Read by the caller
+   * for the same reason: a tick makes several calls and they all want these.
+   * Absent means every prompt runs on its default.
+   */
+  prompts?: PromptOverrides;
+  /**
+   * How much the agent is allowed to do for itself: browse, remember, write
+   * its own skills. Loaded once per tick by the caller when it has it, and
+   * lazily here when it does not, so the engine stays callable from a test
+   * with three fields filled in.
+   */
+  agent?: AgentSettingsView;
+  /**
+   * Skills and memories already looked up during this tick.
+   *
+   * A tick runs several units of work and the shortlist stage would otherwise
+   * repeat the same recall for every business it assesses. The context is
+   * rebuilt per tick, so this cache cannot go stale within a run.
+   */
+  guidanceCache?: Map<string, StageGuidance>;
 }
 
 export interface StepResult {
@@ -114,6 +158,301 @@ function usageFor(
     prospectId: prospectId ?? null,
     cacheTtlHours: ctx.aiCacheTtlHours,
   };
+}
+
+/* ------------------------------------------------------------------ */
+/* The agent's own faculties                                           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The agent settings, fetched at most once per context.
+ *
+ * A tick touches several stages' worth of helpers and every one of them wants
+ * to know whether memory is on. Caching it on the context makes that one read
+ * rather than a dozen, and a context that was handed the settings already —
+ * which is what the Durable Object does — never reads at all.
+ */
+async function agentSettings(ctx: EngineContext, userId: string): Promise<AgentSettingsView> {
+  if (!ctx.agent) ctx.agent = await loadAgentSettings(ctx.db, userId);
+  return ctx.agent;
+}
+
+/** The engine context, in the shape the agent library expects. */
+function environmentOf(ctx: EngineContext): AgentEnvironment {
+  return { db: ctx.db, ai: ctx.ai, bucket: ctx.bucket, env: ctx.env, appUrl: ctx.appUrl };
+}
+
+function memoryContextOf(
+  ctx: EngineContext,
+  campaign: Campaign,
+  settings: AgentSettingsView,
+  operation: string,
+): MemoryContext {
+  return {
+    db: ctx.db,
+    userId: campaign.userId,
+    ai: ctx.ai,
+    usage: usageFor(ctx, campaign, operation, 'memory'),
+    enabled: settings.memoryEnabled,
+  };
+}
+
+export interface StageGuidance {
+  /** Rendered skills and memories, for the system prompt. */
+  text: string;
+  skillIds: string[];
+  skillSlugs: string[];
+  memoryIds: string[];
+}
+
+export const NO_GUIDANCE: StageGuidance = { text: '', skillIds: [], skillSlugs: [], memoryIds: [] };
+
+/**
+ * What the agent knows that bears on this piece of work.
+ *
+ * Called at the top of every stage that asks a model anything. Two sources:
+ * skills, which are instructions somebody wrote or approved, and memories,
+ * which are notes from earlier runs. Both are matched against a plain
+ * description of the task, so a stage working on a physiotherapist in
+ * Wellington gets what is known about physiotherapists and about Wellington
+ * and nothing about the coffee run last month.
+ *
+ * Failing soft matters here more than usual: this is an enhancement to a
+ * pipeline that worked without it, and an agent that cannot recall anything
+ * should draft a slightly worse email, not stop.
+ */
+async function guidanceFor(
+  ctx: EngineContext,
+  campaign: Campaign,
+  stage: CampaignStage,
+  task: string,
+  prospect?: Prospect,
+): Promise<StageGuidance> {
+  const cacheKey = `${stage}:${prospect?.id ?? ''}`;
+  if (!ctx.guidanceCache) ctx.guidanceCache = new Map();
+  const cached = ctx.guidanceCache.get(cacheKey);
+  if (cached) return cached;
+
+  try {
+    const settings = await agentSettings(ctx, campaign.userId);
+    const parts: string[] = [];
+    const skillIds: string[] = [];
+    const skillSlugs: string[] = [];
+    const memoryIds: string[] = [];
+
+    if (settings.skillsEnabled) {
+      const skills = await selectSkills(ctx.db, campaign.userId, { stage, task, limit: 3 });
+      if (skills.length) {
+        parts.push(renderSkills(skills));
+        skillIds.push(...skills.map((skill) => skill.id));
+        skillSlugs.push(...skills.map((skill) => skill.slug));
+        await noteSkillUse(ctx.db, skillIds);
+      }
+    }
+
+    if (settings.memoryEnabled) {
+      const memories = await recall(memoryContextOf(ctx, campaign, settings, 'recall'), {
+        query: task,
+        scopes: [
+          { scope: 'niche', key: campaign.niche },
+          { scope: 'region', key: campaign.region },
+          { scope: 'campaign', key: campaign.id },
+          { scope: 'prospect', key: prospect?.id ?? '' },
+        ],
+        limit: 6,
+      });
+
+      if (memories.length) {
+        parts.push(renderMemories(memories));
+        memoryIds.push(...memories.map((entry) => entry.memory.id));
+        await reinforce(ctx.db, memoryIds);
+      }
+    }
+
+    const guidance: StageGuidance = {
+      text: parts.join('\n\n'),
+      skillIds,
+      skillSlugs,
+      memoryIds,
+    };
+    ctx.guidanceCache.set(cacheKey, guidance);
+    return guidance;
+  } catch {
+    return NO_GUIDANCE;
+  }
+}
+
+/**
+ * A description of the work in hand, for matching skills and memories.
+ *
+ * Plain words rather than ids: the thing being matched against is a sentence
+ * somebody wrote about when a skill applies, and "plan a site for a
+ * physiotherapist in Lower Hutt" shares words with that in a way a ULID never
+ * will.
+ */
+function taskDescription(campaign: Campaign, stage: CampaignStage, prospect?: Prospect): string {
+  return [
+    STAGE_DESCRIPTIONS[stage],
+    prospect ? prospect.businessName : '',
+    campaign.niche,
+    campaign.region,
+    campaign.country,
+    campaign.idealClient,
+    prospect?.signal ?? '',
+  ]
+    .filter(Boolean)
+    .join(' ');
+}
+
+/**
+ * Read a prospect's site in a real browser when the crawl came back thin.
+ *
+ * This is the single highest-value use of the browser in the whole pipeline.
+ * A crawler that fetches a client-rendered site sees a shell: no words, no
+ * headings, no evidence. Everything downstream then treats a business with a
+ * perfectly decent site as one with nothing at all — the audit says "thin
+ * content", the angle is written about a problem they do not have, and the
+ * email that lands is wrong in a way they will notice immediately.
+ *
+ * Returns null when the fetch was fine, when no browser is configured, or
+ * when rendering found no more than fetching did.
+ */
+async function lookHarder(
+  ctx: EngineContext,
+  campaign: Campaign,
+  prospect: Prospect,
+  siteContent: string,
+): Promise<{ text: string; note: string } | null> {
+  const settings = await agentSettings(ctx, campaign.userId);
+  if (settings.browserMode === 'off' || !prospect.website) return null;
+
+  const config = browserConfig(ctx.env);
+  if (!config) return null;
+
+  const fetchedWords = siteContent.trim() ? siteContent.trim().split(/\s+/).length : 0;
+  if (settings.browserMode === 'fallback' && fetchedWords >= 120) return null;
+
+  const page = await readPage(prospect.website, {
+    mode: 'always',
+    config,
+    crawl: { userAgent: discoveryUserAgent(ctx.appUrl) },
+  });
+
+  if (page.via !== 'browser' || page.extracted.wordCount <= fetchedWords) return null;
+
+  return {
+    text: page.extracted.text,
+    note: `Their site draws itself with JavaScript: a plain fetch saw ${fetchedWords} words, a browser saw ${page.extracted.wordCount}.`,
+  };
+}
+
+/**
+ * Keep a picture of their site as it is today.
+ *
+ * The before shot. It is the most persuasive thing in a proposal and the one
+ * artefact that cannot be recovered later — by the time anybody wants it,
+ * they may have changed the site, which is after all what we asked them to
+ * do.
+ */
+async function captureSite(
+  ctx: EngineContext,
+  campaign: Campaign,
+  prospect: Prospect,
+): Promise<boolean> {
+  const settings = await agentSettings(ctx, campaign.userId);
+  if (settings.browserMode === 'off' || !prospect.website) return false;
+
+  const config = browserConfig(ctx.env);
+  if (!config) return false;
+
+  // The same robots.txt that governs the crawl governs this: a picture of a
+  // page we were asked not to fetch is a page we fetched.
+  if (!(await robotsPermits(prospect.website, discoveryUserAgent(ctx.appUrl)))) return false;
+
+  const shot = await screenshot(config, prospect.website, { fullPage: true });
+  if (!shot.ok || !shot.data) return false;
+
+  const prefix = prospectPrefix(campaign.userId, campaign.id, prospect.id);
+  const stored = await putObject(
+    ctx.bucket,
+    `${prefix}/shots/before.png`,
+    shot.data.bytes,
+    shot.data.contentType,
+    { source: prospect.website, label: 'Their site today' },
+  );
+
+  await ctx.db.insert(prospectArtifacts).values({
+    id: newId(),
+    userId: campaign.userId,
+    prospectId: prospect.id,
+    campaignId: campaign.id,
+    kind: 'image',
+    label: 'Their site today',
+    sourceUrl: prospect.website,
+    r2Key: stored.key,
+    contentType: stored.contentType,
+    bytes: stored.bytes,
+    meta: JSON.stringify({ capturedBy: 'browser', fullPage: true }),
+    createdAt: new Date().toISOString(),
+  });
+
+  return true;
+}
+
+/**
+ * Send the agent to find out about one business.
+ *
+ * Only under `ai` on the enrich stage, and only within the daily cap: this is
+ * the expensive path — several model turns and several page loads per
+ * prospect — and it should be a decision somebody made rather than something
+ * that quietly happens to eighty businesses.
+ *
+ * What it is actually for is the things a crawl cannot see: whether they have
+ * just changed hands, whether the reviews say something the site does not,
+ * whether somebody else in town already does what they do better.
+ */
+async function researchProspect(
+  ctx: EngineContext,
+  campaign: Campaign,
+  prospect: Prospect,
+): Promise<{ id: string; answer: string } | null> {
+  const settings = await agentSettings(ctx, campaign.userId);
+
+  const startedToday = await countResearchToday(ctx.db, campaign.userId, 'enrich');
+  if (startedToday >= settings.researchDailyCap) {
+    await logEvent(
+      ctx,
+      campaign,
+      'enrich',
+      'warn',
+      `The daily research cap of ${settings.researchDailyCap} is spent, so ${prospect.businessName} was researched from their site alone.`,
+      {},
+      prospect.id,
+    );
+    return null;
+  }
+
+  const research = await createResearch(ctx.db, {
+    userId: campaign.userId,
+    campaignId: campaign.id,
+    prospectId: prospect.id,
+    origin: 'enrich',
+    subject: `${prospect.businessName}, a ${campaign.niche} in ${prospect.region || campaign.region}${prospect.website ? ` — ${prospect.website}` : ''}`,
+    question:
+      'What should I know about this business before designing them a speculative one-page site? ' +
+      'Who they are, who they serve, anything recent, and anything about them that a redesign should keep.',
+    // Deliberately smaller than a hand-started task: this runs per prospect,
+    // unattended, and four tool calls is enough to check a site and a search.
+    stepBudget: Math.min(settings.stepBudget, 5),
+  });
+
+  const finished = await runResearch({
+    environment: environmentOf(ctx),
+    researchId: research.id,
+  });
+
+  if (!finished?.answer) return null;
+  return { id: finished.id, answer: finished.answer };
 }
 
 /* ------------------------------------------------------------------ */
@@ -305,7 +644,59 @@ async function finish(ctx: EngineContext, campaign: Campaign, message: string): 
     completedAt: new Date().toISOString(),
   });
   await logEvent(ctx, campaign, campaign.stage, 'info', `Run complete. ${message}`);
+  await reflect(ctx, campaign);
   return { more: false, waitingOn: null, finished: true, message: `Complete. ${message}` };
+}
+
+/**
+ * Look back at the run and keep what is worth keeping.
+ *
+ * The one moment in the whole pipeline where the agent gets better rather
+ * than merely finishing. It runs at the end of a completed run only — a run
+ * that failed halfway has nothing to teach that its error message does not
+ * already say — and it is wrapped in a try/catch because a reflection that
+ * throws must not turn a finished campaign into a failed one.
+ */
+async function reflect(ctx: EngineContext, campaign: Campaign): Promise<void> {
+  try {
+    const settings = await agentSettings(ctx, campaign.userId);
+    if (!settings.memoryEnabled && settings.selfImprove === 'off') return;
+
+    // A run that never got as far as looking at anybody has nothing to say.
+    if (campaign.discoveredCount === 0) return;
+
+    const current = (await loadCampaign(ctx, campaign.id)) ?? campaign;
+
+    const outcome = await reflectOnRun({
+      db: ctx.db,
+      ai: ctx.ai,
+      campaign: current,
+      memory: memoryContextOf(ctx, current, settings, 'reflect'),
+      usage: usageFor(ctx, current, 'reflect', current.stage),
+      selfImprove: settings.selfImprove,
+    });
+
+    if (!outcome.ok) {
+      await logEvent(ctx, current, current.stage, 'info', `Nothing was learned from this run: ${outcome.error}`);
+      return;
+    }
+
+    await logEvent(ctx, current, current.stage, 'decision', `Looking back: ${outcome.summary}.`, {
+      lessons: outcome.lessonsWritten,
+      skill: outcome.skillSlug,
+      skillStatus: outcome.skillStatus,
+    });
+
+    // Skills that were loaded during a run that reached the end have earned a
+    // point. Crude, and better than nothing at telling a skill that works
+    // from one that merely exists.
+    const used = [...(ctx.guidanceCache?.values() ?? [])].flatMap((entry) => entry.skillIds);
+    if (used.length) await noteSkillSuccess(ctx.db, [...new Set(used)]);
+  } catch (error) {
+    await logEvent(ctx, campaign, campaign.stage, 'warn', `Reflection failed: ${String(error).slice(0, 300)}`).catch(
+      () => {},
+    );
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -437,6 +828,14 @@ async function stageDiscover(
         context: business.context ?? '',
         brandWikidata: business.brandWikidata ?? '',
         operator: business.operator ?? '',
+        // Carried, not fetched. Research redeems these for the handful of
+        // prospects that make the shortlist; downloading photography for
+        // forty businesses to discard thirty of them is paying for pictures
+        // nobody will see.
+        photoRefs: business.photoRefs ?? [],
+        reviews: business.reviews ?? [],
+        openingHours: business.openingHours ?? [],
+        directorySummary: business.summary ?? '',
       }),
       stage: 'discover',
       status: 'new',
@@ -516,6 +915,13 @@ async function stageShortlist(
   let reasoning = '';
 
   if (mode === 'ai') {
+    const guidance = await guidanceFor(
+      ctx,
+      campaign,
+      'shortlist',
+      taskDescription(campaign, 'shortlist'),
+    );
+
     const decision = await shortlistProspects(
       ctx.ai,
       eligible.map((p) => ({
@@ -531,6 +937,8 @@ async function stageShortlist(
       campaign.targetCount,
       campaign.idealClient,
       usageFor(ctx, campaign, 'shortlist', 'shortlist'),
+      ctx.prompts,
+      guidance.text,
     );
 
     if (decision.ok && decision.data.selectedIds.length) {
@@ -681,6 +1089,10 @@ async function assessProspect(
    * high street full of chain branches used to pay to be told so one at a
    * time.
    */
+  const guidance = overCeiling
+    ? NO_GUIDANCE
+    : await guidanceFor(ctx, campaign, 'shortlist', taskDescription(campaign, 'shortlist'));
+
   const qualification = overCeiling
     ? null
     : await qualifyProspect(ctx.ai, {
@@ -693,7 +1105,9 @@ async function assessProspect(
         prominence,
         siteSummary,
         context: String(findings.context ?? ''),
+        guidance: guidance.text,
         usage: usageFor(ctx, campaign, 'qualify', 'shortlist', prospect.id),
+        prompts: ctx.prompts,
       });
 
   const fitScore = qualification?.ok ? qualification.data.fitScore : 0;
@@ -792,6 +1206,7 @@ async function stageEnrich(
   }
 
   const prefix = prospectPrefix(campaign.userId, campaign.id, prospect.id);
+  const carried = readFindings(prospect);
   const enrichment = await enrichProspect(
     ctx.bucket,
     prefix,
@@ -802,8 +1217,15 @@ async function stageEnrich(
       phone: prospect.phone || undefined,
       rating: prospect.rating ?? undefined,
       reviewCount: prospect.reviewCount || undefined,
+      reviews: readReviewQuotes(carried.reviews),
+      openingHours: readStringList(carried.openingHours, 7),
+      summary: String(carried.directorySummary ?? ''),
     },
-    { userAgent: discoveryUserAgent(ctx.appUrl) },
+    {
+      userAgent: discoveryUserAgent(ctx.appUrl),
+      photoRefs: readStringList(carried.photoRefs, 8),
+      placesApiKey: ctx.env.GOOGLE_PLACES_API_KEY,
+    },
   );
 
   const now = new Date().toISOString();
@@ -859,6 +1281,64 @@ async function stageEnrich(
 
   const findings = readFindings(prospect);
 
+  /**
+   * Everything above is the crawl, which is cheap and sometimes wrong about
+   * the same sites every time. What follows is the agent looking properly:
+   * rendering the page when the fetch saw nothing, keeping a picture of it,
+   * and — when this stage is set to `ai` — going and finding out what a crawl
+   * cannot tell you. All three fail soft, because a run that stops because a
+   * screenshot service was busy is a worse pipeline than one that does not
+   * have screenshots.
+   */
+  let siteContent = enrichment.siteContent;
+  const agentNotes: string[] = [];
+
+  try {
+    const rendered = await lookHarder(ctx, campaign, prospect, siteContent);
+    if (rendered) {
+      siteContent = rendered.text;
+      agentNotes.push(rendered.note);
+      await logEvent(ctx, campaign, 'enrich', 'info', rendered.note, {}, prospect.id);
+    }
+  } catch (error) {
+    agentNotes.push(`The browser could not read their site: ${String(error).slice(0, 200)}`);
+  }
+
+  let captured = false;
+  try {
+    captured = await captureSite(ctx, campaign, prospect);
+  } catch {
+    // A missing screenshot is a missing screenshot.
+  }
+
+  let research: { id: string; answer: string } | null = null;
+  if (policy.enrich === 'ai') {
+    try {
+      research = await researchProspect(ctx, campaign, prospect);
+      if (research) {
+        await logEvent(
+          ctx,
+          campaign,
+          'enrich',
+          'decision',
+          `Researched ${prospect.businessName} beyond their site: ${firstSentences(research.answer, 1)}`,
+          { researchId: research.id },
+          prospect.id,
+        );
+      }
+    } catch (error) {
+      await logEvent(
+        ctx,
+        campaign,
+        'enrich',
+        'warn',
+        `Research on ${prospect.businessName} did not finish: ${String(error).slice(0, 200)}`,
+        {},
+        prospect.id,
+      );
+    }
+  }
+
   await ctx.db
     .update(prospects)
     .set({
@@ -880,8 +1360,16 @@ async function stageEnrich(
       findings: JSON.stringify({
         ...findings,
         openingHours: enrichment.openingHours,
-        siteContent: enrichment.siteContent.slice(0, 12_000),
-        researchNotes: enrichment.notes,
+        siteContent: siteContent.slice(0, 12_000),
+        directoryContent: enrichment.directoryContent.slice(0, 6000),
+        researchNotes: [...enrichment.notes, ...agentNotes],
+        research: research?.answer.slice(0, 4000) ?? '',
+        researchId: research?.id ?? '',
+        screenshot: captured,
+        // The references have been redeemed; the bytes are in R2 and the rows
+        // are in `prospect_artifacts`. Keeping them would be carrying an
+        // expired handle around in a column.
+        photoRefs: [],
       }).slice(0, 40_000),
       updatedAt: now,
     })
@@ -893,8 +1381,14 @@ async function stageEnrich(
     'enrich',
     'info',
     `Researched ${prospect.businessName}: ${enrichment.crawl.pages.length} page(s), ` +
-      `${enrichment.imageObjects.length} image(s), ${enrichment.contact.email ? 'email found' : 'no email'}.`,
-    { notes: enrichment.notes, socials: enrichment.socials.map((s) => s.platform) },
+      `${enrichment.imageObjects.length} image(s), ${enrichment.contact.email ? 'email found' : 'no email'}` +
+      `${enrichment.reviewSummary ? ', reviews to quote' : ''}` +
+      `${captured ? ', screenshot kept' : ''}.`,
+    {
+      notes: [...enrichment.notes, ...agentNotes],
+      socials: enrichment.socials.map((s) => s.platform),
+      researchId: research?.id ?? '',
+    },
     prospect.id,
   );
 
@@ -924,6 +1418,14 @@ async function stagePlan(
   const audit = readAudit(prospect);
   const now = new Date().toISOString();
 
+  const guidance = await guidanceFor(
+    ctx,
+    campaign,
+    'plan',
+    taskDescription(campaign, 'plan', prospect),
+    prospect,
+  );
+
   const planInput = {
     businessName: prospect.businessName,
     niche: campaign.niche,
@@ -933,6 +1435,8 @@ async function stagePlan(
     objective: (findings.objective as 'conversion') ?? 'conversion',
     angle: String(findings.angle ?? ''),
     siteContent: String(findings.siteContent ?? ''),
+    directoryContent: String(findings.directoryContent ?? ''),
+    research: String(findings.research ?? ''),
     contact: { email: prospect.email, phone: prospect.phone, address: prospect.address },
     facts: {
       category: String(findings.context ?? ''),
@@ -945,7 +1449,9 @@ async function stagePlan(
       reviewSummary: prospect.reviewSummary ?? '',
       hasWebsite: Boolean(prospect.website),
     },
+    guidance: guidance.text,
     usage: usageFor(ctx, campaign, 'plan', 'plan', prospect.id),
+    prompts: ctx.prompts,
   };
 
   let draft: DesignPlanDraft;
@@ -1017,41 +1523,78 @@ function scaffoldPlan(
   brief: Brief,
   prospect: Prospect,
 ): DesignPlanDraft {
+  const findings = readFindings(prospect);
+  const hours = readStringList(findings.openingHours, 7);
+  const reviews = readReviewQuotes(findings.reviews);
+  const where = prospect.address || region;
+
   const sections: PlanSection[] = [
     {
       id: 'hero',
       type: 'hero',
-      heading: businessName,
-      subheading: `${niche} · ${region}`,
-      body: '',
+      /**
+       * Not the business name. The name is in the header and the footer
+       * already, and a first screen that only repeats it is the failure the
+       * plan prompt names first — so the scaffold must not commit it either.
+       */
+      heading: `${sentenceCase(niche)} in ${region}`,
+      subheading: businessName,
+      body: describeBusiness(businessName, niche, where, prospect),
       items: [],
       cta: { label: 'Get in touch', href: '#contact' },
-      imageHint: 'Their best existing photograph, full bleed.',
-      notes: 'Scaffolded without a model — the copy needs writing.',
-    },
-    {
-      id: 'about',
-      type: 'intro',
-      heading: `About ${businessName}`,
-      subheading: '',
-      body: '',
-      items: [],
-      cta: null,
-      imageHint: '',
-      notes: 'Carry the existing about copy across and cut it in half.',
-    },
-    {
-      id: 'contact',
-      type: 'contact',
-      heading: 'Get in touch',
-      subheading: '',
-      body: '',
-      items: [],
-      cta: prospect.email ? { label: 'Email us', href: `mailto:${prospect.email}` } : null,
-      imageHint: '',
-      notes: '',
+      imageHint: `A wide photograph of ${businessName} — the room, the counter, or the work itself.`,
+      notes: 'Scaffolded without a model, from what is already known.',
     },
   ];
+
+  if (reviews.length) {
+    sections.push({
+      id: 'testimonials',
+      type: 'testimonials',
+      heading: 'What people say',
+      subheading: prospect.rating
+        ? `Rated ${prospect.rating}${prospect.reviewCount ? ` across ${prospect.reviewCount} reviews` : ''}`
+        : '',
+      body: '',
+      items: reviews.slice(0, 3).map((review) => ({
+        title: review.author || 'A customer',
+        body: review.quote,
+      })),
+      cta: null,
+      imageHint: '',
+      notes: 'Their own reviews, quoted as written.',
+    });
+  }
+
+  if (hours.length || where) {
+    sections.push({
+      id: 'location',
+      type: 'location',
+      heading: hours.length ? 'Where and when' : 'Where to find us',
+      subheading: where,
+      body: '',
+      items: hours.map((entry) => ({ title: entry, body: '' })),
+      cta: null,
+      imageHint: where ? `The shopfront at ${where}, seen from the street.` : '',
+      notes: '',
+    });
+  }
+
+  sections.push({
+    id: 'contact',
+    type: 'contact',
+    heading: 'Get in touch',
+    subheading: '',
+    body: [prospect.phone, prospect.email, where].filter(Boolean).join(' · '),
+    items: [],
+    cta: prospect.email
+      ? { label: 'Email us', href: `mailto:${prospect.email}` }
+      : prospect.phone
+        ? { label: 'Call us', href: `tel:${prospect.phone.replace(/[^+\d]/g, '')}` }
+        : null,
+    imageHint: '',
+    notes: '',
+  });
 
   const ordered = brief.sectionOrder.length
     ? sections.sort(
@@ -1061,14 +1604,51 @@ function scaffoldPlan(
     : sections;
 
   return {
-    summary: `A one-page site for ${businessName}.`,
+    summary: `A one-page site for ${businessName}, laid out from what is already known about them.`,
     strategy:
-      'Laid out from what is already known about the business. Written without a model, so the ' +
-      'structure is sound and the copy is a placeholder.',
+      'Written without a model, so every line on it is a fact already held rather than copy. ' +
+      'The structure is sound; the voice is not there yet.',
     objective: 'conversion',
     sections: ordered,
-    meta: { title: `${businessName} — ${niche} in ${region}`, description: '' },
+    meta: {
+      title: `${businessName} — ${niche} in ${region}`,
+      description: describeBusiness(businessName, niche, where, prospect).slice(0, 200),
+    },
   };
+}
+
+/**
+ * One true sentence about the business.
+ *
+ * The scaffold used to emit a hero with the name on it, an "About" heading
+ * with nothing under it and an empty contact block — three headings and no
+ * page. When the model fails, this is what a stranger sees, so it has to be
+ * made of the facts we actually hold rather than left blank for someone to
+ * fill in later.
+ */
+function describeBusiness(
+  businessName: string,
+  niche: string,
+  where: string,
+  prospect: Pick<Prospect, 'rating' | 'reviewCount'>,
+): string {
+  const standing =
+    prospect.rating && prospect.reviewCount
+      ? `Rated ${prospect.rating} across ${prospect.reviewCount} reviews.`
+      : '';
+
+  return [
+    where ? `${businessName} is a ${niche.toLowerCase()} in ${where}.` : `${businessName} is a ${niche.toLowerCase()}.`,
+    standing,
+  ]
+    .filter(Boolean)
+    .join(' ');
+}
+
+/** "coffee roasters" → "Coffee roasters". Leaves an already-capped word alone. */
+function sentenceCase(value: string): string {
+  const trimmed = value.trim();
+  return trimmed ? trimmed[0]!.toUpperCase() + trimmed.slice(1) : trimmed;
 }
 
 function indexOrLast(order: string[], type: string): number {
@@ -1415,6 +1995,14 @@ async function stagePropose(
   const demoUrl = demo.publicUrl || `https://${demo.host}`;
   const proposalUrl = `${ctx.appUrl}/proposal/${token}`;
 
+  const guidance = await guidanceFor(
+    ctx,
+    campaign,
+    'propose',
+    taskDescription(campaign, 'propose', prospect),
+    prospect,
+  );
+
   const draft = await draftProposal(ctx.ai, {
     businessName: prospect.businessName,
     niche: campaign.niche,
@@ -1433,7 +2021,9 @@ async function stagePropose(
     senderBio: settingsRow.outreachBio,
     signature: settingsRow.outreachSignature,
     capabilities: brief.capabilities,
+    guidance: guidance.text,
     usage: usageFor(ctx, campaign, 'proposal', 'propose', prospect.id),
+    prompts: ctx.prompts,
   });
 
   if (!draft.ok) {
@@ -1653,6 +2243,28 @@ export function parseJson<T>(raw: string | null | undefined, fallback: T): T {
 
 export function readFindings(prospect: Pick<Prospect, 'findings'>): Record<string, unknown> {
   return parseJson<Record<string, unknown>>(prospect.findings, {});
+}
+
+/** A list of strings out of `findings`, which is whatever was written there. */
+export function readStringList(value: unknown, max: number): string[] {
+  return Array.isArray(value)
+    ? value.map((entry) => String(entry)).filter(Boolean).slice(0, max)
+    : [];
+}
+
+/** Review quotes out of `findings`, coerced field by field. */
+export function readReviewQuotes(value: unknown): ReviewQuote[] {
+  if (!Array.isArray(value)) return [];
+
+  return value
+    .filter((entry): entry is Record<string, unknown> => !!entry && typeof entry === 'object')
+    .map((entry) => ({
+      quote: String(entry.quote ?? '').slice(0, 600),
+      rating: Number.isFinite(Number(entry.rating)) ? Number(entry.rating) : null,
+      author: String(entry.author ?? '').slice(0, 120),
+    }))
+    .filter((review) => review.quote)
+    .slice(0, 5);
 }
 
 export function readAudit(prospect: Pick<Prospect, 'audit' | 'businessName'>): SiteAudit {

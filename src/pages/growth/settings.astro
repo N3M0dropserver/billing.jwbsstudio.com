@@ -1,6 +1,7 @@
 ---
 import AppLayout from '~/layouts/AppLayout.astro';
 import Card from '~/components/ui/Card.astro';
+import GrowthNav from '~/components/growth/GrowthNav.astro';
 import StagePolicy from '~/components/growth/StagePolicy.astro';
 import { eq } from 'drizzle-orm';
 import { bindings, db } from '~/lib/env';
@@ -14,6 +15,7 @@ import {
   demoHostPattern,
   demoRoute,
 } from '~/lib/growth/publish';
+import { browserAvailable } from '~/lib/agent/context';
 
 const user = Astro.locals.user!;
 const database = db();
@@ -42,9 +44,12 @@ const appHost = new URL(env.APP_URL ?? 'https://billing.jwbsstudio.com').hostnam
 // this zone and wrong for a .co.nz — so this only ever softens the wording.
 const demoDepth = Math.max(1, exampleHost.split('.').length - 2);
 
+const hasBrowser = browserAvailable(env);
 ---
 
 <AppLayout title="Growth defaults" subtitle="What every new run starts from">
+  <GrowthNav current="settings" />
+
   <form method="post" action="/api/growth-settings" class="space-y-4">
     {saved && <p class="muted rounded-lg px-4 py-3 text-sm" style="background: var(--surface-sunken)" role="status">Saved.</p>}
     {error && <p class="rounded-lg px-4 py-3 text-sm" style="background: color-mix(in oklch, var(--color-owing) 12%, transparent); color: var(--color-owing)" role="alert">{error}</p>}
@@ -260,6 +265,115 @@ Route:  ${demoRoute(settings.demoHost)}   ->   this Worker`}</pre>
         in the ribbon at the top. A concept sent to a stranger must never imply we photographed
         their premises.
       </p>
+
+      <div class="mt-3.5 rounded-lg border p-3.5" style="border-color: var(--border)">
+        <p class="text-sm font-medium">Where “their own photographs” come from</p>
+        <p class="muted mt-1.5 text-xs leading-relaxed">
+          Their website, when they have one. When they do not — which is most of what a run
+          selects — the only real pictures of them anywhere we can reach are the ones on their
+          Google listing, along with their reviews and their hours. Those come back only from the
+          <strong style="color: var(--text)">Google Places</strong> source above, and only with
+          <code>GOOGLE_PLACES_API_KEY</code> set.
+          {settings.growthDiscoveryProvider !== 'google-places' && (
+            <span style="color: var(--color-owing)">
+              {' '}This run source is set to {PROVIDERS.find((p) => p.name === settings.growthDiscoveryProvider)?.label ?? settings.growthDiscoveryProvider},
+              which carries none of them — every demo will be built from generated photography or
+              from type alone.
+            </span>
+          )}
+          {settings.growthDiscoveryProvider === 'google-places' && !env.GOOGLE_PLACES_API_KEY && (
+            <span style="color: var(--color-owing)"> The key is not set, so nothing will come back at all.</span>
+          )}
+        </p>
+        <p class="muted mt-2 text-xs leading-relaxed">
+          Asking for photographs, reviews and hours moves a Places search into its Enterprise
+          tier, so it costs more per run than a search without them.
+        </p>
+      </div>
+    </Card>
+
+    <Card title="The agent" subtitle="How much it may look up, remember and teach itself">
+      <div class="grid gap-3.5 sm:grid-cols-2">
+        <div>
+          <label for="agentBrowserMode" class="mb-1.5 block text-sm font-medium">Use a real browser</label>
+          <select id="agentBrowserMode" name="agentBrowserMode" class="field">
+            <option value="off" selected={settings.agentBrowserMode === 'off'}>Never — fetch pages only</option>
+            <option value="fallback" selected={settings.agentBrowserMode === 'fallback'}>When a fetch comes back empty</option>
+            <option value="always" selected={settings.agentBrowserMode === 'always'}>Always</option>
+          </select>
+          <p class="muted mt-1 text-xs leading-relaxed">
+            A plain fetch sees the HTML the server sent, which on a site that draws itself with
+            JavaScript is nothing at all — and a business with a decent site then gets assessed as
+            having no content and emailed about a problem they do not have.
+            {hasBrowser
+              ? ' Browser Rendering is configured, so screenshots and rendered reads are available.'
+              : ' Browser Rendering is not configured: set CLOUDFLARE_ACCOUNT_ID and a token carrying the Browser Rendering permission, or this setting does nothing.'}
+          </p>
+        </div>
+
+        <div>
+          <label for="agentStepBudget" class="mb-1.5 block text-sm font-medium">Tool calls per research task</label>
+          <input id="agentStepBudget" name="agentStepBudget" type="number" min="1" max="24" value={settings.agentStepBudget} class="field max-w-28" />
+          <p class="muted mt-1 text-xs leading-relaxed">
+            The hard ceiling on searches and page loads in one task. When it is spent the agent
+            answers from what it has and says what it could not establish. Research started by the
+            pipeline gets a smaller budget than this.
+          </p>
+        </div>
+      </div>
+
+      <div class="mt-3.5 grid gap-3.5 sm:grid-cols-2">
+        <div class="rounded-lg border p-3.5" style="border-color: var(--border)">
+          <label class="flex items-center gap-2 text-sm font-medium">
+            <input type="checkbox" name="agentMemoryEnabled" checked={settings.agentMemoryEnabled} />
+            Remember things between runs
+          </label>
+          <p class="muted mt-2 text-xs leading-relaxed">
+            Lessons, facts and preferences, scoped to a trade, a region or one business, recalled
+            when they bear on the work in hand. Everything it remembers is readable and deletable
+            on the <a href="/growth/memory" style="color: var(--color-brand-600)">memory page</a>.
+          </p>
+        </div>
+
+        <div class="rounded-lg border p-3.5" style="border-color: var(--border)">
+          <label class="flex items-center gap-2 text-sm font-medium">
+            <input type="checkbox" name="agentSkillsEnabled" checked={settings.agentSkillsEnabled} />
+            Load skills into the pipeline
+          </label>
+          <p class="muted mt-2 text-xs leading-relaxed">
+            The <a href="/growth/skills" style="color: var(--color-brand-600)">skills you have written</a>
+            are matched against each piece of work and the best few are loaded. Turning this off
+            makes every run behave like the built-in prompts alone.
+          </p>
+        </div>
+      </div>
+
+      <div class="mt-3.5 grid gap-3.5 sm:grid-cols-2">
+        <div>
+          <label for="agentSelfImprove" class="mb-1.5 block text-sm font-medium">May it write its own skills?</label>
+          <select id="agentSelfImprove" name="agentSelfImprove" class="field">
+            <option value="off" selected={settings.agentSelfImprove === 'off'}>No</option>
+            <option value="propose" selected={settings.agentSelfImprove === 'propose'}>It may propose; I approve</option>
+            <option value="auto" selected={settings.agentSelfImprove === 'auto'}>Yes, and they take effect at once</option>
+          </select>
+          <p class="muted mt-1 text-xs leading-relaxed">
+            At the end of a run it looks back at what happened and, occasionally, writes down a way
+            of working it wants to keep. Every version is kept either way, so
+            <strong style="color: var(--text)"> “yes” is reversible rather than reckless</strong> —
+            and a skill that tries to talk the pipeline past the outreach cap or robots.txt is
+            rejected whatever this says.
+          </p>
+        </div>
+
+        <div>
+          <label for="agentResearchDailyCap" class="mb-1.5 block text-sm font-medium">Unattended research tasks per day</label>
+          <input id="agentResearchDailyCap" name="agentResearchDailyCap" type="number" min="0" max="200" value={settings.agentResearchDailyCap} class="field max-w-28" />
+          <p class="muted mt-1 text-xs leading-relaxed">
+            Research the pipeline starts on its own, in any rolling 24 hours. Zero stops it
+            entirely; asking questions yourself is not capped until you are plainly running a loop.
+          </p>
+        </div>
+      </div>
     </Card>
 
     <button class="rounded-lg px-4 py-2.5 text-sm font-medium text-white" style="background: var(--color-brand-600)">Save</button>
