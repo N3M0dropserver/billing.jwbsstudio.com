@@ -21,6 +21,8 @@ import type { Brief } from './brief';
 import type { DesignPlanDraft } from './qualify';
 import { escape, renderStylesheet, type DemoContext, type GeneratedFile } from './render';
 import { renderDemoPage } from './render';
+import type { StyleSpec } from './style';
+import { styleFromBrief } from './style';
 
 /** Slug-safe npm package name. */
 function packageName(businessName: string): string {
@@ -168,9 +170,10 @@ export function renderAstroProject(
   brief: Brief,
   context: DemoContext,
   host: string,
+  spec: StyleSpec = styleFromBrief(brief),
 ): GeneratedFile[] {
   const name = packageName(context.businessName);
-  const page = renderDemoPage(plan, brief, context);
+  const page = renderDemoPage(plan, brief, context, spec);
 
   const text = (path: string, content: string): GeneratedFile => ({
     path,
@@ -242,11 +245,11 @@ export default defineConfig({
     text('README.md', readme(context, plan, host)),
     text('src/layouts/Layout.astro', astroLayout(brief, context)),
     text('src/pages/index.astro', astroIndexPage(page, plan)),
-    { path: 'src/styles/site.css', content: renderStylesheet(brief), contentType: 'text/css; charset=utf-8' },
+    { path: 'src/styles/site.css', content: renderStylesheet(brief, spec), contentType: 'text/css; charset=utf-8' },
     text('public/robots.txt', 'User-agent: *\nDisallow: /\n'),
     text(
       'DESIGN-PLAN.json',
-      JSON.stringify({ plan, brief: { ...brief, assetKeys: undefined } }, null, 2) + '\n',
+      JSON.stringify({ plan, style: spec, brief: { ...brief, assetKeys: undefined } }, null, 2) + '\n',
     ),
   ];
 }

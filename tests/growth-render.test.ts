@@ -8,6 +8,7 @@ import {
 } from '~/lib/growth/render';
 import { renderAstroProject } from '~/lib/growth/project';
 import { FALLBACK_BRIEF, parseDesignTokens } from '~/lib/growth/brief';
+import { styleFromBrief, type StyleSpec } from '~/lib/growth/style';
 import {
   renderFacts,
   normalisePlan,
@@ -291,8 +292,31 @@ describe('the kit decides the composition, not just the colours', () => {
 
   it('puts the density and type scale into custom properties', () => {
     const css = renderStylesheet(briefWith({ density: 'airy', typeScale: 'dramatic' }));
-    expect(css).toContain('--section-gap: clamp(5rem, 12vw, 10rem)');
-    expect(css).toContain('--h1: clamp(3rem, 1.5rem + 6.8vw, 7.5rem)');
+
+    // Asserted as a relation rather than a literal: the sizes are computed
+    // from the spec's numbers, so pinning the exact clamp would fail the next
+    // time a measured reference moves one of them by a tenth of a rem.
+    const sectionGap = /--section-gap: clamp\(([\d.]+)rem, [^,]+, ([\d.]+)rem\)/.exec(css);
+    const h1 = /--h1: clamp\(([\d.]+)rem, [^,]+, ([\d.]+)rem\)/.exec(css);
+
+    expect(sectionGap).not.toBeNull();
+    expect(h1).not.toBeNull();
+
+    // Airy and dramatic sit at the top of their ranges, and every size stays
+    // fluid: a floor below the ceiling is what keeps the page working at 320px.
+    expect(Number(sectionGap![2])).toBeGreaterThanOrEqual(7);
+    expect(Number(sectionGap![1])).toBeLessThan(Number(sectionGap![2]));
+    expect(Number(h1![2])).toBeGreaterThanOrEqual(4);
+    expect(Number(h1![1])).toBeLessThan(Number(h1![2]));
+  });
+
+  it('keeps a tight kit tighter than an airy one', () => {
+    const ceiling = (css: string): number =>
+      Number(/--section-gap: clamp\([\d.]+rem, [^,]+, ([\d.]+)rem\)/.exec(css)![1]);
+
+    expect(ceiling(renderStylesheet(briefWith({ density: 'tight' })))).toBeLessThan(
+      ceiling(renderStylesheet(briefWith({ density: 'airy' }))),
+    );
   });
 
   it('squares the corners when the kit asks for it', () => {
@@ -628,5 +652,175 @@ describe('a location section', () => {
     const html = renderDemoPage(plan, brief, context());
     expect(html).not.toContain('<script>alert(1)</script>');
     expect(html).toContain('&lt;script&gt;');
+  });
+});
+
+describe('the style spec decides the page, not the template', () => {
+  const specWith = (
+    composition: Partial<StyleSpec['composition']> = {},
+    scale: Partial<StyleSpec['scale']> = {},
+  ): StyleSpec => {
+    const base = styleFromBrief(FALLBACK_BRIEF);
+    return {
+      ...base,
+      composition: { ...base.composition, ...composition },
+      scale: { ...base.scale, ...scale },
+    };
+  };
+
+  it('renders each card style differently', () => {
+    const styles = ['bordered', 'filled', 'plain', 'elevated'] as const;
+    const sheets = styles.map((cardStyle) => renderStylesheet(FALLBACK_BRIEF, specWith({ cardStyle })));
+
+    expect(new Set(sheets).size).toBe(styles.length);
+    expect(sheets[2]).toContain('.card { background: transparent; border: 0;');
+    expect(sheets[3]).toContain('box-shadow');
+  });
+
+  it('renders each gallery pattern differently', () => {
+    const patterns = ['grid', 'mosaic', 'filmstrip', 'stagger'] as const;
+    const sheets = patterns.map((galleryPattern) =>
+      renderStylesheet(FALLBACK_BRIEF, specWith({ galleryPattern })),
+    );
+
+    expect(new Set(sheets).size).toBe(patterns.length);
+    expect(sheets[2]).toContain('scroll-snap-type');
+    // Only the mosaic promotes the first frame to a double-width lead.
+    expect(sheets[1]).toContain('.gallery .frame:first-child { grid-column: span 2');
+    expect(sheets[0]).not.toContain('.gallery .frame:first-child { grid-column: span 2');
+  });
+
+  it('renders each text-section layout differently', () => {
+    const layouts = ['split', 'stacked', 'offset', 'wide'] as const;
+    const sheets = layouts.map((introLayout) => renderStylesheet(FALLBACK_BRIEF, specWith({ introLayout })));
+    expect(new Set(sheets).size).toBe(layouts.length);
+  });
+
+  it('spends the accent on one thing at a time', () => {
+    const headings = renderStylesheet(FALLBACK_BRIEF, specWith({ accentUse: 'headings' }));
+    const buttons = renderStylesheet(FALLBACK_BRIEF, specWith({ accentUse: 'buttons' }));
+
+    // Accent on the headings means the button is not also shouting.
+    expect(headings).toContain('h2 { color: var(--accent); }');
+    expect(headings).toContain('.btn { background: var(--text); }');
+    expect(buttons).not.toContain('h2 { color: var(--accent); }');
+  });
+
+  it('sets the card grid to the columns the spec asked for', () => {
+    // Scoped to `.cards`: the gallery has its own column count, and matching
+    // the bare declaration would pick that up instead.
+    const cardColumns = (css: string): string[] =>
+      [...css.matchAll(/\.cards \{ grid-template-columns: repeat\((\d)/g)].map((m) => m[1]!);
+
+    expect(cardColumns(renderStylesheet(FALLBACK_BRIEF, specWith({ cardColumns: 4 })))).toContain('4');
+    expect(cardColumns(renderStylesheet(FALLBACK_BRIEF, specWith({ cardColumns: 2 })))).toEqual(['2']);
+    expect(cardColumns(renderStylesheet(FALLBACK_BRIEF, specWith({ cardColumns: 3 })))).toContain('3');
+  });
+
+  it('uppercases headings only when the spec says so', () => {
+    expect(renderStylesheet(FALLBACK_BRIEF, specWith({ headingCase: 'upper' }))).toContain(
+      'h1, h2, h3 { text-transform: uppercase; }',
+    );
+    expect(renderStylesheet(FALLBACK_BRIEF, specWith({ headingCase: 'sentence' }))).not.toContain(
+      'text-transform: uppercase;\n}',
+    );
+  });
+
+  it('flips alternating sections in the markup', () => {
+    const page = renderDemoPage(PLAN, FALLBACK_BRIEF, CONTEXT, specWith({ sectionAlign: 'alternating' }));
+    const plain = renderDemoPage(PLAN, FALLBACK_BRIEF, CONTEXT, specWith({ sectionAlign: 'left' }));
+
+    expect(page).toContain('section--flip');
+    expect(plain).not.toContain('section--flip');
+    // Never the hero: it has its own composition and flipping it is wrong.
+    expect(page).not.toMatch(/section section--flip hero/);
+  });
+
+  it('puts the spec\'s numbers into the page and keeps every size fluid', () => {
+    const css = renderStylesheet(FALLBACK_BRIEF, specWith({}, { h1Rem: 6, maxWidthRem: 90, measureCh: 72 }));
+
+    expect(css).toContain('--measure-page: 90rem');
+    expect(css).toContain('--measure: 72ch');
+    expect(css).toMatch(/--h1: clamp\([\d.]+rem, [^,]+, 6rem\)/);
+  });
+
+  it('emits a fixed size rather than a broken clamp when a range collapses', () => {
+    // bodyRem's floor is 0.95 and its own minimum is 0.95, so min === max.
+    const css = renderStylesheet(FALLBACK_BRIEF, specWith({}, { bodyRem: 0.95 }));
+    expect(css).toContain('--body-size: 0.95rem;');
+    expect(css).not.toContain('--body-size: clamp(0.95rem, 0rem + 0vw, 0.95rem)');
+  });
+
+  it('leaves the stylesheet with balanced braces whatever the spec chose', () => {
+    for (const cardStyle of ['bordered', 'filled', 'plain', 'elevated'] as const) {
+      for (const galleryPattern of ['grid', 'mosaic', 'filmstrip', 'stagger'] as const) {
+        for (const accentUse of ['buttons', 'rules', 'headings', 'blocks'] as const) {
+          const css = renderStylesheet(FALLBACK_BRIEF, specWith({ cardStyle, galleryPattern, accentUse }));
+          const open = (css.match(/\{/g) ?? []).length;
+          const close = (css.match(/\}/g) ?? []).length;
+          expect(open).toBe(close);
+        }
+      }
+    }
+  });
+
+  it('two different specs produce two different pages', () => {
+    const loud = renderDemoPage(
+      PLAN,
+      FALLBACK_BRIEF,
+      CONTEXT,
+      specWith({ cardStyle: 'plain', galleryPattern: 'filmstrip', sectionAlign: 'alternating' }),
+    );
+    const quiet = renderDemoPage(PLAN, FALLBACK_BRIEF, CONTEXT, specWith({ cardStyle: 'filled' }));
+
+    expect(loud).not.toBe(quiet);
+  });
+
+  it('takes the palette and the typefaces from the spec, not the brief', () => {
+    const spec: StyleSpec = {
+      ...styleFromBrief(FALLBACK_BRIEF),
+      palette: [
+        { name: 'bg', value: '#0f0f0f', role: 'background' },
+        { name: 'text', value: '#f2f0e9', role: 'text' },
+        { name: 'accent', value: '#d6ff3f', role: 'accent' },
+      ],
+      typography: [
+        {
+          role: 'display',
+          family: 'Archivo',
+          fallback: 'sans-serif',
+          source: 'google',
+          url: 'https://fonts.googleapis.com/css2?family=Archivo&display=swap',
+          weights: [700],
+        },
+      ],
+    };
+
+    const css = renderStylesheet(FALLBACK_BRIEF, spec);
+    expect(css).toContain('--bg: #0f0f0f');
+    expect(css).toContain('Archivo');
+    expect(css).not.toContain('#fbfaf7');
+
+    // And the page asks for the spec's stylesheet, not the kit's.
+    const page = renderDemoPage(PLAN, FALLBACK_BRIEF, CONTEXT, spec);
+    expect(page).toContain('family=Archivo');
+    expect(page).not.toContain('family=Fraunces');
+  });
+
+  it('still strips anything that could escape a CSS value', () => {
+    const hostile: StyleSpec = {
+      ...styleFromBrief(FALLBACK_BRIEF),
+      palette: [{ name: 'bg', value: '#fff; } body { display: none } .x {', role: 'background' }],
+    };
+
+    const css = renderStylesheet(FALLBACK_BRIEF, hostile);
+
+    // The guarantee is that a value cannot end its declaration or open a new
+    // rule. What is left is an unparseable colour, which the browser drops.
+    const declaration = /--bg:([^\n]*)\n/.exec(css)![1]!;
+    expect(declaration).not.toContain('{');
+    expect(declaration).not.toContain('}');
+    expect(declaration.replace(/;$/, '')).not.toContain(';');
+    expect((css.match(/\{/g) ?? []).length).toBe((css.match(/\}/g) ?? []).length);
   });
 });

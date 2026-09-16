@@ -1012,6 +1012,21 @@ export const brandKits = sqliteTable(
      */
     designTokens: text('design_tokens').notNull().default('{}'),
 
+    /**
+     * JSON `ReferenceProfile[]` — what `reference_urls` actually measured out
+     * to, cached.
+     *
+     * The URLs on their own were decoration: nothing opened them, so the
+     * "reference sites for feel" in the prompt were addresses a model with no
+     * browser could not act on. These are the real measurements — typefaces,
+     * colours and their roles, corner radii, type sizes, section order —
+     * taken by `profileReferences` at the brief stage and reused until the
+     * reference list changes. Third-party content, treated as data only.
+     */
+    referenceProfiles: text('reference_profiles').notNull().default('[]'),
+    /** When the profiles above were taken. Empty means never. */
+    referenceProfiledAt: text('reference_profiled_at').notNull().default(''),
+
     /** The editable art-direction block handed to the model verbatim. */
     prompt: text('prompt').notNull().default(''),
     /** How the copy should sound. */
@@ -1346,7 +1361,20 @@ export const designPlans = sqliteTable(
     /** JSON `{ title, description, ogImageHint }`. */
     meta: text('meta').notNull().default('{}'),
 
+    /**
+     * JSON `StyleSpec` — the whole visual answer for THIS demo.
+     *
+     * `palette` and `typography` above are kept because they are what the UI
+     * reads, but they are only part of it: this carries the proportions and
+     * the composition too, resolved kit → references → model and clamped on
+     * the way in. Empty means the plan predates per-prospect styling, and the
+     * renderer falls back to what the brand kit implies.
+     */
+    style: text('style').notNull().default('{}'),
+
     model: text('model').notNull().default(''),
+    /** Empty for a model-written plan; set when a fallback wrote it instead. */
+    fallbackReason: text('fallback_reason').notNull().default(''),
     status: text('status', { enum: ['draft', 'approved', 'rejected'] })
       .notNull()
       .default('draft'),

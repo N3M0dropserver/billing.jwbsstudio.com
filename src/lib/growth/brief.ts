@@ -16,6 +16,8 @@
  */
 
 import type { BrandKit } from '../db/schema';
+import type { ReferenceProfile } from './reference';
+import { parseProfiles, renderReferencePrompt } from './reference';
 
 export interface ReferenceSite {
   url: string;
@@ -140,6 +142,13 @@ export interface Brief {
   brandKitId: string | null;
   name: string;
   references: ReferenceSite[];
+  /**
+   * What those references actually measure out to, when they have been read.
+   *
+   * Empty until the brief stage has profiled them. A URL on its own tells the
+   * model nothing it can act on — see `reference.ts`.
+   */
+  referenceProfiles: ReferenceProfile[];
   typography: TypefaceSpec[];
   palette: ColourToken[];
   /** Composition, shape and proportion. See `DesignTokens`. */
@@ -174,6 +183,7 @@ export const FALLBACK_BRIEF: Brief = {
   brandKitId: null,
   name: 'Default',
   references: [],
+  referenceProfiles: [],
   typography: [
     {
       role: 'display',
@@ -249,6 +259,7 @@ export function briefFromKit(kit: BrandKit | null): Brief {
     brandKitId: kit.id,
     name: kit.name,
     references: parseArray(kit.referenceUrls, isReference),
+    referenceProfiles: parseProfiles(kit.referenceProfiles),
     typography: typography.length ? typography : FALLBACK_BRIEF.typography,
     palette: palette.length ? palette : FALLBACK_BRIEF.palette,
     tokens: parseDesignTokens(kit.designTokens),
@@ -351,9 +362,20 @@ export function renderBriefPrompt(brief: Brief): string {
       `${brief.tokens.typeScale} type. Write headings that suit it.`,
   );
 
-  if (brief.references.length) {
+  /**
+   * The references, named but not described.
+   *
+   * A bare list of URLs used to be all the model got, which was useless: it
+   * has no browser, so "aim for the feel of example.com" was an address it
+   * could not open. The measurements are rendered separately by
+   * `renderReferencePrompt`, which callers put next to this block — so all
+   * that is worth saying here is which sites they are and why, and only when
+   * there are no measurements to say it better.
+   */
+  if (brief.references.length && !brief.referenceProfiles.some((profile) => profile.ok)) {
     lines.push(
-      'Reference sites for feel: ' +
+      'Reference sites the designer chose (not yet measured, so treat the notes as ' +
+        'the only guide): ' +
         brief.references.map((r) => (r.note ? `${r.url} (${r.note})` : r.url)).join(', '),
     );
   }
@@ -362,30 +384,51 @@ export function renderBriefPrompt(brief: Brief): string {
   return lines.join('\n');
 }
 
+/** The brief and its measured references, as one block for a prompt. */
+export function renderBriefWithReferences(brief: Brief): string {
+  return [renderBriefPrompt(brief), renderReferencePrompt(brief.referenceProfiles)]
+    .filter(Boolean)
+    .join('\n');
+}
+
 /** Turn the brief's palette into the CSS custom properties the build uses. */
 export function paletteCss(brief: Brief): string {
   return brief.palette.map((c) => `    --${c.name}: ${c.value};`).join('\n');
 }
 
-/** Font stack for a role, falling back through the roles that usually stand in. */
-export function fontStack(brief: Brief, role: TypefaceSpec['role']): string {
+/**
+ * Font stack for a role, falling back through the roles that usually stand in.
+ *
+ * Takes the faces rather than the brief, because a rendered page's typefaces
+ * may have come from a resolved style spec — measured off a reference site or
+ * chosen per prospect — rather than straight off the kit.
+ */
+export function fontStackFrom(faces: TypefaceSpec[], role: TypefaceSpec['role']): string {
   const order: TypefaceSpec['role'][] =
     role === 'display' ? ['display', 'heading', 'body'] : role === 'heading' ? ['heading', 'display', 'body'] : [role, 'body'];
 
   for (const candidate of order) {
-    const face = brief.typography.find((t) => t.role === candidate);
+    const face = faces.find((t) => t.role === candidate);
     if (face) return `'${face.family}', ${face.fallback}`;
   }
   return FALLBACK_BRIEF.typography[1]!.fallback;
 }
 
+export function fontStack(brief: Brief, role: TypefaceSpec['role']): string {
+  return fontStackFrom(brief.typography, role);
+}
+
 /** The Google Fonts stylesheet links a generated page needs, deduplicated. */
-export function fontLinks(brief: Brief): string[] {
+export function fontLinksFrom(faces: TypefaceSpec[]): string[] {
   const seen = new Set<string>();
-  for (const face of brief.typography) {
+  for (const face of faces) {
     if (face.source === 'google' && face.url.startsWith('https://fonts.googleapis.com/')) {
       seen.add(face.url);
     }
   }
   return [...seen];
+}
+
+export function fontLinks(brief: Brief): string[] {
+  return fontLinksFrom(brief.typography);
 }

@@ -16,18 +16,29 @@
  * What that split originally got wrong was treating "consistent" as "one
  * fixed template". The brief's palette and typefaces reached the page but its
  * *composition* did not, so every demo had the same hero, the same rhythm and
- * the same proportions whatever kit produced it. The stylesheet below is
- * therefore a function of `brief.tokens`: the kit chooses the hero treatment,
- * the density, the type scale, the shapes and how sections are separated, and
- * two kits produce pages that do not look like each other.
+ * the same proportions whatever kit produced it. Eight enums on the brand kit
+ * fixed some of that and not enough of it: they were set per KIT, so every
+ * demo in a run still came out the same page in the same colours.
+ *
+ * So everything visual now comes from a `StyleSpec`, resolved per prospect
+ * (see `style.ts`). The spec carries real numbers for proportion, a palette
+ * and typefaces that may have been measured off the designer's reference
+ * sites, and composition choices that pick between the layout branches
+ * below. A model is allowed to author it — and only it. It still never writes
+ * markup, so the escaping guarantee above is untouched: every value arriving
+ * here has been range-checked, and every colour re-emitted from parsed
+ * components, before it reaches a declaration.
  *
  * Output is a single self-contained HTML file plus its stylesheet: no build
  * step, no framework, no JavaScript at all.
  */
 
-import type { Brief, DesignTokens } from './brief';
-import { fontLinks, fontStack } from './brief';
+import type { Brief, ColourToken, DesignTokens } from './brief';
+import { fontLinksFrom, fontStackFrom } from './brief';
 import type { DesignPlanDraft, PlanSection } from './qualify';
+import { luminance, parseColour } from './reference';
+import type { StyleSpec } from './style';
+import { styleFromBrief } from './style';
 
 export function escape(value: string): string {
   return value
@@ -87,70 +98,34 @@ export interface GeneratedFile {
 }
 
 /* ------------------------------------------------------------------ */
-/* Design tokens as CSS                                                */
+/* The style spec as CSS                                               */
 /* ------------------------------------------------------------------ */
 
-/** Section rhythm and gutters. */
-const DENSITY: Record<DesignTokens['density'], { section: string; gutter: string; card: string }> = {
-  tight: {
-    section: 'clamp(2.5rem, 6vw, 4.5rem)',
-    gutter: 'clamp(1rem, 4vw, 2.5rem)',
-    card: 'clamp(1.15rem, 2vw, 1.6rem)',
-  },
-  regular: {
-    section: 'clamp(3.5rem, 9vw, 7rem)',
-    gutter: 'clamp(1.25rem, 5vw, 4rem)',
-    card: 'clamp(1.5rem, 3vw, 2.25rem)',
-  },
-  airy: {
-    section: 'clamp(5rem, 12vw, 10rem)',
-    gutter: 'clamp(1.5rem, 6vw, 5.5rem)',
-    card: 'clamp(2rem, 4vw, 3rem)',
-  },
-};
+/**
+ * A fluid length between two rem values.
+ *
+ * Every size the spec carries is the value at a comfortable desktop width;
+ * the page still has to work at 320px, so each one is emitted as a clamp
+ * rather than a fixed size. The coefficients solve `a + b·vw` for `min` at
+ * 22rem of viewport and `max` at 90rem, which is the range a concept is
+ * actually looked at across.
+ *
+ * Doing this arithmetically rather than from a table of hand-written clamps
+ * is what lets the scale be numbers at all — and numbers are what let a
+ * measured reference or a model move it by a little rather than by a whole
+ * step.
+ */
+function fluid(min: number, max: number): string {
+  if (!(max > min)) return `${round(max)}rem`;
 
-/** How far display type is pushed against the body text. */
-const TYPE_SCALE: Record<
-  DesignTokens['typeScale'],
-  { h1: string; h2: string; h3: string; lede: string; tracking: string; leading: string }
-> = {
-  restrained: {
-    h1: 'clamp(2rem, 1.5rem + 2.2vw, 3.25rem)',
-    h2: 'clamp(1.5rem, 1.25rem + 1.2vw, 2.1rem)',
-    h3: 'clamp(1.05rem, 1rem + 0.35vw, 1.25rem)',
-    lede: 'clamp(1.05rem, 1rem + 0.3vw, 1.2rem)',
-    tracking: '-0.01em',
-    leading: '1.2',
-  },
-  balanced: {
-    h1: 'clamp(2.5rem, 1.6rem + 4.2vw, 5rem)',
-    h2: 'clamp(1.85rem, 1.3rem + 2.2vw, 3rem)',
-    h3: 'clamp(1.15rem, 1rem + 0.6vw, 1.4rem)',
-    lede: 'clamp(1.1rem, 1rem + 0.5vw, 1.35rem)',
-    tracking: '-0.02em',
-    leading: '1.08',
-  },
-  dramatic: {
-    h1: 'clamp(3rem, 1.5rem + 6.8vw, 7.5rem)',
-    h2: 'clamp(2.2rem, 1.4rem + 3.4vw, 4rem)',
-    h3: 'clamp(1.25rem, 1.05rem + 0.8vw, 1.65rem)',
-    lede: 'clamp(1.2rem, 1rem + 0.8vw, 1.6rem)',
-    tracking: '-0.035em',
-    leading: '0.98',
-  },
-};
+  const b = (max - min) / 0.68;
+  const a = min - 0.22 * b;
 
-const RADIUS: Record<DesignTokens['radius'], { card: string; media: string }> = {
-  square: { card: '0', media: '0' },
-  soft: { card: '1rem', media: '1.25rem' },
-  round: { card: '1.75rem', media: '2rem' },
-};
+  const offset = a === 0 ? '' : `${round(a)}rem + `;
+  return `clamp(${round(min)}rem, ${offset}${round(b)}vw, ${round(max)}rem)`;
+}
 
-const BUTTON_RADIUS: Record<DesignTokens['button'], string> = {
-  pill: '999px',
-  rounded: '0.625rem',
-  square: '0',
-};
+const round = (value: number): number => Number.parseFloat(value.toFixed(3));
 
 /**
  * How a photograph is framed.
@@ -165,24 +140,36 @@ const IMAGERY_FRAME: Record<DesignTokens['imagery'], string> = {
   arch: 'calc(var(--frame-width, 20rem) / 2) calc(var(--frame-width, 20rem) / 2) var(--radius-media) var(--radius-media)',
 };
 
-export function tokenCss(tokens: DesignTokens): string {
-  const density = DENSITY[tokens.density];
-  const type = TYPE_SCALE[tokens.typeScale];
+/**
+ * The spec's numbers, as custom properties.
+ *
+ * Everything downstream in the stylesheet is written against these names, so
+ * the whole visual result of one demo is decided by this block. Two specs that
+ * differ produce pages that differ, which is the property the eight enums on
+ * their own never had.
+ */
+export function styleVars(spec: StyleSpec): string {
+  const { scale, tokens } = spec;
 
   return [
-    `    --gutter: ${density.gutter};`,
-    `    --section-gap: ${density.section};`,
-    `    --card-pad: ${density.card};`,
-    `    --radius-card: ${RADIUS[tokens.radius].card};`,
-    `    --radius-media: ${RADIUS[tokens.radius].media};`,
-    `    --radius-button: ${BUTTON_RADIUS[tokens.button]};`,
+    `    --measure-page: ${round(scale.maxWidthRem)}rem;`,
+    `    --gutter: ${fluid(Math.min(1, scale.gutterRem), scale.gutterRem)};`,
+    `    --section-gap: ${fluid(Math.max(2, scale.sectionGapRem * 0.45), scale.sectionGapRem)};`,
+    `    --card-pad: ${fluid(Math.max(0.85, scale.cardPadRem * 0.72), scale.cardPadRem)};`,
+    `    --radius-card: ${round(scale.radiusCardPx)}px;`,
+    `    --radius-media: ${round(scale.radiusMediaPx)}px;`,
+    `    --radius-button: ${round(scale.radiusButtonPx)}px;`,
     `    --frame: ${IMAGERY_FRAME[tokens.imagery]};`,
-    `    --h1: ${type.h1};`,
-    `    --h2: ${type.h2};`,
-    `    --h3: ${type.h3};`,
-    `    --lede: ${type.lede};`,
-    `    --display-tracking: ${type.tracking};`,
-    `    --display-leading: ${type.leading};`,
+    `    --h1: ${fluid(Math.max(1.75, scale.h1Rem * 0.46), scale.h1Rem)};`,
+    `    --h2: ${fluid(Math.max(1.4, scale.h2Rem * 0.62), scale.h2Rem)};`,
+    `    --h3: ${fluid(Math.max(1.05, scale.h3Rem * 0.86), scale.h3Rem)};`,
+    `    --lede: ${fluid(Math.max(1, scale.ledeRem * 0.88), scale.ledeRem)};`,
+    `    --body-size: ${fluid(Math.max(0.95, scale.bodyRem * 0.94), scale.bodyRem)};`,
+    `    --body-leading: ${round(scale.bodyLeading)};`,
+    `    --display-tracking: ${round(scale.trackingEm)}em;`,
+    `    --display-leading: ${round(scale.leading)};`,
+    `    --display-weight: ${scale.headingWeight};`,
+    `    --measure: ${Math.round(scale.measureCh)}ch;`,
   ].join('\n');
 }
 
@@ -190,9 +177,19 @@ export function tokenCss(tokens: DesignTokens): string {
 /* Stylesheet                                                          */
 /* ------------------------------------------------------------------ */
 
-function paletteBlock(brief: Brief): string {
-  const named = new Map(brief.palette.map((c) => [c.role, c.value]));
-  const byName = brief.palette.map((c) => `    --${cssSafe(c.name)}: ${cssSafe(c.value)};`).join('\n');
+/** The role aliases the stylesheet is written against, whatever a kit named its tokens. */
+const ROLE_ALIASES = ['bg', 'surface', 'text', 'muted', 'accent', 'line'];
+
+function paletteBlock(palette: ColourToken[]): string {
+  const named = new Map(palette.map((c) => [c.role, c.value]));
+
+  // A kit's own token names are emitted too, so its `--brand-ink` is
+  // available — but not where the name is already one of the aliases below,
+  // which would declare the same property twice with the same value.
+  const byName = palette
+    .filter((c) => !ROLE_ALIASES.includes(cssSafe(c.name)))
+    .map((c) => `    --${cssSafe(c.name)}: ${cssSafe(c.value)};`)
+    .join('\n');
 
   // Role aliases so the stylesheet can be written against stable names
   // whatever the kit chose to call its tokens.
@@ -205,11 +202,20 @@ function paletteBlock(brief: Brief): string {
     `    --line: ${cssSafe(named.get('border') ?? 'rgba(0,0,0,0.12)')};`,
   ].join('\n');
 
-  return `${byName}\n${roles}`;
+  return byName ? `${byName}\n${roles}` : roles;
 }
 
-export function renderStylesheet(brief: Brief): string {
-  const tokens = brief.tokens;
+/**
+ * The composition half of the stylesheet.
+ *
+ * These are the declarations that differ because a `StyleComposition` field
+ * differs. Kept in one function so that adding a value to a closed set in
+ * `style.ts` has one obvious place to be honoured — a value with no branch
+ * here silently renders as the default, which is the failure this file has
+ * already made once.
+ */
+function compositionCss(spec: StyleSpec): string {
+  const { composition, tokens } = spec;
 
   /**
    * Section separation.
@@ -227,23 +233,179 @@ export function renderStylesheet(brief: Brief): string {
 
   const eyebrow =
     tokens.accent === 'bold'
-      ? `    font-size: 0.75rem;
+      ? `.eyebrow {
+    font-size: 0.75rem;
     letter-spacing: 0.14em;
     text-transform: uppercase;
-    font-weight: 600;`
-      : `    font-size: 0.9rem;
+    font-weight: 600;
+}`
+      : `.eyebrow {
+    font-size: 0.9rem;
     letter-spacing: 0.01em;
-    font-weight: 500;`;
+    font-weight: 500;
+}`;
+
+  const headingCase =
+    composition.headingCase === 'upper'
+      ? `h1, h2, h3 { text-transform: uppercase; }`
+      : '/* Headings are set as written. */';
+
+  /**
+   * How a card is drawn.
+   *
+   * `plain` is the one that changes the page most: with no border and no fill,
+   * a three-up grid reads as three columns of text rather than three boxes,
+   * which is how most editorial sites actually set a services list.
+   */
+  const card =
+    composition.cardStyle === 'filled'
+      ? `.card { background: var(--surface); border: 1px solid transparent; }`
+      : composition.cardStyle === 'elevated'
+        ? `.card { background: var(--surface); border: 1px solid transparent; box-shadow: 0 1px 2px color-mix(in srgb, var(--text) 8%, transparent), 0 12px 28px -12px color-mix(in srgb, var(--text) 18%, transparent); }`
+        : composition.cardStyle === 'plain'
+          ? `.card { background: transparent; border: 0; padding-inline: 0; padding-block: 0; }
+.cards { gap: clamp(2rem, 4vw, 3.25rem); }`
+          : `.card { background: var(--surface); border: 1px solid var(--line); }`;
+
+  const columns =
+    composition.cardColumns === 2
+      ? `@media (min-width: 42rem) { .cards { grid-template-columns: repeat(2, 1fr); } }`
+      : composition.cardColumns === 4
+        ? `@media (min-width: 42rem) { .cards { grid-template-columns: repeat(2, 1fr); } }
+@media (min-width: 66rem) { .cards { grid-template-columns: repeat(4, 1fr); } }`
+        : `@media (min-width: 42rem) { .cards { grid-template-columns: repeat(2, 1fr); } }
+@media (min-width: 66rem) { .cards { grid-template-columns: repeat(3, 1fr); } }`;
+
+  /**
+   * How a gallery is composed.
+   *
+   * `mosaic` promotes the first picture to a double-width lead, `filmstrip`
+   * scrolls one row, `stagger` drops every second frame to break the grid
+   * line, `grid` is an even grid. The first of these was the only behaviour
+   * the renderer had, and it was a large part of why every demo's gallery
+   * looked the same.
+   */
+  const gallery =
+    composition.galleryPattern === 'grid'
+      ? `.gallery { grid-template-columns: repeat(2, 1fr); }
+@media (min-width: 60rem) { .gallery { grid-template-columns: repeat(3, 1fr); } }
+.gallery .frame { aspect-ratio: 1; }`
+      : composition.galleryPattern === 'filmstrip'
+        ? `.gallery {
+    display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(16rem, 24rem);
+    grid-template-columns: none;
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+    padding-bottom: 1rem;
+    scrollbar-width: thin;
+}
+.gallery .frame { aspect-ratio: 4 / 5; scroll-snap-align: start; }`
+        : composition.galleryPattern === 'stagger'
+          ? `.gallery { grid-template-columns: repeat(2, 1fr); align-items: start; }
+@media (min-width: 60rem) { .gallery { grid-template-columns: repeat(3, 1fr); } }
+.gallery .frame { aspect-ratio: 4 / 5; }
+@media (min-width: 60rem) {
+    .gallery .frame:nth-child(even) { transform: translateY(clamp(1.5rem, 4vw, 3.5rem)); }
+}
+@media (prefers-reduced-motion: reduce) { .gallery .frame:nth-child(even) { transform: none; } }`
+          : `.gallery { grid-template-columns: repeat(2, 1fr); }
+@media (min-width: 60rem) { .gallery { grid-template-columns: repeat(3, 1fr); } }
+.gallery .frame { aspect-ratio: 1; }
+.gallery .frame:first-child { grid-column: span 2; aspect-ratio: 2; }
+@media (min-width: 60rem) { .gallery .frame:first-child { aspect-ratio: 2 / 1; } }`;
+
+  /** How a text section divides its column. */
+  const intro =
+    composition.introLayout === 'stacked'
+      ? `.split { grid-template-columns: 1fr; max-width: 54rem; }`
+      : composition.introLayout === 'offset'
+        ? `@media (min-width: 58rem) { .split { grid-template-columns: 1fr 1.6fr; } .split > :first-child { position: sticky; top: 6rem; } }`
+        : composition.introLayout === 'wide'
+          ? `@media (min-width: 58rem) { .split { grid-template-columns: 1fr; } }
+.split > * { max-width: none; }
+.split p { max-width: var(--measure); }`
+          : `@media (min-width: 58rem) { .split { grid-template-columns: 0.85fr 1.15fr; } }`;
+
+  const align =
+    composition.sectionAlign === 'centred'
+      ? `.section > .wrap > h2, .section > .wrap > .eyebrow, .section > .wrap > .lede { text-align: center; margin-inline: auto; }
+.section > .wrap > .lede { max-width: 46rem; }`
+      : composition.sectionAlign === 'alternating'
+        ? `.section--flip .split { direction: rtl; }
+.section--flip .split > * { direction: ltr; }`
+        : '/* Sections are set from the left. */';
+
+  /**
+   * What the accent is spent on.
+   *
+   * One accent used in one place reads as a decision. The same accent on the
+   * buttons and the headings and the rules and the eyebrows reads as a theme
+   * picker, which is the look this whole change exists to get away from.
+   */
+  const accent =
+    composition.accentUse === 'headings'
+      ? `h2 { color: var(--accent); }
+.btn { background: var(--text); }`
+      : composition.accentUse === 'rules'
+        ? `.section + .section { border-top-color: var(--accent); }
+.eyebrow::after { content: ''; display: block; width: 2.5rem; height: 2px; background: var(--accent); margin-top: 0.75rem; }
+.btn { background: var(--text); }`
+        : composition.accentUse === 'blocks'
+          ? `.section--tint { background: color-mix(in srgb, var(--accent) 10%, var(--bg)); }
+.card { border-left: 3px solid var(--accent); }
+.btn { background: var(--accent); }`
+          : `.btn { background: var(--accent); }`;
+
+  const nav =
+    composition.navStyle === 'plain'
+      ? `.site-head { border-bottom: 0; }`
+      : composition.navStyle === 'underline'
+        ? `.site-head { border-bottom: 0; }
+.site-nav a { padding-bottom: 0.2rem; border-bottom: 1px solid transparent; }
+.site-nav a:hover { border-bottom-color: var(--accent); }`
+        : `.site-head { border-bottom: 1px solid var(--line); }`;
+
+  const lede =
+    composition.ledeColour === 'text'
+      ? `.lede { color: var(--text); }`
+      : `.lede { color: var(--muted); }`;
+
+  return [rhythm, eyebrow, headingCase, card, columns, gallery, intro, align, accent, nav, lede].join(
+    '\n',
+  );
+}
+
+/**
+ * The stylesheet for one demo.
+ *
+ * `spec` is what decides how it looks. It is optional only so that a caller
+ * holding just a brief — an export, a test — still gets the page that brief
+ * implies; `styleFromBrief` is the kit-only pass and reproduces exactly what
+ * this used to emit.
+ */
+export function renderStylesheet(brief: Brief, spec: StyleSpec = styleFromBrief(brief)): string {
+  /**
+   * Follow the palette rather than assuming light.
+   *
+   * A palette measured off a dark reference site puts a near-black ground on
+   * the page, and declaring `light` alongside it hands the reader light
+   * scrollbars and light form controls around a dark page. It was safe to
+   * hardcode while every demo used the built-in cream; it is not now.
+   */
+  const ground = spec.palette.find((colour) => colour.role === 'background')?.value ?? '#ffffff';
+  const parsed = parseColour(ground);
+  const scheme = parsed && luminance(parsed) < 0.45 ? 'dark' : 'light';
 
   return `/* Generated for a demo. One file, no build step. */
 
 :root {
-${paletteBlock(brief)}
-    --display: ${cssSafe(fontStack(brief, 'display'))};
-    --body: ${cssSafe(fontStack(brief, 'body'))};
-    --measure: 62ch;
-${tokenCss(tokens)}
-    color-scheme: light;
+${paletteBlock(spec.palette)}
+    --display: ${cssSafe(fontStackFrom(spec.typography, 'display'))};
+    --body: ${cssSafe(fontStackFrom(spec.typography, 'body'))};
+${styleVars(spec)}
+    color-scheme: ${scheme};
 }
 
 *, *::before, *::after { box-sizing: border-box; }
@@ -260,8 +422,8 @@ body {
     background: var(--bg);
     color: var(--text);
     font-family: var(--body);
-    font-size: clamp(1rem, 0.96rem + 0.2vw, 1.125rem);
-    line-height: 1.65;
+    font-size: var(--body-size);
+    line-height: var(--body-leading);
     -webkit-font-smoothing: antialiased;
 }
 
@@ -271,7 +433,7 @@ a { color: inherit; }
 
 h1, h2, h3 {
     font-family: var(--display);
-    font-weight: 600;
+    font-weight: var(--display-weight);
     line-height: var(--display-leading);
     letter-spacing: var(--display-tracking);
     text-wrap: balance;
@@ -285,13 +447,10 @@ h3 { font-size: var(--h3); line-height: 1.25; }
 p { margin: 0 0 1em; max-width: var(--measure); text-wrap: pretty; }
 p:last-child { margin-bottom: 0; }
 
-.wrap { width: 100%; max-width: 76rem; margin-inline: auto; padding-inline: var(--gutter); }
+.wrap { width: 100%; max-width: var(--measure-page); margin-inline: auto; padding-inline: var(--gutter); }
 
 .section { padding-block: var(--section-gap); }
-${rhythm}
-
 .eyebrow {
-${eyebrow}
     color: var(--accent);
     margin: 0 0 1rem;
 }
@@ -441,28 +600,27 @@ ${eyebrow}
 .hero--bleed .btn--ghost { color: #fff; border-color: rgba(255, 255, 255, 0.5); }
 .hero--bleed .frame__made { right: var(--gutter); }
 
-/* -- Cards ------------------------------------------------------ */
+/* -- Cards ------------------------------------------------------ *
+ * The columns and the card's own fill and border come from the spec's
+ * composition, appended at the end of this file. Only the shared structure
+ * is here — anything decided per demo must be absent rather than overridden,
+ * or a choice of two columns still inherits three.                          */
 
 .cards { display: grid; gap: 1.5rem; margin-top: 3rem; }
-@media (min-width: 42rem) { .cards { grid-template-columns: repeat(2, 1fr); } }
-@media (min-width: 66rem) { .cards--three { grid-template-columns: repeat(3, 1fr); } }
 
 .card {
-    background: var(--surface);
-    border: 1px solid var(--line);
     border-radius: var(--radius-card);
     padding: var(--card-pad);
 }
 .card h3 { margin-bottom: 0.6rem; }
 .card p { color: var(--muted); }
 
-/* -- Gallery ---------------------------------------------------- */
+/* -- Gallery ---------------------------------------------------- *
+ * The pattern — even grid, mosaic lead, filmstrip, stagger — comes from the
+ * spec.                                                                     */
 
-.gallery { display: grid; gap: 1rem; margin-top: 3rem; grid-template-columns: repeat(2, 1fr); }
-@media (min-width: 60rem) { .gallery { grid-template-columns: repeat(3, 1fr); } }
-.gallery .frame { --frame-width: 24rem; margin: 0; aspect-ratio: 1; }
-.gallery .frame:first-child { grid-column: span 2; aspect-ratio: 2; }
-@media (min-width: 60rem) { .gallery .frame:first-child { aspect-ratio: 2 / 1; } }
+.gallery { display: grid; gap: 1rem; margin-top: 3rem; }
+.gallery .frame { --frame-width: 24rem; margin: 0; }
 
 /* -- Quotes ----------------------------------------------------- */
 
@@ -475,10 +633,10 @@ ${eyebrow}
 }
 .quote cite { display: block; margin-top: 1.25rem; font-family: var(--body); font-size: 0.95rem; font-style: normal; color: var(--muted); }
 
-/* -- Split ------------------------------------------------------ */
+/* -- Split ------------------------------------------------------ *
+ * How the column divides comes from the spec's introLayout.                */
 
 .split { display: grid; gap: clamp(2rem, 5vw, 4rem); }
-@media (min-width: 58rem) { .split { grid-template-columns: 0.85fr 1.15fr; } }
 
 /* A split that carries a picture wants even columns, not a narrow rail. */
 .split--media { align-items: center; }
@@ -510,6 +668,11 @@ ${eyebrow}
     line-height: 1.5;
 }
 .demo-note a { color: inherit; text-underline-offset: 3px; }
+
+/* -- Composition ------------------------------------------------- *
+ * Appended last so a spec's choices override the foundation above.  */
+
+${compositionCss(spec)}
 `;
 }
 
@@ -605,7 +768,8 @@ function heroCopy(section: PlanSection, context: DemoContext): string {
             </div>`;
 }
 
-function renderHero(section: PlanSection, context: DemoContext, tokens: DesignTokens): string {
+function renderHero(section: PlanSection, context: DemoContext, spec: StyleSpec): string {
+  const tokens = spec.tokens;
   const image = imagesFor(context, section.id)[0] ?? context.images[0];
   const open = `    <section class="section hero`;
   const id = `" id="${escape(section.id)}">`;
@@ -722,7 +886,7 @@ function renderCards(section: PlanSection, tint: boolean): string {
         ${section.subheading ? `<p class="eyebrow">${escape(section.subheading)}</p>` : ''}
         <h2>${escape(section.heading)}</h2>
         ${section.body ? `<p class="lede" style="margin-top:1.25rem">${escape(section.body)}</p>` : ''}
-        <div class="cards${section.items.length % 3 === 0 ? ' cards--three' : ''}">
+        <div class="cards">
 ${cards}
         </div>
         ${section.cta ? `<p style="margin-top:2.5rem">${ctaHtml(section)}</p>` : ''}
@@ -907,33 +1071,51 @@ function renderSection(
   section: PlanSection,
   context: DemoContext,
   index: number,
-  tokens: DesignTokens,
+  spec: StyleSpec,
   page: { hasLocation: boolean } = { hasLocation: false },
 ): string {
+  const tokens = spec.tokens;
+
   // Tinting is only a separation device under the `tint` rhythm; under the
   // others the stylesheet does not define the class and it would do nothing.
   const tint = tokens.rhythm === 'tint' && index % 2 === 1;
 
-  switch (section.type) {
-    case 'hero':
-      return renderHero(section, context, tokens);
-    case 'services':
-    case 'process':
-    case 'stats':
-      return section.items.length ? renderCards(section, tint) : renderIntro(section, context, tint);
-    case 'gallery':
-      return renderGallery(section, context, tint);
-    case 'testimonials':
-      return section.items.length ? renderQuotes(section, tint) : renderIntro(section, context, tint);
-    case 'location':
-      return renderLocation(section, context, tint);
-    case 'contact':
-      return renderContact(section, context, tint, page.hasLocation);
-    case 'cta':
-      return renderIntro(section, context, true);
-    default:
-      return section.items.length ? renderCards(section, tint) : renderIntro(section, context, tint);
-  }
+  /**
+   * Under `alternating`, every second two-column section is flipped, so a
+   * page does not read as the same left-rail repeated down the screen. It is
+   * a class rather than a separate renderer because the markup is identical —
+   * only the direction of the grid changes.
+   */
+  const flip = spec.composition.sectionAlign === 'alternating' && index % 2 === 0;
+
+  const rendered = ((): string => {
+    switch (section.type) {
+      case 'hero':
+        return renderHero(section, context, spec);
+      case 'services':
+      case 'process':
+      case 'stats':
+        return section.items.length
+          ? renderCards(section, tint)
+          : renderIntro(section, context, tint);
+      case 'gallery':
+        return renderGallery(section, context, tint);
+      case 'testimonials':
+        return section.items.length ? renderQuotes(section, tint) : renderIntro(section, context, tint);
+      case 'location':
+        return renderLocation(section, context, tint);
+      case 'contact':
+        return renderContact(section, context, tint, page.hasLocation);
+      case 'cta':
+        return renderIntro(section, context, true);
+      default:
+        return section.items.length ? renderCards(section, tint) : renderIntro(section, context, tint);
+    }
+  })();
+
+  return flip && section.type !== 'hero'
+    ? rendered.replace('<section class="section', '<section class="section section--flip')
+    : rendered;
 }
 
 /* ------------------------------------------------------------------ */
@@ -972,6 +1154,7 @@ export function renderDemoPage(
   plan: DesignPlanDraft,
   brief: Brief,
   context: DemoContext,
+  spec: StyleSpec = styleFromBrief(brief),
 ): string {
   // Filtered once, so the nav cannot point at a section that was dropped.
   const sections = plan.sections.filter((section) => sectionHasSubstance(section, context));
@@ -980,13 +1163,13 @@ export function renderDemoPage(
     .filter((section) => section.type !== 'hero' && section.heading)
     .slice(0, 4);
 
-  const fonts = fontLinks(brief)
+  const fonts = fontLinksFrom(spec.typography)
     .map((href) => `    <link rel="stylesheet" href="${escape(href)}" />`)
     .join('\n');
 
   const page = { hasLocation: sections.some((section) => section.type === 'location') };
   const body = sections
-    .map((section, index) => renderSection(section, context, index, brief.tokens, page))
+    .map((section, index) => renderSection(section, context, index, spec, page))
     .join('\n\n');
 
   const year = new Date().getUTCFullYear();
@@ -1041,16 +1224,17 @@ export function renderDemoFiles(
   plan: DesignPlanDraft,
   brief: Brief,
   context: DemoContext,
+  spec: StyleSpec = styleFromBrief(brief),
 ): GeneratedFile[] {
   return [
     {
       path: 'index.html',
-      content: renderDemoPage(plan, brief, context),
+      content: renderDemoPage(plan, brief, context, spec),
       contentType: 'text/html; charset=utf-8',
     },
     {
       path: 'styles.css',
-      content: renderStylesheet(brief),
+      content: renderStylesheet(brief, spec),
       contentType: 'text/css; charset=utf-8',
     },
     {
