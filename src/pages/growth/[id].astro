@@ -44,7 +44,7 @@ const error = Astro.url.searchParams.get('error');
  */
 const scaffolded = plans.filter((plan) => plan.fallbackReason);
 const styleSources = plans.reduce<Record<string, number>>((counts, plan) => {
-  const source = /"source"\s*:\s*"(model|references|kit)"/.exec(plan.style)?.[1] ?? 'kit';
+  const source = /"source"\s*:\s*"(jev|model|references|kit)"/.exec(plan.style)?.[1] ?? 'kit';
   counts[source] = (counts[source] ?? 0) + 1;
   return counts;
 }, {});
@@ -177,9 +177,11 @@ const SIGNAL_LABELS: Record<string, string> = {
                 happens when no reference site could be read and the model did not answer.
               </li>
             )}
-            {(styleSources.model ?? 0) > 0 && (
+            {((styleSources.model ?? 0) > 0 || (styleSources.jev ?? 0) > 0) && (
               <li class="muted">
-                {styleSources.model} had the look chosen for that business specifically
+                {(styleSources.jev ?? 0) + (styleSources.model ?? 0)} had the look chosen for that
+                business specifically
+                {(styleSources.jev ?? 0) > 0 && ` (${styleSources.jev} from typed questions)`}
                 {(styleSources.references ?? 0) > 0 && `, and ${styleSources.references} came off the reference sites as measured`}.
               </li>
             )}

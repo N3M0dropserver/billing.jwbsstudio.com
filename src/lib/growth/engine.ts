@@ -1278,6 +1278,38 @@ async function assessProspect(
    * need alone, which selects exactly the businesses with no website and
    * therefore nothing to build a page from. Say so, loudly, once per prospect.
    */
+  if (qualification?.ok && qualification.data.judgement) {
+    await logEvent(
+      ctx,
+      campaign,
+      'shortlist',
+      'decision',
+      `Judged ${prospect.businessName} with typed questions: fit ${qualification.data.fitScore}` +
+        `${qualification.data.skip ? ', skipped' : ''}.`,
+      { decidedBy: 'jev', answers: qualification.data.judgement },
+      prospect.id,
+    );
+  }
+
+  /**
+   * A disagreement between the two models is worth a line of its own.
+   *
+   * One prospect where they differ is noise. Every prospect in a run where
+   * they differ means one of them is reading the state wrongly, and that is
+   * not something you would ever notice from the scores alone.
+   */
+  if (qualification?.ok && qualification.data.disagreement) {
+    await logEvent(
+      ctx,
+      campaign,
+      'shortlist',
+      'info',
+      `${prospect.businessName}: ${qualification.data.disagreement}`,
+      {},
+      prospect.id,
+    );
+  }
+
   if (qualification && !qualification.ok) {
     await logEvent(
       ctx,
@@ -1692,8 +1724,9 @@ async function stagePlan(
         campaign,
         'plan',
         'decision',
-        `Styled ${prospect.businessName}: ${style.rationale}`,
+        `Styled ${prospect.businessName}${style.source === 'jev' ? ' from typed questions' : ''}: ${style.rationale}`,
         {
+          source: style.source,
           palette: style.palette.map((c) => c.value),
           typefaces: style.typography.map((t) => t.family),
           composition: style.composition,

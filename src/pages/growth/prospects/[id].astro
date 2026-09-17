@@ -50,7 +50,8 @@ const sections = plan ? parseJson<PlanSection[]>(plan.sections, []) : [];
  */
 const style = plan ? deserialiseStyle(plan.style, styleFromBrief(FALLBACK_BRIEF)) : null;
 const STYLE_SOURCE: Record<string, string> = {
-  model: 'Chosen for this business',
+  jev: 'Chosen for this business, from typed questions',
+  model: 'Chosen for this business, from a text model',
   references: 'Measured off the reference sites',
   kit: 'Straight from the saved direction — nothing moved it for this business',
 };

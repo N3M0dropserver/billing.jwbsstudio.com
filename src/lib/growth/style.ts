@@ -122,8 +122,14 @@ export interface StyleSpec {
   composition: StyleComposition;
   /** One sentence on why it looks like this. For the UI, never the page. */
   rationale: string;
-  /** The last pass that moved it. */
-  source: 'kit' | 'references' | 'model';
+  /**
+   * The last pass that moved it.
+   *
+   * `jev` is a typed judgement out of closed sets; `model` is a text model's
+   * JSON, clamped. Both are per-prospect, but only one of them could not have
+   * returned an option that does not exist.
+   */
+  source: 'kit' | 'references' | 'jev' | 'model';
 }
 
 /* ------------------------------------------------------------------ */
@@ -825,10 +831,12 @@ export function deserialiseStyle(raw: string | null | undefined, base: StyleSpec
   const spec = parseStyleSpec(parsed, base, { typography: base.typography });
   // `source` is a record of where it came from, not something to re-derive.
   const recorded = (parsed as Record<string, unknown> | null)?.source;
+  const known: ReadonlyArray<StyleSpec['source']> = ['kit', 'references', 'jev', 'model'];
   return {
     ...spec,
-    source:
-      recorded === 'kit' || recorded === 'references' || recorded === 'model' ? recorded : spec.source,
+    source: known.includes(recorded as StyleSpec['source'])
+      ? (recorded as StyleSpec['source'])
+      : spec.source,
   };
 }
 
