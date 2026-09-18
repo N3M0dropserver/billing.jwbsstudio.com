@@ -434,7 +434,7 @@ async function gatherDirectory(
   if (refs.length && !options.placesApiKey) {
     notes.push(
       `The directory holds ${refs.length} photograph(s) of them, but GOOGLE_PLACES_API_KEY is not ` +
-        'set, so they could not be fetched.',
+        'set on the agent Worker, so they could not be fetched.',
     );
   }
 

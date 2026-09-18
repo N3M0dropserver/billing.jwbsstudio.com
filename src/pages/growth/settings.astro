@@ -104,8 +104,18 @@ const hasBrowser = browserAvailable(env);
               </option>
             ))}
           </select>
-          {!env.GOOGLE_PLACES_API_KEY && (
-            <p class="muted mt-1 text-xs">Google Places needs GOOGLE_PLACES_API_KEY as a Worker secret.</p>
+          {!env.GOOGLE_PLACES_API_KEY ? (
+            <p class="muted mt-1 text-xs">
+              Google Places needs GOOGLE_PLACES_API_KEY as a Worker secret — on this Worker
+              <em>and</em> on the agent Worker, which is where a run calls Places.
+            </p>
+          ) : (
+            <p class="muted mt-1 text-xs">
+              GOOGLE_PLACES_API_KEY is set on this Worker. A run calls Places from the agent
+              Worker, whose secrets are separate — if discovery still reports the key missing,
+              it is not set there: <code>wrangler secret put GOOGLE_PLACES_API_KEY -c
+              workers/agent/wrangler.jsonc</code>.
+            </p>
           )}
         </div>
         <div>
@@ -284,6 +294,8 @@ Route:  ${demoRoute(settings.demoHost)}   ->   this Worker`}</pre>
           {settings.growthDiscoveryProvider === 'google-places' && !env.GOOGLE_PLACES_API_KEY && (
             <span style="color: var(--color-owing)"> The key is not set, so nothing will come back at all.</span>
           )}
+          {' '}It is a secret on each Worker separately, so it has to be set on the agent Worker
+          too — that is the one that runs discovery.
         </p>
         <p class="muted mt-2 text-xs leading-relaxed">
           Asking for photographs, reviews and hours moves a Places search into its Enterprise

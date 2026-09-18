@@ -12,7 +12,10 @@
  * session — that is a decision with terms attached, which is why this
  * provider is opt-in and the free one is the default.
  *
- * Set GOOGLE_PLACES_API_KEY to enable it.
+ * Set GOOGLE_PLACES_API_KEY to enable it — on **both** Workers. Discovery runs
+ * inside the agent Worker (`jwbs-growth-agent`), and a Worker's secrets are its
+ * own: a key set only on the app Worker leaves every run failing with "not
+ * set" while the settings page cheerfully reports that it is.
  */
 
 import type {
@@ -107,7 +110,11 @@ export const placesProvider: DiscoveryProvider = {
 
   unavailableReason(request) {
     if (!request.apiKey) {
-      return 'GOOGLE_PLACES_API_KEY is not set. Add it as a Worker secret to use this provider.';
+      return (
+        'GOOGLE_PLACES_API_KEY is not set. It is a secret on each Worker separately — set it ' +
+        'on the app Worker and on the agent Worker (`wrangler secret put GOOGLE_PLACES_API_KEY ' +
+        '-c workers/agent/wrangler.jsonc`), which is where a run actually calls Places.'
+      );
     }
     if (!request.niche.trim() || !request.region.trim()) {
       return 'Name a trade and a region.';
@@ -117,7 +124,13 @@ export const placesProvider: DiscoveryProvider = {
 
   async run(request): Promise<DiscoveryResult> {
     if (!request.apiKey) {
-      return { ok: false, error: 'GOOGLE_PLACES_API_KEY is not set.' };
+      return {
+        ok: false,
+        error:
+          'GOOGLE_PLACES_API_KEY is not set on this Worker. Secrets are per-Worker: setting it ' +
+          'on the app Worker does not reach the agent Worker, which is what runs discovery. ' +
+          'Run `wrangler secret put GOOGLE_PLACES_API_KEY -c workers/agent/wrangler.jsonc`.',
+      };
     }
 
     const regionCode = request.country === 'AU' ? 'AU' : 'NZ';
