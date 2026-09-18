@@ -15,6 +15,7 @@ import { sendMail } from '~/lib/mail';
 import { reminderEmail } from '~/lib/mail/templates';
 import { renderInvoicePdf } from '~/lib/pdf/invoice';
 import { toPdfData } from '~/lib/invoices/pdf-data';
+import { brandingFor } from '~/lib/invoices/branding';
 import { getInvoice } from '~/lib/invoices/service';
 import {
   decideReminder,
@@ -189,7 +190,12 @@ async function sendOneReminder(
   if (!invoice?.client?.email) return { ok: false, error: 'No client email.' };
 
   const payUrl = invoice.publicToken ? `${appUrl}/pay/${invoice.publicToken}` : undefined;
-  const pdf = renderInvoicePdf(toPdfData(invoice, userSettings, { payUrl }));
+  // A reminder carries the same document the original send did, template
+  // and all — a client comparing the two must not see a different invoice.
+  const branding = env.FILES
+    ? await brandingFor(db, env.FILES, userSettings.userId, invoice.templateId)
+    : {};
+  const pdf = renderInvoicePdf(toPdfData(invoice, userSettings, { payUrl }), branding);
 
   const content = reminderEmail({
     invoiceNumber: invoice.number,

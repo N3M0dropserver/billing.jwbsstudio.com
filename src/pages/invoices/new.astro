@@ -4,6 +4,7 @@ import InvoiceEditor from '~/components/invoices/InvoiceEditor.tsx';
 import { and, eq, isNull, or } from 'drizzle-orm';
 import { db } from '~/lib/env';
 import { getSettings } from '~/lib/queries/settings';
+import { listInvoiceTemplates } from '~/lib/queries/invoice-templates';
 import { clients, timeEntries } from '~/lib/db/schema';
 
 const user = Astro.locals.user!;
@@ -36,6 +37,18 @@ const unbilledRows = await database
   )
   .orderBy(timeEntries.startedAt);
 
+
+/*
+ * The design picker's options. Not seeded here — an account that has never
+ * opened the designer sees no picker at all, and its invoices keep using the
+ * built-in design.
+ */
+const templateRows = (await listInvoiceTemplates(database, user.id)).map((template) => ({
+  id: template.id,
+  name: template.name,
+  isDefault: template.isDefault,
+}));
+
 const jurisdiction = settings.taxResidence;
 ---
 
@@ -44,6 +57,7 @@ const jurisdiction = settings.taxResidence;
     client:load
     clients={clientRows}
     unbilled={unbilledRows}
+    templates={templateRows}
     defaults={{
       currency: settings.defaultCurrency,
       residenceCurrency: settings.taxResidence === 'NZ' ? 'NZD' : 'AUD',

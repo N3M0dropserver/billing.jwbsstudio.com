@@ -5,6 +5,7 @@ import { getSettings } from '~/lib/queries/settings';
 import { getInvoice } from '~/lib/invoices/service';
 import { toPdfData } from '~/lib/invoices/pdf-data';
 import { renderInvoicePdf } from '~/lib/pdf/invoice';
+import { brandingFor } from '~/lib/invoices/branding';
 import { invoices } from '~/lib/db/schema';
 
 export const prerender = false;
@@ -19,7 +20,8 @@ export const GET: APIRoute = async ({ params, locals }) => {
 
   const settings = await getSettings(database, user.id);
   const payUrl = invoice.publicToken ? `${appUrl()}/pay/${invoice.publicToken}` : undefined;
-  const bytes = renderInvoicePdf(toPdfData(invoice, settings, { payUrl }));
+  const branding = await brandingFor(database, files(), user.id, invoice.templateId);
+  const bytes = renderInvoicePdf(toPdfData(invoice, settings, { payUrl }), branding);
 
   // Cache in R2 so a re-send and a re-download return the same bytes that
   // were originally issued.

@@ -57,6 +57,7 @@ export const POST: APIRoute = async ({ params, request, locals, redirect }) => {
     reference: String(form.get('reference') ?? ''),
     notes: String(form.get('notes') ?? ''),
     terms: String(form.get('terms') ?? ''),
+    templateId: String(form.get('templateId') ?? '') || null,
     lines,
     finalise: form.get('action') !== 'draft',
   });

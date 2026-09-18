@@ -493,6 +493,13 @@ export const invoices = sqliteTable(
     stripePaymentIntentId: text('stripe_payment_intent_id'),
     stripePaymentLinkUrl: text('stripe_payment_link_url'),
 
+    /**
+     * Which design this invoice is drawn with. Null means the account
+     * default, and a deleted template sets it back to null rather than
+     * cascading — losing a template must not lose the invoice.
+     */
+    templateId: text('template_id'),
+
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -2031,6 +2038,47 @@ export const emailTemplates = sqliteTable(
 );
 
 /**
+ * What an invoice looks like.
+ *
+ * The design itself is JSON rather than columns — see `~/lib/pdf/template.ts`
+ * for its shape and for the normaliser every read goes through. Columns would
+ * mean a migration every time the designer grows a control, and nothing else
+ * in the system ever queries by accent colour.
+ *
+ * An account with no rows here gets the built-in default, which is the exact
+ * invoice this system produced before templates existed. That is deliberate:
+ * the feature is opt-in, and nobody's invoices change appearance because they
+ * upgraded.
+ */
+export const invoiceTemplates = sqliteTable(
+  'invoice_templates',
+  {
+    id: id(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+
+    name: text('name').notNull(),
+    description: text('description').notNull().default(''),
+
+    /** JSON `InvoiceTemplateDesign`. Normalised on every read. */
+    design: text('design').notNull().default('{}'),
+
+    /** Used for invoices that name no template of their own. One per account. */
+    isDefault: integer('is_default', { mode: 'boolean' }).notNull().default(false),
+    /** Soft delete, so an invoice issued under this design still resolves it. */
+    archivedAt: text('archived_at'),
+
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    index('invoice_templates_user_idx').on(t.userId),
+    index('invoice_templates_default_idx').on(t.userId, t.isDefault),
+  ],
+);
+
+/**
  * One row per message that left the building.
  *
  * Carries the open-tracking state. Read the counts with suspicion: Apple Mail
@@ -2109,6 +2157,7 @@ export type Proposal = typeof proposals.$inferSelect;
 export type Prospect = typeof prospects.$inferSelect;
 export type EmailTemplate = typeof emailTemplates.$inferSelect;
 export type EmailSend = typeof emailSends.$inferSelect;
+export type InvoiceTemplate = typeof invoiceTemplates.$inferSelect;
 export type Campaign = typeof campaigns.$inferSelect;
 export type CampaignEvent = typeof campaignEvents.$inferSelect;
 export type BrandKit = typeof brandKits.$inferSelect;

@@ -22,6 +22,12 @@ marks the invoice paid. Correctable until money is recorded against them, after
 which the remedy is a credit note rather than a quiet amendment; voidable and
 write-off-able after that, both reversible, neither deleting the number.
 
+**Invoice templates** — how your invoices look, as something you can change.
+Four layouts, your logo dropped straight onto the page, and every colour on it
+under your control. The preview beside the controls is the real PDF, rendered
+by the same code that renders the one your client receives, so there is nothing
+to drift out of step. Set one as the default, or pick a design per invoice.
+
 **Quotes** — agree the work and the price before it starts. Priced through the
 same GST engine as the invoice it becomes, sent as a PDF, read and accepted by
 the client on a public link. Accepting records who agreed and when; turning it
@@ -487,7 +493,13 @@ cost.
 - **Tailwind v4** with CSS custom properties for theming.
 - **No PDF library.** `src/lib/pdf/` writes PDFs directly — every JS PDF library
   is either megabytes of WASM or needs Node APIs a Worker does not have. Includes
-  a custom encoding so Māori macrons render correctly rather than as `?`.
+  a custom encoding so Māori macrons render correctly rather than as `?`, and a
+  PNG/JPEG decoder so a logo can be placed on the page. `@react-pdf/renderer`
+  was measured and rejected: it bundles at ~690 KB gzipped, which would fit, but
+  it reaches flexbox through `yoga-layout`, whose Emscripten build compiles its
+  WebAssembly at runtime — and Workers forbid that outright
+  (`Wasm code generation disallowed by embedder`). There is no shim for it; the
+  module simply cannot start in workerd.
 - **No Stripe SDK.** Two endpoints and an HMAC check, done with fetch and
   WebCrypto.
 - **PBKDF2-SHA256 via WebCrypto** for passwords — argon2/bcrypt would mean
@@ -820,6 +832,100 @@ Every write in this subsystem is best effort: a logging failure is written to
 the console and swallowed, because a client must never see an error page — and
 an invoice must never fail to send — over a row in an activity table.
 
+---
+
+## Invoice templates
+
+`/invoices/templates`. Four layouts — Classic, Banner, Sidebar, Minimal — each
+with its own palette, your logo, and a handful of switches for what appears.
+An account gets the four as starting points the first time it opens the page.
+
+### The preview is the PDF
+
+The pane beside the controls is not a mock-up of an invoice drawn in HTML. It
+is the actual PDF, posted to `/api/invoice-templates/preview` and rendered by
+`renderInvoicePdf` — the same function, on the same code path, that renders the
+copy attached to the email your client receives.
+
+That costs a round trip per edit, which is why changes are debounced. It buys
+the one thing a designer has to have: there is no second renderer that can
+drift away from the first, so what you approve is what goes out. The preview
+uses your own business details from Settings, with a fictional client, a
+description long enough to wrap and a part payment applied — the cases that
+actually make a layout look wrong.
+
+### What a template may and may not change
+
+A template is a layout name, a palette, a logo and some switches
+(`src/lib/pdf/template.ts`). It is deliberately **not** a document model:
+there is no block tree and nothing is positioned by hand. You give up arbitrary
+composition, and in exchange every template is guaranteed to produce a legal
+tax invoice that fits on the page.
+
+So the tax wording is not a design decision and no template can switch it off.
+Whether the document says "TAX INVOICE" or "INVOICE" follows GST registration,
+and an export invoice carries its explanatory sentence, whatever the template
+says — `documentTitle` and `exportNote` in `src/lib/pdf/layouts.ts` are shared
+by all four layouts for that reason. An earlier draft of the Minimal layout set
+that heading in lower case for the look of it; that is a layout editing the one
+piece of wording that is not a layout's to edit, and it is now a test.
+
+Two other things are enforced rather than trusted:
+
+- **Contrast.** `readableInk` overrides the chosen "on brand" colour when it
+  has too little contrast against the colour it sits on. White on pale yellow
+  is a plausible thing to pick in a colour picker and unreadable on paper.
+- **Fit.** Column widths in the line-item table and the totals block are
+  measured from the content, not apportioned as percentages of the frame. A
+  percentage of a narrow frame is not a width — that is how "1 fixed" ended up
+  overlapping "NZ$1,500.00" in the Sidebar layout during development.
+
+### Logos
+
+Dropped onto the page, stored in R2 under `invoice-assets/<user>/`, and
+embedded in the PDF itself. PNG and JPEG only, because those are the two
+formats a PDF can carry without re-encoding — a JPEG's data *is* `/DCTDecode`
+and a PNG's IDAT *is* `/FlateDecode` with a PNG predictor, so in most cases
+nothing is decoded at all.
+
+Transparency is the exception, and not a rare one: a logo over a coloured
+banner is usually a PNG with an alpha channel. PDF keeps alpha in a separate
+`/SMask` image, so those are taken apart and put back together — inflate, undo
+the row filters, split the channels, deflate each again. `CompressionStream`
+and `DecompressionStream` are in both workerd and Node, so that needs no
+dependency.
+
+Uploads are decoded at upload time, not at render time. An interlaced PNG is a
+perfectly ordinary file this renderer cannot place, and you want to be told
+that while you are looking at the file picker — not to have an invoice go out
+without its logo, quietly, weeks later.
+
+`invoice-assets/` is **not** served publicly, unlike `email-assets/`. Nothing
+outside the app ever fetches a logo by URL, because it is embedded in the
+document. The designer's own thumbnail reads it through an authenticated route
+scoped to the requesting user's own folder — the same bucket holds every
+invoice PDF ever issued, and that route must never become a way to read one.
+
+### Which template an invoice uses
+
+In order: the template the invoice names, then the account default, then the
+built-in design. That last branch is what runs for an account that has never
+opened the designer, and it is the exact invoice this system produced before
+templates existed — nobody's invoices changed appearance because the feature
+shipped.
+
+Resolution happens in `brandingFor`, called from all six places that render a
+PDF: the authenticated download, the public download, the send, the quote send,
+the public quote, and the overnight reminder sweep. All six, because a feature
+only half of them honoured would mean the invoice a client is emailed does not
+match the one they download.
+
+Retiring a template is soft. An invoice issued under a design keeps rendering
+the way it was sent, which is what lets a dispute be settled by producing the
+document the client actually received.
+
+---
+
 ## Email
 
 Sending uses **Cloudflare Email Service** by default, via the `send_email`
@@ -1095,7 +1201,11 @@ src/
   lib/
     tax/          the tax engine — pure, tested, no I/O
     invoices/     invoice arithmetic and multi-table operations
-    pdf/          the PDF writer and the invoice template
+    pdf/          the PDF writer and the invoice layouts
+      writer.ts     the PDF byte stream: text, rules, rectangles, images
+      image.ts      PNG and JPEG into PDF XObjects, alpha into a soft mask
+      template.ts   what a template IS — layout, palette, logo, switches
+      layouts.ts    the four arrangements, and the pagination they share
     mail/         providers, built-in templates, variables, open tracking
     stripe/       checkout sessions and webhook verification
     ai/           Workers AI helpers, usage tracking, the prompt cache and pricing

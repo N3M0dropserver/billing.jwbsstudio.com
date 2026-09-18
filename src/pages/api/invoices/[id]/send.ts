@@ -5,6 +5,7 @@ import { getSettings } from '~/lib/queries/settings';
 import { getInvoice } from '~/lib/invoices/service';
 import { toPdfData } from '~/lib/invoices/pdf-data';
 import { renderInvoicePdf } from '~/lib/pdf/invoice';
+import { brandingFor } from '~/lib/invoices/branding';
 import { sendMail } from '~/lib/mail';
 import { invoiceEmail, reminderEmail } from '~/lib/mail/templates';
 import { renderTemplate } from '~/lib/mail/render';
@@ -36,7 +37,8 @@ export const POST: APIRoute = async ({ params, request, locals, redirect }) => {
   const settings = await getSettings(database, user.id);
   const env = bindings();
   const payUrl = invoice.publicToken ? `${appUrl()}/pay/${invoice.publicToken}` : undefined;
-  const pdf = renderInvoicePdf(toPdfData(invoice, settings, { payUrl }));
+  const branding = await brandingFor(database, files(), user.id, invoice.templateId);
+  const pdf = renderInvoicePdf(toPdfData(invoice, settings, { payUrl }), branding);
 
   const daysOverdue = Math.floor(
     (Date.now() - new Date(`${invoice.dueOn}T00:00:00Z`).getTime()) / 86_400_000,

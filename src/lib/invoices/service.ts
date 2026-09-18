@@ -113,6 +113,8 @@ export interface CreateInvoiceInput {
   reference?: string;
   notes?: string;
   terms?: string;
+  /** Which saved design to draw this one with. Null means the account default. */
+  templateId?: string | null;
   lines: Array<LineInput & { unit?: string }>;
   isManualEntry?: boolean;
   status?: 'draft' | 'sent';
@@ -192,6 +194,7 @@ export async function createInvoice(
       reference: input.reference ?? '',
       notes: input.notes ?? '',
       terms: input.terms ?? setting.invoiceFooter,
+      templateId: input.templateId ?? null,
       publicToken: newToken(24),
       createdAt: now,
       updatedAt: now,
@@ -298,6 +301,7 @@ export interface UpdateInvoiceInput {
   reference?: string;
   notes?: string;
   terms?: string;
+  templateId?: string | null;
   lines: Array<LineInput & { unit?: string }>;
   /** Move a draft to sent. Never moves a sent invoice back to draft. */
   finalise?: boolean;
@@ -389,6 +393,7 @@ export async function updateInvoice(
         reference: input.reference ?? invoice.reference,
         notes: input.notes ?? invoice.notes,
         terms: input.terms ?? invoice.terms,
+        templateId: input.templateId === undefined ? invoice.templateId : input.templateId,
         status: invoice.status === 'draft' && input.finalise ? 'sent' : invoice.status,
         // A changed invoice must not keep a stale PDF around.
         pdfKey: null,
