@@ -9,6 +9,8 @@ import { parseJson, readAudit, readFindings } from '~/lib/growth/engine';
 import type { SocialLink } from '~/lib/growth/html';
 import type { PlanSection } from '~/lib/growth/qualify';
 import type { ScaleAssessment } from '~/lib/growth/scale';
+import { FALLBACK_BRIEF } from '~/lib/growth/brief';
+import { describeStyle, deserialiseStyle, styleFromBrief } from '~/lib/growth/style';
 
 const user = Astro.locals.user!;
 const id = Astro.params.id!;
@@ -37,6 +39,22 @@ const plan = plans[0];
 const demo = demos.find((row) => row.status === 'live') ?? demos[0];
 const draft = drafts[0];
 const sections = plan ? parseJson<PlanSection[]>(plan.sections, []) : [];
+
+/**
+ * The look this demo was built with, and where it came from.
+ *
+ * `kit` means nothing moved it: no reference site was readable and the model
+ * did not answer, so this page looks like every other page built against the
+ * same direction. That is worth saying out loud on the one screen where
+ * someone is asking why a demo looks the way it does.
+ */
+const style = plan ? deserialiseStyle(plan.style, styleFromBrief(FALLBACK_BRIEF)) : null;
+const STYLE_SOURCE: Record<string, string> = {
+  jev: 'Chosen for this business, from typed questions',
+  model: 'Chosen for this business, from a text model',
+  references: 'Measured off the reference sites',
+  kit: 'Straight from the saved direction — nothing moved it for this business',
+};
 const pages = artifacts.filter((a) => a.kind === 'page');
 const images = artifacts.filter((a) => a.kind === 'image');
 const failing = audit.checks.filter((check) => check.failed);
@@ -99,6 +117,36 @@ const tooBig = findings.tooBig === true;
               {plan.objective}
             </span>
           </p>
+
+          {plan.fallbackReason && (
+            <div class="mt-3 rounded border border-amber-300 bg-amber-50 p-2.5 text-xs dark:border-amber-800 dark:bg-amber-950">
+              <p class="font-medium">This page was scaffolded, not written</p>
+              <p class="mt-0.5">{plan.fallbackReason}</p>
+              <p class="mt-1">
+                A scaffold carries only the facts already held, so it will read thinner than the
+                rest of the run. Re-plan this one to have the model write it.
+              </p>
+            </div>
+          )}
+
+          {style && (
+            <div class="mt-3 rounded border p-2.5 text-xs" style="border-color: var(--border)">
+              <div class="flex flex-wrap items-center gap-2">
+                <p class="font-medium">{STYLE_SOURCE[style.source] ?? 'The look'}</p>
+                <span class="flex gap-1">
+                  {style.palette.map((colour) => (
+                    <span
+                      class="inline-block h-4 w-4 rounded border"
+                      style={`background:${colour.value}; border-color: var(--border)`}
+                      title={`${colour.value} — ${colour.role}`}
+                    ></span>
+                  ))}
+                </span>
+              </div>
+              {style.rationale && <p class="muted mt-1 leading-relaxed">{style.rationale}</p>}
+              <pre class="muted mt-1.5 whitespace-pre-wrap font-mono text-[11px]">{describeStyle(style)}</pre>
+            </div>
+          )}
           <ol class="mt-4 space-y-3">
             {sections.map((section, index) => (
               <li class="border-l-2 pl-3" style="border-color: var(--border)">

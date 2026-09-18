@@ -69,7 +69,9 @@ import {
 } from './policy';
 import type { PromptOverrides } from './prompts';
 import {
+  ALLOWED_SECTION_TYPES,
   draftDesignPlan,
+  draftStyleSpec,
   normalisePlan,
   qualifyProspect,
   shortlistProspects,
@@ -78,6 +80,21 @@ import {
 } from './qualify';
 import { draftProposal, sendOutreach } from './proposal';
 import { renderDemoFiles, type DemoContext } from './render';
+import {
+  DEFAULT_PROFILE_OPTIONS,
+  matchProfiles,
+  mergeProfiles,
+  profileReferences,
+  type ReferenceProfile,
+} from './reference';
+import {
+  deriveFromProfiles,
+  deserialiseStyle,
+  flowFromProfiles,
+  serialiseStyle,
+  styleFromBrief,
+  type StyleSpec,
+} from './style';
 import { renderAstroProject } from './project';
 import { assembleImagery, type SourceImage } from './imagery';
 import { allocateSubdomain, createDnsRecord, demoPublicUrl, publishDemo } from './publish';
@@ -519,7 +536,126 @@ export async function resolveBrief(ctx: EngineContext, campaign: Campaign): Prom
     kit = rows[0] ?? null;
   }
 
-  return applyOverrides(briefFromKit(kit), campaign.briefOverrides);
+  const brief = applyOverrides(briefFromKit(kit), campaign.briefOverrides);
+
+  // The cache on the kit is keyed by URL and allowed to be a superset — an
+  // edited reference list leaves the old measurements behind, and a run that
+  // added its own references writes into the same place. So what the brief
+  // carries is the subset matching the references it actually names, in their
+  // order.
+  return { ...brief, referenceProfiles: matchProfiles(brief.references, brief.referenceProfiles).profiles };
+}
+
+/**
+ * Measure any reference site we have not measured yet, and cache the result.
+ *
+ * Runs at the brief stage, once per campaign, before anything is planned.
+ * Fetching is bounded and every failure is contained in the profile it
+ * belongs to, so a reference that has gone offline costs a log line rather
+ * than a run. Nothing here is on the hot path of a prospect.
+ */
+async function profileBriefReferences(
+  ctx: EngineContext,
+  campaign: Campaign,
+  brief: Brief,
+): Promise<Brief> {
+  const { profiles, missing } = matchProfiles(brief.references, brief.referenceProfiles);
+  if (!missing.length) return { ...brief, referenceProfiles: profiles };
+
+  const fresh = await profileReferences(missing, DEFAULT_PROFILE_OPTIONS);
+  const read = fresh.filter((profile) => profile.ok);
+  const failed = fresh.filter((profile) => !profile.ok);
+
+  if (read.length) {
+    await logEvent(
+      ctx,
+      campaign,
+      'brief',
+      'info',
+      `Read ${read.length} reference site${read.length === 1 ? '' : 's'} for their type, colour and proportions.`,
+      {
+        references: read.map((profile) => ({
+          url: profile.url,
+          faces: profile.faces.slice(0, 2).map((face) => face.family),
+          colours: profile.colours.slice(0, 4).map((colour) => colour.value),
+          radii: profile.radiiPx.slice(0, 3),
+        })),
+      },
+    );
+  }
+
+  for (const profile of failed) {
+    await logEvent(
+      ctx,
+      campaign,
+      'brief',
+      'warn',
+      `Could not read the reference ${profile.url}: ${profile.error}. The demos will fall back to the saved direction for anything it would have decided.`,
+    );
+  }
+
+  // Cached on the kit so the next campaign against the same direction does
+  // not refetch. A campaign with no kit has nowhere to put it and simply
+  // measures again next time, which is once per run.
+  if (brief.brandKitId) {
+    const merged = mergeProfiles(brief.referenceProfiles, fresh);
+    await ctx.db
+      .update(brandKits)
+      .set({
+        referenceProfiles: JSON.stringify(merged),
+        referenceProfiledAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(brandKits.id, brief.brandKitId));
+  }
+
+  return withReferenceFlow({ ...brief, referenceProfiles: [...profiles, ...fresh] });
+}
+
+/**
+ * Take the section order from the references, where they agree on one.
+ *
+ * "Every demo has the same flow" was the literal truth: `sectionOrder` came
+ * off the kit and defaulted to one built-in list, so every page in every run
+ * marched hero → intro → services → gallery → testimonials → about →
+ * location → contact. A reference site's own order is the single best signal
+ * of the order the designer is actually after, and it is measured rather than
+ * guessed.
+ *
+ * Only applied when the references yield a real sequence; four is the floor
+ * for calling it a page shape rather than two landmarks and a footer. The
+ * plan model can still depart from it per business — it is a preference, not
+ * a schedule.
+ */
+function withReferenceFlow(brief: Brief): Brief {
+  const flow = flowFromProfiles(brief.referenceProfiles, ALLOWED_SECTION_TYPES);
+  return flow.length >= 4 ? { ...brief, sectionOrder: flow } : brief;
+}
+
+/**
+ * How many photographs of theirs the crawl actually found.
+ *
+ * The styler needs it: a layout built around frames is the wrong answer for a
+ * business with two usable pictures, and "mostly photographs" is how a demo
+ * ends up with generated imagery carrying the page.
+ */
+async function countProspectImages(ctx: EngineContext, prospectId: string): Promise<number> {
+  const rows = await ctx.db
+    .select({ count: sql<number>`count(*)` })
+    .from(prospectArtifacts)
+    .where(and(eq(prospectArtifacts.prospectId, prospectId), eq(prospectArtifacts.kind, 'image')));
+
+  return Number(rows[0]?.count ?? 0);
+}
+
+/**
+ * The style spec a prospect starts from: the kit, moved by the references.
+ *
+ * Shared by the plan stage (which then lets the model move it again) and by
+ * the build stage (which needs the same floor when a plan predates styling).
+ */
+function baseStyle(brief: Brief): StyleSpec {
+  return deriveFromProfiles(styleFromBrief(brief), brief.referenceProfiles);
 }
 
 export async function resolvePolicyFor(
@@ -708,13 +844,32 @@ async function stageBrief(
   campaign: Campaign,
   policy: StagePolicy,
 ): Promise<StepResult> {
-  const brief = await resolveBrief(ctx, campaign);
+  const brief = await profileBriefReferences(ctx, campaign, await resolveBrief(ctx, campaign));
+  const style = baseStyle(brief);
 
   await logEvent(ctx, campaign, 'brief', 'info', `Building against the "${brief.name}" direction.`, {
-    typefaces: brief.typography.map((t) => t.family),
-    palette: brief.palette.map((c) => c.value),
+    typefaces: style.typography.map((t) => t.family),
+    palette: style.palette.map((c) => c.value),
     references: brief.references.length,
+    referencesRead: brief.referenceProfiles.filter((profile) => profile.ok).length,
   });
+
+  if (style.source === 'references') {
+    await logEvent(ctx, campaign, 'brief', 'decision', style.rationale, {
+      typefaces: style.typography.map((t) => t.family),
+      palette: style.palette.map((c) => c.value),
+    });
+  } else if (brief.references.length === 0) {
+    await logEvent(
+      ctx,
+      campaign,
+      'brief',
+      'info',
+      'This direction has no reference sites, so the demos are built from the saved palette, ' +
+        'type and rules alone. Adding a couple of sites you want the work to feel like is the ' +
+        'single biggest thing that stops a run looking like one template.',
+    );
+  }
 
   if (policy.brief === 'ai') {
     // Let the model adapt the direction to the trade, without letting it
@@ -1123,6 +1278,38 @@ async function assessProspect(
    * need alone, which selects exactly the businesses with no website and
    * therefore nothing to build a page from. Say so, loudly, once per prospect.
    */
+  if (qualification?.ok && qualification.data.judgement) {
+    await logEvent(
+      ctx,
+      campaign,
+      'shortlist',
+      'decision',
+      `Judged ${prospect.businessName} with typed questions: fit ${qualification.data.fitScore}` +
+        `${qualification.data.skip ? ', skipped' : ''}.`,
+      { decidedBy: 'jev', answers: qualification.data.judgement },
+      prospect.id,
+    );
+  }
+
+  /**
+   * A disagreement between the two models is worth a line of its own.
+   *
+   * One prospect where they differ is noise. Every prospect in a run where
+   * they differ means one of them is reading the state wrongly, and that is
+   * not something you would ever notice from the scores alone.
+   */
+  if (qualification?.ok && qualification.data.disagreement) {
+    await logEvent(
+      ctx,
+      campaign,
+      'shortlist',
+      'info',
+      `${prospect.businessName}: ${qualification.data.disagreement}`,
+      {},
+      prospect.id,
+    );
+  }
+
   if (qualification && !qualification.ok) {
     await logEvent(
       ctx,
@@ -1455,22 +1642,34 @@ async function stagePlan(
   };
 
   let draft: DesignPlanDraft;
+  /**
+   * Why this plan is not the model's.
+   *
+   * Recorded rather than only logged. A scaffolded plan is a near-empty page,
+   * and a run where half the demos were scaffolded looks exactly like a run
+   * where the generator is bland — from the outside they are the same
+   * complaint. Stored on the row, it is countable.
+   */
+  let fallbackReason = '';
 
   if (policy.plan === 'auto') {
     // `auto` skips the model entirely and lays out what we already know.
     // Cheap, instant, and honest about being a scaffold.
     draft = scaffoldPlan(planInput.businessName, campaign.niche, campaign.region, brief, prospect);
+    fallbackReason = 'The plan stage is set to "Just do it", which lays out known facts without asking a model.';
     await logEvent(ctx, campaign, 'plan', 'info', `Scaffolded a plan for ${prospect.businessName}.`, {}, prospect.id);
   } else {
     const result = await draftDesignPlan(ctx.ai, planInput);
     if (!result.ok) {
       draft = scaffoldPlan(planInput.businessName, campaign.niche, campaign.region, brief, prospect);
+      fallbackReason = `The model could not plan this page: ${result.error}`;
       await logEvent(
         ctx,
         campaign,
         'plan',
         'warn',
-        `The model could not plan ${prospect.businessName} (${result.error}); using a scaffold.`,
+        `The model could not plan ${prospect.businessName} (${result.error}); using a scaffold. ` +
+          'A scaffolded page carries only the facts already held, so it will read thinner than the rest of the run.',
         {},
         prospect.id,
       );
@@ -1488,6 +1687,65 @@ async function stagePlan(
     }
   }
 
+  /**
+   * The look, decided for this one business.
+   *
+   * A separate call from the plan above, and deliberately so: one call asked
+   * for the design and every word of the copy would truncate, and truncation
+   * is what used to turn a page into three headings. This one returns a few
+   * dozen numbers, and whatever it returns is clamped back into ranges that
+   * are guaranteed to lay out — so the worst case is the page the references
+   * would have produced anyway.
+   */
+  let style = baseStyle(brief);
+
+  if (policy.plan !== 'auto') {
+    const styled = await draftStyleSpec(ctx.ai, {
+      businessName: prospect.businessName,
+      niche: campaign.niche,
+      region: campaign.region,
+      brief,
+      base: style,
+      audit,
+      objective: (findings.objective as 'conversion') ?? 'conversion',
+      angle: String(findings.angle ?? ''),
+      siteContent: String(findings.siteContent ?? ''),
+      facts: planInput.facts,
+      imageCount: await countProspectImages(ctx, prospect.id),
+      guidance: guidance.text,
+      usage: usageFor(ctx, campaign, 'plan', 'style', prospect.id),
+      prompts: ctx.prompts,
+    });
+
+    if (styled.ok) {
+      style = styled.data;
+      await logEvent(
+        ctx,
+        campaign,
+        'plan',
+        'decision',
+        `Styled ${prospect.businessName}${style.source === 'jev' ? ' from typed questions' : ''}: ${style.rationale}`,
+        {
+          source: style.source,
+          palette: style.palette.map((c) => c.value),
+          typefaces: style.typography.map((t) => t.family),
+          composition: style.composition,
+        },
+        prospect.id,
+      );
+    } else {
+      await logEvent(
+        ctx,
+        campaign,
+        'plan',
+        'warn',
+        `Could not style ${prospect.businessName} (${styled.error}); using the direction as measured.`,
+        { source: style.source },
+        prospect.id,
+      );
+    }
+  }
+
   await ctx.db.insert(designPlans).values({
     id: newId(),
     userId: campaign.userId,
@@ -1497,11 +1755,13 @@ async function stagePlan(
     summary: draft.summary.slice(0, 400),
     strategy: draft.strategy.slice(0, 2000),
     objective: draft.objective,
-    palette: JSON.stringify(brief.palette),
-    typography: JSON.stringify(brief.typography),
+    palette: JSON.stringify(style.palette),
+    typography: JSON.stringify(style.typography),
     sections: JSON.stringify(draft.sections).slice(0, 60_000),
     meta: JSON.stringify(draft.meta),
+    style: serialiseStyle(style).slice(0, 20_000),
     model: policy.plan === 'auto' ? 'scaffold' : 'workers-ai',
+    fallbackReason: fallbackReason.slice(0, 400),
     status: 'draft',
     createdAt: now,
     updatedAt: now,
@@ -1709,6 +1969,15 @@ async function stageBuild(
   }
 
   const brief = await resolveBrief(ctx, campaign);
+  /**
+   * The look this demo was planned with, not the kit's.
+   *
+   * Stored on the plan so the page that gets built is the page that was
+   * decided — re-deriving it here would quietly discard the model's answer,
+   * and a plan written before per-prospect styling existed falls back to what
+   * its brief implies.
+   */
+  const style = deserialiseStyle(plan.style, baseStyle(brief));
   const settingsRow = await loadSettings(ctx, campaign.userId);
   // The saved setting wins; `DEMO_HOST` is the deployment's default for an
   // account that has never opened the settings page. Falling back to a
@@ -1858,8 +2127,8 @@ async function stageBuild(
     const published = await publishDemo(
       ctx.bucket,
       host,
-      renderDemoFiles(draft, brief, context),
-      renderAstroProject(draft, brief, context, host),
+      renderDemoFiles(draft, brief, context, style),
+      renderAstroProject(draft, brief, context, host, style),
       images,
     );
 

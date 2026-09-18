@@ -23,6 +23,7 @@ describe('the registry', () => {
       'plan',
       'qualify',
       'shortlist',
+      'style',
     ]);
   });
 

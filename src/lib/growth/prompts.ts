@@ -22,7 +22,9 @@
  *     message and nowhere else.
  */
 
-export type PromptKey = 'qualify' | 'shortlist' | 'plan' | 'outreach';
+import { renderStyleContract } from './style';
+
+export type PromptKey = 'qualify' | 'shortlist' | 'plan' | 'style' | 'outreach';
 
 export interface PromptSpec {
   key: PromptKey;
@@ -138,6 +140,24 @@ Also write "page_body": the same pitch with room to breathe, 150-250 words, for 
 
 const OUTREACH_CONTRACT = `Return ONLY JSON: {"subject":"...","body":"...","page_body":"..."}`;
 
+const STYLE = `You choose how ONE concept site looks. Not what it says — another pass does the copy — how it is proportioned, coloured and composed.
+
+You are given the designer's own direction, and MEASUREMENTS taken off the reference sites they chose as the feel to aim for: real type sizes, real colours and the role each one is used in, real corner radii, real section padding. You are also given what the business does and what is wrong with their current site.
+
+Your job is to make THIS business's page look like it was designed for this business, in the designer's hand. Two things follow from that, and they are in tension on purpose:
+
+STAY IN THE DESIGNER'S HAND. The references are the register. If they measure 2px corners and a 4:1 type ratio, do not return 24px corners and a 1.5:1 ratio — you would be designing someone else's site. Move within what the measurements suggest, not away from them.
+
+BUT DO NOT RETURN THE SAME PAGE EVERY TIME. Every field you are given a range for is a decision about this business:
+  - A butcher, a barrister and a tattoo studio do not want the same type scale. Trades that sell craft and confidence carry a large display size; trades that sell competence and detail carry a restrained one.
+  - A business whose work is visual (food, hair, building, making) wants its pictures composed differently from one whose work is a service you cannot photograph. Choose the gallery pattern and the card style accordingly.
+  - Where the objective is conversion, the page wants fewer columns and more space around the action. Where it is credibility, it wants density and evidence.
+  - A business with almost no photography must not be given a layout that is mostly frames.
+
+Colour: you may shift the hue and the weight within what the references use. Keep the ROLES doing their job — the background is a ground, the accent is spent on one thing. Do not return six variations of the same grey, and do not return a palette nobody could read.
+
+Rationale: one sentence, specific to this business, naming the decision you actually made. "A restrained scale and plain cards, because their work is technical and their own copy is plain" is a rationale. "Modern and clean" is not.`;
+
 export const PROMPT_SPECS: PromptSpec[] = [
   {
     key: 'qualify',
@@ -176,6 +196,23 @@ export const PROMPT_SPECS: PromptSpec[] = [
  "meta":{"title":"...","description":"..."},
  "sections":[{"id":"hero","type":"hero","heading":"...","subheading":"...","body":"...","items":[{"title":"...","body":"..."}],"cta":{"label":"...","href":"#contact"},"imageHint":"what photograph belongs here","notes":"direction for the designer"}]
 }`,
+  },
+  {
+    key: 'style',
+    label: 'Designing the look',
+    stage: 'Plan',
+    description:
+      'Run once per shortlisted business, beside the page plan. Chooses the palette, the ' +
+      'proportions and the composition for that one demo. This is the one that decides whether ' +
+      'a run of demos look like different sites or like the same template in different words.',
+    instructions: STYLE,
+    /**
+     * Generated from the live ranges in `style.ts` rather than written out
+     * here. A hand-copied contract would drift from the validator the moment
+     * a range moved, and the model would be told to stay inside a range that
+     * no longer exists.
+     */
+    contract: renderStyleContract(),
   },
   {
     key: 'outreach',
@@ -241,7 +278,9 @@ export function withContract(
  */
 export function stripContract(instructions: string, contract: string): string {
   const trimmed = instructions.trimEnd();
-  if (trimmed.endsWith(contract)) return trimmed.slice(0, -contract.length).trimEnd();
+  // Guarded: `endsWith('')` is true for every string, and slicing by -0 would
+  // return nothing at all — an empty contract must leave the prompt alone.
+  if (contract && trimmed.endsWith(contract)) return trimmed.slice(0, -contract.length).trimEnd();
 
   // A hand-edited copy will not match character for character. Cut at the
   // last "Return ONLY JSON" instead, which is how every contract opens.

@@ -5,6 +5,8 @@ import { and, eq } from 'drizzle-orm';
 import { db } from '~/lib/env';
 import { brandAssets, brandKits } from '~/lib/db/schema';
 import { DEFAULT_SECTION_ORDER, FALLBACK_BRIEF, TOKEN_OPTIONS, briefFromKit } from '~/lib/growth/brief';
+import { matchProfiles } from '~/lib/growth/reference';
+import { deriveFromProfiles, describeStyle, styleFromBrief } from '~/lib/growth/style';
 
 const user = Astro.locals.user!;
 const id = Astro.params.id!;
@@ -30,6 +32,19 @@ const error = Astro.url.searchParams.get('error');
 const saved = Astro.url.searchParams.get('saved');
 
 const referencesText = brief.references.map((r) => (r.note ? `${r.url} — ${r.note}` : r.url)).join('\n');
+
+/**
+ * What the references were actually measured to be.
+ *
+ * Shown because until recently they were decoration: nothing opened them, and
+ * there was no way to tell from this page whether a link was doing anything.
+ * A reference that could not be read says so here rather than quietly
+ * contributing nothing to every demo built against this direction.
+ */
+const { profiles, missing } = matchProfiles(brief.references, brief.referenceProfiles);
+const measured = profiles.filter((profile) => profile.ok);
+const unreadable = profiles.filter((profile) => !profile.ok);
+const derived = measured.length ? deriveFromProfiles(styleFromBrief(brief), profiles) : null;
 const typographyText = brief.typography.map((t) => `${t.role}: ${t.family}${t.url ? ` ${t.url}` : ''}`).join('\n');
 const paletteText = brief.palette.map((c) => `${c.name} ${c.value} ${c.role}`).join('\n');
 /**
@@ -79,9 +94,89 @@ const TOKEN_FIELDS = [
       </label>
     </Card>
 
-    <Card title="References" subtitle="Sites whose feel you are after">
+    <Card title="References" subtitle="Sites whose feel you are after — read, measured and built from">
       <textarea name="referenceUrls" rows="5" class="field font-mono text-xs" placeholder="https://example.com — the type and the restraint, not the colour">{referencesText}</textarea>
       <p class="muted mt-1 text-xs">One per line. Add “— why” after a dash; the reason is worth more than the link.</p>
+
+      {measured.length > 0 && (
+        <div class="mt-4 space-y-3 border-t pt-3.5">
+          <p class="text-sm font-medium">What these measured</p>
+          {measured.map((profile) => (
+            <div class="text-xs">
+              <p class="font-mono break-all">{profile.url}</p>
+              <dl class="muted mt-1 grid gap-x-3 gap-y-0.5 sm:grid-cols-2">
+                {profile.faces.length > 0 && (
+                  <div><dt class="inline">Type: </dt><dd class="inline">{profile.faces.slice(0, 3).map((f) => f.family).join(', ')}</dd></div>
+                )}
+                {profile.fontSizesPx.length > 1 && (
+                  <div>
+                    <dt class="inline">Sizes: </dt>
+                    <dd class="inline">{profile.fontSizesPx[0]}px → {profile.fontSizesPx[profile.fontSizesPx.length - 1]}px</dd>
+                  </div>
+                )}
+                {profile.radiiPx.length > 0 && (
+                  <div><dt class="inline">Corners: </dt><dd class="inline">{profile.radiiPx.slice(0, 4).join('px, ')}px</dd></div>
+                )}
+                {profile.traits.sectionPaddingPx && (
+                  <div><dt class="inline">Section padding: </dt><dd class="inline">{profile.traits.sectionPaddingPx}px</dd></div>
+                )}
+                {profile.flow.length > 0 && (
+                  <div class="sm:col-span-2"><dt class="inline">Section order: </dt><dd class="inline">{profile.flow.join(' → ')}</dd></div>
+                )}
+              </dl>
+              {profile.colours.length > 0 && (
+                <div class="mt-1.5 flex flex-wrap gap-1">
+                  {profile.colours.slice(0, 10).map((colour) => (
+                    <span
+                      class="inline-block h-4 w-4 rounded border"
+                      style={`background:${colour.value}`}
+                      title={`${colour.value} — ${colour.role}, used ${colour.hits}×`}
+                    ></span>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+
+          {derived && (
+            <div class="rounded border bg-neutral-50 p-2.5 text-xs dark:bg-neutral-900">
+              <p class="font-medium">A demo built from this starts here</p>
+              <pre class="muted mt-1 whitespace-pre-wrap font-mono text-[11px]">{describeStyle(derived)}</pre>
+              <p class="muted mt-1.5">
+                Each demo then moves from this for the business it is for, so a run does not come
+                out as one page in one set of colours.
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+
+      {unreadable.length > 0 && (
+        <div class="mt-3.5 rounded border border-amber-300 bg-amber-50 p-2.5 text-xs dark:border-amber-800 dark:bg-amber-950">
+          <p class="font-medium">Could not be read, so these contribute nothing</p>
+          <ul class="mt-1 space-y-0.5">
+            {unreadable.map((profile) => (
+              <li class="break-all"><span class="font-mono">{profile.url}</span> — {profile.error}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {missing.length > 0 && (
+        <p class="muted mt-3.5 text-xs">
+          {missing.length} of these {missing.length === 1 ? 'has' : 'have'} not been read yet. They
+          are measured at the start of the next run and then reused.
+        </p>
+      )}
+
+      {brief.references.length === 0 && (
+        <p class="muted mt-3.5 text-xs">
+          Nothing here yet. These are read for their real type sizes, colours, corner radii and
+          section order, and the demos are built from those measurements — so adding a couple of
+          sites you want the work to feel like is the single biggest thing that stops a run looking
+          like one template.
+        </p>
+      )}
     </Card>
 
     <Card title="Type and colour" subtitle="These are used exactly — the generator introduces nothing else">
