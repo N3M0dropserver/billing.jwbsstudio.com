@@ -551,6 +551,27 @@ done
 `npx wrangler secret list -c workers/agent/wrangler.jsonc` is the check — if a
 key is not in that output, no run can see it.
 
+#### When Places refuses a key it does have
+
+A run that logs `Places rejected the search: The caller does not have
+permission` has the key — Google is turning it down. The run log names the
+reason Google gave and the setting behind it; all three usual causes are in
+the Google Cloud console, not in this repo:
+
+- **"Places API (New)" is not enabled.** It is a *separate product* from the
+  older "Places API", and enabling that one does not enable this. APIs &
+  Services → Library.
+- **The key's API restrictions list the wrong one.** Same trap, second place:
+  Credentials → the key → API restrictions has both entries, and only
+  "Places API (New)" works here.
+- **The key's Application restrictions are set to websites or IPs.** Discovery
+  calls Places server-side from a Worker, which sends no referrer and has no
+  fixed egress address, so neither restriction can ever match. This key needs
+  "None"; keep a separate referrer-restricted key for browser use.
+
+Billing must also be on: Places API (New) bills every request and refuses them
+all without a billing account.
+
 The agent's two optional capabilities are worth setting up in this order:
 `SEARCH_PROVIDER` (`brave` or `serper`) with `SEARCH_API_KEY` gives it real web
 search instead of a Wikipedia fallback, and `CLOUDFLARE_ACCOUNT_ID` with a

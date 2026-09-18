@@ -80,7 +80,98 @@ interface PlacesResponse {
     regularOpeningHours?: { weekdayDescriptions?: string[] };
     editorialSummary?: { text?: string };
   }>;
-  error?: { message?: string; status?: string };
+  error?: PlacesError;
+}
+
+/**
+ * What Google sends back when it refuses.
+ *
+ * `message` is often the bare "The caller does not have permission", which
+ * says nothing about which of half a dozen console settings is wrong. The
+ * reason is in `details` — an `ErrorInfo` whose `reason` names the specific
+ * refusal (`SERVICE_DISABLED`, `API_KEY_HTTP_REFERRER_BLOCKED`, and so on).
+ * That is the field worth reading.
+ */
+interface PlacesError {
+  message?: string;
+  status?: string;
+  details?: Array<{
+    '@type'?: string;
+    reason?: string;
+    domain?: string;
+    metadata?: Record<string, string>;
+  }>;
+}
+
+/**
+ * Turn a refusal into something that names the setting to change.
+ *
+ * Every one of these is a Google Cloud console problem rather than a problem
+ * with this code, and each has exactly one fix — so the error says what it is
+ * rather than leaving you to search for a generic string.
+ *
+ * The distinction that catches people: "Places API (New)" is a *separate*
+ * product from the legacy "Places API", both in the API library and in a
+ * key's API restrictions. Enabling or allowing only the old one leaves the
+ * new endpoint refusing every call.
+ */
+export function placesFailureHint(reason: string | undefined, status?: string): string {
+  switch (reason) {
+    case 'SERVICE_DISABLED':
+      return (
+        'Places API (New) is not enabled on that Google Cloud project. Enable it under ' +
+        'APIs & Services → Library — it is a separate product from the older "Places API", ' +
+        'and having that one on does not enable this one.'
+      );
+    case 'API_KEY_SERVICE_BLOCKED':
+      return (
+        "The key's API restrictions do not cover this API. In Credentials → your key → " +
+        'API restrictions, add "Places API (New)" — it is listed separately from "Places API", ' +
+        'so a key restricted to the older entry is refused here.'
+      );
+    case 'API_KEY_HTTP_REFERRER_BLOCKED':
+      return (
+        'The key is restricted to HTTP referrers (websites). This call is made server-side from ' +
+        'a Worker and sends no referrer, so it can never match. Set Application restrictions to ' +
+        '"None" on this key, and keep any referrer-restricted key for browser use.'
+      );
+    case 'API_KEY_IP_ADDRESS_BLOCKED':
+      return (
+        'The key is restricted to IP addresses. Requests leave from the Cloudflare edge, which ' +
+        'has no fixed address to allow, so set Application restrictions to "None" on this key.'
+      );
+    case 'API_KEY_ANDROID_APP_BLOCKED':
+    case 'API_KEY_IOS_APP_BLOCKED':
+      return (
+        'The key is restricted to a mobile app. Set Application restrictions to "None" on this ' +
+        'key — a Worker cannot present app credentials.'
+      );
+    case 'API_KEY_INVALID':
+      return (
+        'Google does not recognise the key. Check it was stored whole and without surrounding ' +
+        'whitespace: `wrangler secret put GOOGLE_PLACES_API_KEY -c workers/agent/wrangler.jsonc`.'
+      );
+    case 'BILLING_DISABLED':
+      return (
+        'Billing is not enabled on that Google Cloud project. Places API (New) bills every ' +
+        'request and refuses all of them until a billing account is attached.'
+      );
+    case 'CONSUMER_INVALID':
+    case 'CONSUMER_SUSPENDED':
+      return 'That Google Cloud project is suspended or deleted. Check it in the console.';
+    default:
+      break;
+  }
+
+  if (status === 'PERMISSION_DENIED') {
+    return (
+      'Google sent no reason, so check these three, in order: "Places API (New)" is enabled on ' +
+      "the project (separate from the legacy 'Places API'); the key's API restrictions include " +
+      "'Places API (New)'; and its Application restrictions are \"None\" rather than HTTP " +
+      'referrers or IP addresses, neither of which a Worker can satisfy.'
+    );
+  }
+  return '';
 }
 
 /** The most photographs worth carrying. The renderer places six at most. */
@@ -169,7 +260,15 @@ export const placesProvider: DiscoveryProvider = {
 
     if (!response.ok || body.error) {
       const detail = body.error?.message ?? `HTTP ${response.status}`;
-      return { ok: false, error: `Places rejected the search: ${detail}` };
+      const reason = body.error?.details?.find((entry) => entry.reason)?.reason;
+      const hint = placesFailureHint(reason, body.error?.status);
+      const named = reason ? `${detail} (${reason})` : detail;
+      return {
+        ok: false,
+        error: hint
+          ? `Places rejected the search: ${named}. ${hint}`
+          : `Places rejected the search: ${named}`,
+      };
     }
 
     for (const place of body.places ?? []) {

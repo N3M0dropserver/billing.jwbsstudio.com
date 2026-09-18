@@ -10,7 +10,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { enrichProspect, summariseReviews } from '~/lib/growth/enrich';
-import { placePhotoUrl, readReviews } from '~/lib/growth/discovery/places';
+import { placePhotoUrl, placesFailureHint, readReviews } from '~/lib/growth/discovery/places';
 
 /** An R2 bucket that remembers what it was handed. */
 function fakeBucket() {
@@ -224,5 +224,38 @@ describe('enriching a prospect with no website', () => {
 
     expect(enrichment.notes.join(' ')).toContain('No website');
     expect(enrichment.directoryContent).toBe('');
+  });
+});
+
+describe('what a Places refusal actually means', () => {
+  // The message Google puts in `error.message` for all of these is the same
+  // useless "The caller does not have permission". The reason in
+  // `error.details` is the part that names the setting to change, so each of
+  // these must map to its own fix rather than to generic advice.
+  it('separates the settings a PERMISSION_DENIED can mean', () => {
+    expect(placesFailureHint('SERVICE_DISABLED')).toContain('Library');
+    expect(placesFailureHint('API_KEY_SERVICE_BLOCKED')).toContain('API restrictions');
+    expect(placesFailureHint('API_KEY_HTTP_REFERRER_BLOCKED')).toContain('referrer');
+    expect(placesFailureHint('API_KEY_IP_ADDRESS_BLOCKED')).toContain('IP addresses');
+    expect(placesFailureHint('BILLING_DISABLED')).toContain('billing account');
+    expect(placesFailureHint('API_KEY_INVALID')).toContain('wrangler secret put');
+  });
+
+  it('names the new API in the two places it is a separate entry', () => {
+    // The trap: enabling or allowlisting the legacy "Places API" and
+    // expecting the new endpoint to work.
+    expect(placesFailureHint('SERVICE_DISABLED')).toContain('Places API (New)');
+    expect(placesFailureHint('API_KEY_SERVICE_BLOCKED')).toContain('Places API (New)');
+  });
+
+  it('falls back to the ordered checklist when Google sends no reason', () => {
+    const hint = placesFailureHint(undefined, 'PERMISSION_DENIED');
+    expect(hint).toContain('Places API (New)');
+    expect(hint).toContain('Application restrictions');
+  });
+
+  it('stays quiet about permissions for a failure that is not one', () => {
+    expect(placesFailureHint(undefined, 'INVALID_ARGUMENT')).toBe('');
+    expect(placesFailureHint(undefined)).toBe('');
   });
 });
