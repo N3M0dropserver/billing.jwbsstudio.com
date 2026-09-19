@@ -198,8 +198,12 @@ export function recommend(signals: RunSignals): Recommendation[] {
       id: 'places-key-missing',
       severity: 'blocking',
       title: 'Google Places is selected but has no key',
-      detail: 'Discovery will fail outright until GOOGLE_PLACES_API_KEY is set as a Worker secret.',
-      action: 'Set the secret, or switch the source back to OpenStreetMap.',
+      detail:
+        'Discovery will fail outright until GOOGLE_PLACES_API_KEY is set as a Worker secret. ' +
+        'It is needed on the agent Worker as well as this one — that is where a run calls Places.',
+      action:
+        'Set the secret on both Workers (`-c workers/agent/wrangler.jsonc` for the agent), or ' +
+        'switch the source back to OpenStreetMap.',
       href: '/growth/settings',
       linkLabel: 'Growth defaults',
       signature: 'missing',

@@ -202,7 +202,7 @@ a flaw.
 | Provider | Needs | Good for |
 |---|---|---|
 | **OpenStreetMap** (default) | Nothing | Anything with a shopfront. Free, ODbL — credit OSM if you republish. |
-| **Google Places** | `GOOGLE_PLACES_API_KEY` | Broadest coverage, carries ratings. Costs per request; its terms limit caching to 30 days. |
+| **Google Places** | `GOOGLE_PLACES_API_KEY`, on [both Workers](#every-growth-secret-goes-on-both-workers) | Broadest coverage, carries ratings. Costs per request; its terms limit caching to 30 days. |
 | **Paste a list** | Nothing | A directory export, a conference list, three businesses down the road. |
 
 The crawler identifies itself honestly, reads `robots.txt` and obeys it, takes
@@ -534,22 +534,61 @@ Put that in `.dev.vars` as `SESSION_SECRET`. For production:
 
 ```bash
 npx wrangler secret put SESSION_SECRET
+npx wrangler secret put CRON_SECRET           # for automatic reminders
 npx wrangler secret put RESEND_API_KEY        # if sending email via Resend
 npx wrangler secret put STRIPE_SECRET_KEY     # optional
 npx wrangler secret put STRIPE_WEBHOOK_SECRET # optional
+npx wrangler secret put GOOGLE_PLACES_API_KEY # optional — Google Places discovery
 npx wrangler secret put SEARCH_API_KEY        # optional — real web search
 npx wrangler secret put BROWSER_RENDERING_TOKEN # optional — a real browser
 ```
+
+#### Every growth secret goes on both Workers
+
+**A Worker's secrets are its own.** There are two Workers here — the app
+(`billing-jwbsstudio-com`) and the agent (`jwbs-growth-agent`) — and the growth
+pipeline runs inside the agent. A key set only on the app Worker, whether
+through `wrangler secret put` or the dashboard, is invisible to every run, and
+the settings page will happily report it as set because the page is served by
+the app Worker that does have it. That mismatch is the single most confusing
+way this can fail, so set each of these twice:
+
+```bash
+for KEY in GOOGLE_PLACES_API_KEY SEARCH_API_KEY BROWSER_RENDERING_TOKEN CLOUDFLARE_ACCOUNT_ID; do
+  npx wrangler secret put "$KEY"                                  # app Worker
+  npx wrangler secret put "$KEY" -c workers/agent/wrangler.jsonc  # agent Worker
+done
+```
+
+`npx wrangler secret list -c workers/agent/wrangler.jsonc` is the check — if a
+key is not in that output, no run can see it.
+
+#### When Places refuses a key it does have
+
+A run that logs `Places rejected the search: The caller does not have
+permission` has the key — Google is turning it down. The run log names the
+reason Google gave and the setting behind it; all three usual causes are in
+the Google Cloud console, not in this repo:
+
+- **"Places API (New)" is not enabled.** It is a *separate product* from the
+  older "Places API", and enabling that one does not enable this. APIs &
+  Services → Library.
+- **The key's API restrictions list the wrong one.** Same trap, second place:
+  Credentials → the key → API restrictions has both entries, and only
+  "Places API (New)" works here.
+- **The key's Application restrictions are set to websites or IPs.** Discovery
+  calls Places server-side from a Worker, which sends no referrer and has no
+  fixed egress address, so neither restriction can ever match. This key needs
+  "None"; keep a separate referrer-restricted key for browser use.
+
+Billing must also be on: Places API (New) bills every request and refuses them
+all without a billing account.
 
 The agent's two optional capabilities are worth setting up in this order:
 `SEARCH_PROVIDER` (`brave` or `serper`) with `SEARCH_API_KEY` gives it real web
 search instead of a Wikipedia fallback, and `CLOUDFLARE_ACCOUNT_ID` with a
 token carrying the Browser Rendering permission lets it read client-rendered
-sites and take screenshots. Both are secrets on the app Worker **and** the
-agent Worker (`npx wrangler secret put … -c workers/agent/wrangler.jsonc`),
-since the pipeline runs in the agent.
-npx wrangler secret put CRON_SECRET           # for automatic reminders
-```
+sites and take screenshots.
 
 `CRON_SECRET` is what the scheduled job authenticates with. Without it the
 reminder and housekeeping endpoints refuse everything and nothing is sent —
