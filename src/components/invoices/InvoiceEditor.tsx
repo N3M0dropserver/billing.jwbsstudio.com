@@ -18,6 +18,12 @@ export interface ClientOption {
   gstTreatment: string;
 }
 
+export interface TemplateOption {
+  id: string;
+  name: string;
+  isDefault: boolean;
+}
+
 export interface UnbilledEntry {
   id: string;
   description: string;
@@ -39,6 +45,8 @@ interface Line {
 interface Props {
   clients: ClientOption[];
   unbilled: UnbilledEntry[];
+  /** The account's invoice templates, for the design picker. */
+  templates: TemplateOption[];
   defaults: {
     currency: 'NZD' | 'AUD';
     /** Currency the tax figures are kept in — follows tax residence. */
@@ -61,6 +69,7 @@ interface Props {
     reference: string;
     notes: string;
     terms: string;
+    templateId: string | null;
     lines: Array<{ description: string; quantity: number; unit: string; unitPrice: number; taxable: boolean }>;
   };
 }
@@ -91,12 +100,16 @@ function money(cents: number, currency: string): string {
   return new Intl.NumberFormat('en-NZ', { style: 'currency', currency }).format(cents / 100);
 }
 
-export default function InvoiceEditor({ clients, unbilled, defaults, invoice }: Props) {
+export default function InvoiceEditor({ clients, unbilled, templates, defaults, invoice }: Props) {
+  /** Named on the "Default" option, so the picker says what it will actually use. */
+  const defaultTemplateName = templates.find((template) => template.isDefault)?.name ?? '';
+
   const [clientId, setClientId] = useState(invoice?.clientId ?? '');
   const [issuedOn, setIssuedOn] = useState(invoice?.issuedOn ?? new Date().toISOString().slice(0, 10));
   const [currency, setCurrency] = useState(invoice?.currency ?? defaults.currency);
   const [jurisdiction, setJurisdiction] = useState(invoice?.jurisdiction ?? defaults.jurisdiction);
   const [treatment, setTreatment] = useState(invoice?.gstTreatment ?? 'auto');
+  const [templateId, setTemplateId] = useState(invoice?.templateId ?? '');
   const [reference, setReference] = useState(invoice?.reference ?? '');
   const [notes, setNotes] = useState(invoice?.notes ?? '');
   const [terms, setTerms] = useState(invoice?.terms ?? defaults.terms);
@@ -253,6 +266,25 @@ export default function InvoiceEditor({ clients, unbilled, defaults, invoice }: 
                 placeholder="Project or PO number" className="field"
               />
             </div>
+
+            {templates.length > 0 && (
+              <div>
+                <label htmlFor="templateId" className="label muted mb-1.5 block">Design</label>
+                <select
+                  id="templateId" name="templateId" value={templateId}
+                  onChange={(e) => setTemplateId(e.target.value)} className="field"
+                >
+                  {/* Empty means the account default, which is what an invoice
+                      raised before templates existed already resolves to. */}
+                  <option value="">
+                    Default{defaultTemplateName ? ` (${defaultTemplateName})` : ''}
+                  </option>
+                  {templates.map((template) => (
+                    <option key={template.id} value={template.id}>{template.name}</option>
+                  ))}
+                </select>
+              </div>
+            )}
 
             <div>
               <label htmlFor="issuedOn" className="label muted mb-1.5 block">Issue date</label>

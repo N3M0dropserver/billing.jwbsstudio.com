@@ -10,6 +10,8 @@
  * in, so nothing needs embedding. Text is WinAnsi-encoded.
  */
 
+import type { PdfImage } from './image';
+
 export type FontName = 'Helvetica' | 'Helvetica-Bold' | 'Helvetica-Oblique';
 
 export interface TextOptions {
@@ -166,6 +168,39 @@ interface Operation {
   content: string;
 }
 
+/**
+ * An image registered on a document, ready to be placed on a page.
+ *
+ * Returned by `PdfDocument.addImage` rather than constructed: the name is the
+ * document's to assign, and the same handle can be drawn on any number of
+ * pages without the bytes being written more than once.
+ */
+export interface ImageHandle {
+  /** The resource name, e.g. `Im0`. */
+  name: string;
+  width: number;
+  height: number;
+}
+
+/**
+ * Fit a box of `width`x`height` inside `maxWidth`x`maxHeight` without
+ * distorting it.
+ *
+ * Logos arrive at whatever size the person had to hand — a 2000px-wide
+ * export and a 64px favicon both have to end up looking deliberate — so
+ * every layout places them through this rather than by hard-coded size.
+ */
+export function fitWithin(
+  width: number,
+  height: number,
+  maxWidth: number,
+  maxHeight: number,
+): { width: number; height: number } {
+  if (width <= 0 || height <= 0) return { width: 0, height: 0 };
+  const scale = Math.min(maxWidth / width, maxHeight / height);
+  return { width: width * scale, height: height * scale };
+}
+
 export class PdfPage {
   private ops: Operation[] = [];
 
@@ -173,6 +208,26 @@ export class PdfPage {
     public readonly width: number,
     public readonly height: number,
   ) {}
+
+  /**
+   * Draw a registered image, with the origin at the TOP-left like `text`.
+   *
+   * PDF draws an image by mapping the unit square through the current
+   * transformation matrix, so the width and height are the matrix, and `q`/`Q`
+   * keep that from leaking into whatever is drawn next.
+   */
+  image(handle: ImageHandle, x: number, y: number, width: number, height: number): this {
+    if (width <= 0 || height <= 0) return this;
+    this.ops.push({
+      content: [
+        'q',
+        `${width.toFixed(2)} 0 0 ${height.toFixed(2)} ${x.toFixed(2)} ${(this.height - y - height).toFixed(2)} cm`,
+        `/${handle.name} Do`,
+        'Q',
+      ].join('\n'),
+    });
+    return this;
+  }
 
   /** Draw text with the origin at the TOP-left, which is how humans think. */
   text(value: string, x: number, y: number, options: TextOptions = {}): this {
@@ -230,6 +285,7 @@ export class PdfPage {
 
 export class PdfDocument {
   private pages: PdfPage[] = [];
+  private images: Array<{ handle: ImageHandle; image: PdfImage }> = [];
 
   /** A4 in PDF points. */
   static readonly A4 = { width: 595.28, height: 841.89 };
@@ -241,43 +297,112 @@ export class PdfDocument {
   }
 
   /**
+   * Register an image, once, and get back the handle pages draw it with.
+   *
+   * Decoding happens in `~/lib/pdf/image.ts` and is async; registration and
+   * drawing are not, which is what keeps `renderInvoicePdf` synchronous and
+   * trivial to test.
+   */
+  addImage(image: PdfImage): ImageHandle {
+    const handle: ImageHandle = {
+      name: `Im${this.images.length}`,
+      width: image.width,
+      height: image.height,
+    };
+    this.images.push({ handle, image });
+    return handle;
+  }
+
+  /**
    * Serialise to a PDF byte stream.
    *
-   * Object layout: 1 = catalog, 2 = pages tree, 3..5 = fonts, then for each
-   * page a page object followed by its content stream.
+   * Object ids are handed out as objects are written rather than computed from
+   * fixed positions — images made the arithmetic version untenable, since the
+   * count is no longer known before the document is walked.
    */
   build(meta: { title?: string; author?: string } = {}): Uint8Array {
-    const objects: string[] = [];
-    const pageObjectStart = 6;
-    const pageIds = this.pages.map((_, i) => pageObjectStart + i * 2);
+    /** Objects by id. Index 0 is the free head and is never written. */
+    const objects: string[] = [''];
+    const reserve = () => objects.push('') - 1;
+    const put = (id: number, body: string) => {
+      objects[id] = body;
+    };
 
-    objects[1] = '<< /Type /Catalog /Pages 2 0 R >>';
-    objects[2] =
-      `<< /Type /Pages /Count ${this.pages.length} /Kids [${pageIds.map((id) => `${id} 0 R`).join(' ')}] >>`;
-    // Object 6 is the shared encoding: WinAnsi plus the macron differences.
-    const encodingRef = `${pageObjectStart + this.pages.length * 2} 0 R`;
-    objects[3] = `<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding ${encodingRef} >>`;
-    objects[4] = `<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding ${encodingRef} >>`;
-    objects[5] = `<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Oblique /Encoding ${encodingRef} >>`;
+    const catalogId = reserve();
+    const pagesId = reserve();
+    const encodingId = reserve();
+    const fontIds = { F1: reserve(), F2: reserve(), F3: reserve() };
 
-    this.pages.forEach((page, i) => {
-      const pageId = pageIds[i]!;
-      const contentId = pageId + 1;
+    put(encodingId, `<< /Type /Encoding /BaseEncoding /WinAnsiEncoding /Differences ${ENCODING_DIFFERENCES} >>`);
+    put(fontIds.F1, `<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding ${encodingId} 0 R >>`);
+    put(fontIds.F2, `<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding ${encodingId} 0 R >>`);
+    put(fontIds.F3, `<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Oblique /Encoding ${encodingId} 0 R >>`);
+
+    // Images, and the soft masks that carry their transparency.
+    const imageRefs: string[] = [];
+    for (const { handle, image } of this.images) {
+      let smaskRef = '';
+      if (image.smask) {
+        const smaskId = reserve();
+        put(
+          smaskId,
+          stream(
+            `<< /Type /XObject /Subtype /Image /Width ${image.smask.width} /Height ${image.smask.height} ` +
+              `/ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode ` +
+              `/Length ${image.smask.data.length} >>`,
+            image.smask.data,
+          ),
+        );
+        smaskRef = ` /SMask ${smaskId} 0 R`;
+      }
+
+      const imageId = reserve();
+      put(
+        imageId,
+        stream(
+          `<< /Type /XObject /Subtype /Image /Width ${image.width} /Height ${image.height} ` +
+            `/ColorSpace ${image.colorSpace} /BitsPerComponent ${image.bitsPerComponent} ` +
+            `/Filter /${image.filter}` +
+            (image.decodeParms ? ` /DecodeParms ${image.decodeParms}` : '') +
+            (image.decode ? ` /Decode ${image.decode}` : '') +
+            `${smaskRef} /Length ${image.data.length} >>`,
+          image.data,
+        ),
+      );
+      imageRefs.push(`/${handle.name} ${imageId} 0 R`);
+    }
+
+    const xobjects = imageRefs.length ? ` /XObject << ${imageRefs.join(' ')} >>` : '';
+
+    const pageIds: number[] = [];
+    for (const page of this.pages) {
+      const pageId = reserve();
+      const contentId = reserve();
+      pageIds.push(pageId);
+
       const content = page.build();
+      put(
+        pageId,
+        `<< /Type /Page /Parent ${pagesId} 0 R ` +
+          `/MediaBox [0 0 ${page.width.toFixed(2)} ${page.height.toFixed(2)}] ` +
+          `/Resources << /Font << /F1 ${fontIds.F1} 0 R /F2 ${fontIds.F2} 0 R /F3 ${fontIds.F3} 0 R >>` +
+          `${xobjects} >> /Contents ${contentId} 0 R >>`,
+      );
+      put(contentId, `<< /Length ${content.length} >>\nstream\n${content}\nendstream`);
+    }
 
-      objects[pageId] =
-        `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${page.width.toFixed(2)} ${page.height.toFixed(2)}] ` +
-        `/Resources << /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R >> >> /Contents ${contentId} 0 R >>`;
-      objects[contentId] = `<< /Length ${content.length} >>\nstream\n${content}\nendstream`;
-    });
+    put(catalogId, `<< /Type /Catalog /Pages ${pagesId} 0 R >>`);
+    put(
+      pagesId,
+      `<< /Type /Pages /Count ${this.pages.length} /Kids [${pageIds.map((id) => `${id} 0 R`).join(' ')}] >>`,
+    );
 
-    objects[pageObjectStart + this.pages.length * 2] =
-      `<< /Type /Encoding /BaseEncoding /WinAnsiEncoding /Differences ${ENCODING_DIFFERENCES} >>`;
-
-    const infoId = objects.length;
-    objects[infoId] =
+    const infoId = reserve();
+    put(
+      infoId,
       `<< /Title (${escapeText(meta.title ?? 'Invoice')}) /Producer (JWBS Billing) ` +
-      `/Author (${escapeText(meta.author ?? '')}) /CreationDate (D:${pdfDate(new Date())}) >>`;
+        `/Author (${escapeText(meta.author ?? '')}) /CreationDate (D:${pdfDate(new Date())}) >>`,
+    );
 
     // Assemble the file, recording each object's byte offset for the xref.
     let output = '%PDF-1.4\n%\xE2\xE3\xCF\xD3\n';
@@ -285,7 +410,7 @@ export class PdfDocument {
 
     for (let i = 1; i < objects.length; i++) {
       const body = objects[i];
-      if (body === undefined) continue;
+      if (!body) continue;
       offsets[i] = byteLength(output);
       output += `${i} 0 obj\n${body}\nendobj\n`;
     }
@@ -302,10 +427,26 @@ export class PdfDocument {
           : `${String(offset).padStart(10, '0')} 00000 n \n`;
     }
 
-    output += `trailer\n<< /Size ${maxId} /Root 1 0 R /Info ${infoId} 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
+    output += `trailer\n<< /Size ${maxId} /Root ${catalogId} 0 R /Info ${infoId} 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
 
     return latin1Bytes(output);
   }
+}
+
+/**
+ * A stream object whose payload is binary.
+ *
+ * The whole file is assembled as a latin-1 string — one char per byte — so
+ * image data joins it the same way rather than needing a separate byte path.
+ */
+function stream(dict: string, data: Uint8Array): string {
+  let payload = '';
+  // Chunked: `String.fromCharCode(...bytes)` blows the argument limit on
+  // anything bigger than a thumbnail.
+  for (let i = 0; i < data.length; i += 8192) {
+    payload += String.fromCharCode(...data.subarray(i, i + 8192));
+  }
+  return `${dict}\nstream\n${payload}\nendstream`;
 }
 
 function pdfDate(date: Date): string {

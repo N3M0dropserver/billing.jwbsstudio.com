@@ -40,7 +40,10 @@ const isOverdue = (row: (typeof rows)[number]) => row.dueOn < today && row.statu
   subtitle={`${rows.length} invoice${rows.length === 1 ? '' : 's'} · ${formatMoneyWithCode(totals.outstanding, 'NZD')} outstanding`}
   width="wide"
 >
-  <a slot="actions" href="/invoices/new" class="btn btn-primary">New invoice</a>
+  <div slot="actions" class="flex items-center gap-2">
+    <a href="/invoices/templates" class="btn btn-secondary">Templates</a>
+    <a href="/invoices/new" class="btn btn-primary">New invoice</a>
+  </div>
 
   <!-- Filters scroll sideways on a phone rather than wrapping into three rows. -->
   <div class="-mx-4 mb-4 overflow-x-auto px-4 sm:mx-0 sm:px-0">

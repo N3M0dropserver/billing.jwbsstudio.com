@@ -1,0 +1,31 @@
+---
+import AppLayout from '~/layouts/AppLayout.astro';
+import TemplateDesigner from '~/components/invoices/TemplateDesigner.tsx';
+import { db } from '~/lib/env';
+import { getInvoiceTemplate } from '~/lib/queries/invoice-templates';
+
+const user = Astro.locals.user!;
+const template = await getInvoiceTemplate(db(), user.id, Astro.params.id!);
+
+if (!template) return Astro.redirect('/invoices/templates', 302);
+---
+
+<AppLayout title={template.name} subtitle="Invoice template" width="wide">
+  <a slot="actions" href="/invoices/templates" class="btn btn-secondary">All templates</a>
+
+  {/*
+    `client:only` — the designer is never server-rendered. It has no useful
+    first paint (the preview is a PDF it has to fetch), and keeping it out of
+    the Worker bundle keeps the same rule the email builder follows.
+  */}
+  <TemplateDesigner
+    client:only="react"
+    template={{
+      id: template.id,
+      name: template.name,
+      description: template.description,
+      isDefault: template.isDefault,
+    }}
+    design={template.parsed}
+  />
+</AppLayout>

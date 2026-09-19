@@ -1,9 +1,10 @@
 import type { APIRoute } from 'astro';
-import { db, appUrl } from '~/lib/env';
+import { db, files, appUrl } from '~/lib/env';
 import { getInvoiceByToken } from '~/lib/invoices/service';
 import { getSettings } from '~/lib/queries/settings';
 import { toPdfData } from '~/lib/invoices/pdf-data';
 import { renderInvoicePdf } from '~/lib/pdf/invoice';
+import { brandingFor } from '~/lib/invoices/branding';
 import { isNewOccurrence, recordInvoiceEvent } from '~/lib/activity/events';
 import { lastEventAt } from '~/lib/activity/timeline';
 
@@ -35,8 +36,10 @@ export const GET: APIRoute = async ({ params, request }) => {
   }
 
   const settings = await getSettings(database, invoice.userId);
+  const branding = await brandingFor(database, files(), invoice.userId, invoice.templateId);
   const bytes = renderInvoicePdf(
     toPdfData(invoice, settings, { payUrl: `${appUrl()}/pay/${params.token}` }),
+    branding,
   );
 
   return new Response(bytes as BodyInit, {

@@ -52,6 +52,9 @@ export const POST: APIRoute = async ({ request, locals, redirect }) => {
     reference: String(form.get('reference') ?? ''),
     notes: String(form.get('notes') ?? ''),
     terms: String(form.get('terms') ?? ''),
+    // Empty means the account default, which is also what every invoice
+    // raised before templates existed resolves to.
+    templateId: String(form.get('templateId') ?? '') || null,
     lines,
     fxRateToResidence,
     isManualEntry: clientId === null,

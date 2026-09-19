@@ -1,10 +1,11 @@
 import type { APIRoute } from 'astro';
 import { eq } from 'drizzle-orm';
-import { db, appUrl, bindings } from '~/lib/env';
+import { db, files, appUrl, bindings } from '~/lib/env';
 import { getSettings } from '~/lib/queries/settings';
 import { getQuote } from '~/lib/quotes/service';
 import { quoteToPdfData } from '~/lib/quotes/pdf-data';
 import { renderInvoicePdf } from '~/lib/pdf/invoice';
+import { brandingFor } from '~/lib/invoices/branding';
 import { sendMail } from '~/lib/mail';
 import { quoteEmail } from '~/lib/mail/templates';
 import { proposals, communications, activityLog } from '~/lib/db/schema';
@@ -27,7 +28,8 @@ export const POST: APIRoute = async ({ params, request, locals, redirect }) => {
   const settings = await getSettings(database, user.id);
   const env = bindings();
   const viewUrl = quote.publicToken ? `${appUrl()}/proposal/${quote.publicToken}` : appUrl();
-  const pdf = renderInvoicePdf(quoteToPdfData(quote, settings, { viewUrl }));
+  const branding = await brandingFor(database, files(), user.id, null);
+  const pdf = renderInvoicePdf(quoteToPdfData(quote, settings, { viewUrl }), branding);
 
   const content = quoteEmail({
     quoteNumber: quote.number,
